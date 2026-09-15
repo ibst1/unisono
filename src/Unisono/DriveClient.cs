@@ -32,16 +32,26 @@ public sealed class DriveClient
             throw new InvalidOperationException(
                 $"No OAuth client found at {AppPaths.ClientSecretPath}. See README.md for how to create one.");
 
+        var client = OAuthClientInfo.Read(AppPaths.ClientSecretPath);
+        // Say which client we are about to use, so a stale or copied client_secret.json is obvious
+        // before the consent screen for the wrong project opens in the browser.
+        Console.WriteLine($"OAuth client {client.ClientId}");
+        Console.WriteLine($"  project: {client.ProjectId ?? "(unknown)"}   type: {client.Kind}   file: {AppPaths.ClientSecretPath}");
+        if (client.Kind != "installed")
+            Console.Error.WriteLine("warning: expected a 'Desktop app' client (\"installed\" in the JSON); other client types may not accept the loopback redirect.");
+
         ClientSecrets secrets;
         await using (var stream = System.IO.File.OpenRead(AppPaths.ClientSecretPath))
             secrets = (await GoogleClientSecrets.FromStreamAsync(stream, ct)).Secrets;
 
+        // Tokens are issued per client id, so keep them per client: swapping client_secret.json
+        // then simply triggers a fresh sign-in instead of invalid_grant on a token from the old client.
         var credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
             secrets,
             new[] { DriveService.Scope.Drive },
             "user",
             ct,
-            new FileDataStore(AppPaths.TokenDir, fullPath: true));
+            new FileDataStore(Path.Combine(AppPaths.TokenDir, client.TokenFolderName), fullPath: true));
 
         var service = new DriveService(new BaseClientService.Initializer
         {
