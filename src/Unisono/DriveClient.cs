@@ -1,21 +1,23 @@
 using System.Security.Cryptography;
 using Google.Apis.Auth.OAuth2;
+using Google.Apis.Download;
 using Google.Apis.Drive.v3;
-using Google.Apis.Drive.v3.Data;
 using Google.Apis.Services;
+using Google.Apis.Upload;
 using Google.Apis.Util.Store;
 using File = Google.Apis.Drive.v3.Data.File;
 
 namespace Unisono;
 
 /// <summary>
-/// Thin wrapper over the Drive v3 API: sign-in, path resolution, listing and download.
-/// Google-native documents (Docs, Sheets, ...) have no bytes to download and are reported but skipped.
+/// Thin wrapper over the Drive v3 API: sign-in, path resolution, listing, changes, transfer.
+/// Google-native documents (Docs, Sheets, ...) have no bytes to download; they can be exported instead.
 /// </summary>
 public sealed class DriveClient
 {
     public const string FolderMime = "application/vnd.google-apps.folder";
-    private const string FileFields = "id, name, mimeType, size, modifiedTime, md5Checksum";
+    public const string FileFields = "id, name, mimeType, size, modifiedTime, md5Checksum, parents, trashed";
+    private const string OctetStream = "application/octet-stream";
 
     private readonly DriveService _service;
 
@@ -26,7 +28,7 @@ public sealed class DriveClient
     /// is used silently. The consent redirect lands on a loopback HttpListener, which the probe confirmed works
     /// for a standard user.
     /// </summary>
-    public static async Task<DriveClient> ConnectAsync(CancellationToken ct)
+    public static async Task<DriveClient> ConnectAsync(CancellationToken ct, bool quiet = false)
     {
         if (!System.IO.File.Exists(AppPaths.ClientSecretPath))
             throw new InvalidOperationException(
@@ -35,8 +37,11 @@ public sealed class DriveClient
         var client = OAuthClientInfo.Read(AppPaths.ClientSecretPath);
         // Say which client we are about to use, so a stale or copied client_secret.json is obvious
         // before the consent screen for the wrong project opens in the browser.
-        Console.WriteLine($"OAuth client {client.ClientId}");
-        Console.WriteLine($"  project: {client.ProjectId ?? "(unknown)"}   type: {client.Kind}   file: {AppPaths.ClientSecretPath}");
+        if (!quiet)
+        {
+            Console.WriteLine($"OAuth client {client.ClientId}");
+            Console.WriteLine($"  project: {client.ProjectId ?? "(unknown)"}   type: {client.Kind}   file: {AppPaths.ClientSecretPath}");
+        }
         if (client.Kind != "installed")
             Console.Error.WriteLine("warning: expected a 'Desktop app' client (\"installed\" in the JSON); other client types may not accept the loopback redirect.");
 
@@ -66,12 +71,14 @@ public sealed class DriveClient
         var about = _service.About.Get();
         about.Fields = "user(emailAddress), storageQuota(usage, limit)";
         var a = await about.ExecuteAsync(ct);
-        // The changes start token is what the sync engine will poll from; fetching it here proves that API too.
-        var token = await _service.Changes.GetStartPageToken().ExecuteAsync(ct);
-        return (a.User.EmailAddress, a.StorageQuota.Usage ?? 0, a.StorageQuota.Limit ?? 0, token.StartPageTokenValue);
+        var token = await GetStartPageTokenAsync(ct);
+        return (a.User.EmailAddress, a.StorageQuota.Usage ?? 0, a.StorageQuota.Limit ?? 0, token);
     }
 
-    /// <summary>Resolves "Foo/Bar" (relative to My Drive) to a folder id. "" or "/" is the root.</summary>
+    public async Task<string> GetStartPageTokenAsync(CancellationToken ct) =>
+        (await _service.Changes.GetStartPageToken().ExecuteAsync(ct)).StartPageTokenValue;
+
+    /// <summary>Resolves "Foo/Bar" (relative to My Drive) to a folder. "" or "/" is the root. The returned id is never the "root" alias.</summary>
     public async Task<File> ResolveFolderAsync(string drivePath, CancellationToken ct)
     {
         var current = new File { Id = "root", Name = "", MimeType = FolderMime };
@@ -87,6 +94,29 @@ public sealed class DriveClient
             if (res.Files.Count > 1)
                 Console.Error.WriteLine($"warning: {res.Files.Count} folders named '{part}' under '{current.Name}'; using the first.");
             current = next;
+        }
+        if (current.Id == "root")
+        {
+            // Changes report parents by real id, so the alias must be resolved for the index to link up.
+            var get = _service.Files.Get("root");
+            get.Fields = FileFields;
+            current = await get.ExecuteAsync(ct);
+        }
+        return current;
+    }
+
+    /// <summary>Like <see cref="ResolveFolderAsync"/> but creates missing folders along the way.</summary>
+    public async Task<File> EnsureFolderAsync(string drivePath, CancellationToken ct)
+    {
+        var current = await ResolveFolderAsync("", ct);
+        foreach (var part in drivePath.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var req = _service.Files.List();
+            req.Q = $"'{current.Id}' in parents and name = '{Escape(part)}' and mimeType = '{FolderMime}' and trashed = false";
+            req.Fields = $"files({FileFields})";
+            req.PageSize = 10;
+            var res = await req.ExecuteAsync(ct);
+            current = res.Files.FirstOrDefault() ?? await CreateFolderAsync(part, current.Id, ct);
         }
         return current;
     }
@@ -110,19 +140,110 @@ public sealed class DriveClient
         return all;
     }
 
+    /// <summary>All changes since <paramref name="pageToken"/>, across the whole Drive; the caller filters by tree membership.</summary>
+    public async Task<(List<Google.Apis.Drive.v3.Data.Change> Changes, string NewStartToken)> ListChangesAsync(string pageToken, CancellationToken ct)
+    {
+        var all = new List<Google.Apis.Drive.v3.Data.Change>();
+        string? token = pageToken;
+        string? newStart = null;
+        while (token != null)
+        {
+            var req = _service.Changes.List(token);
+            req.Fields = $"nextPageToken, newStartPageToken, changes(fileId, removed, file({FileFields}))";
+            req.IncludeRemoved = true;
+            req.PageSize = 1000;
+            req.Spaces = "drive";
+            var res = await req.ExecuteAsync(ct);
+            all.AddRange(res.Changes);
+            token = res.NextPageToken;
+            newStart ??= res.NewStartPageToken;
+            if (res.NewStartPageToken != null) newStart = res.NewStartPageToken;
+        }
+        return (all, newStart ?? pageToken);
+    }
+
     /// <summary>Downloads to a temp file next to the target, then swaps it in and stamps the Drive modified time.</summary>
     public async Task DownloadAsync(File file, string localPath, CancellationToken ct)
     {
-        var tmp = localPath + ".unisono-part";
-        await using (var fs = System.IO.File.Create(tmp))
-        {
-            var progress = await _service.Files.Get(file.Id).DownloadAsync(fs, ct);
-            if (progress.Status != Google.Apis.Download.DownloadStatus.Completed)
-                throw new IOException($"Download of '{file.Name}' failed: {progress.Exception?.Message ?? progress.Status.ToString()}");
-        }
-        System.IO.File.Move(tmp, localPath, overwrite: true);
+        var req = _service.Files.Get(file.Id);
+        await DownloadToAsync((s, c) => req.DownloadAsync(s, c), file.Name, localPath, ct);
         if (file.ModifiedTimeDateTimeOffset is { } mt)
             System.IO.File.SetLastWriteTimeUtc(localPath, mt.UtcDateTime);
+    }
+
+    /// <summary>Exports a Google-native document (Docs -> docx etc.). Drive caps exports at 10 MB.</summary>
+    public async Task ExportAsync(string fileId, string name, string exportMime, string localPath, DateTime modifiedUtc, CancellationToken ct)
+    {
+        var req = _service.Files.Export(fileId, exportMime);
+        await DownloadToAsync((s, c) => req.DownloadAsync(s, c), name, localPath, ct);
+        System.IO.File.SetLastWriteTimeUtc(localPath, modifiedUtc);
+    }
+
+    private static async Task DownloadToAsync(Func<Stream, CancellationToken, Task<IDownloadProgress>> download, string name, string localPath, CancellationToken ct)
+    {
+        var tmp = localPath + ".unisono-part";
+        try
+        {
+            await using (var fs = System.IO.File.Create(tmp))
+            {
+                var progress = await download(fs, ct);
+                if (progress.Status != DownloadStatus.Completed)
+                    throw new IOException($"Download of '{name}' failed: {progress.Exception?.Message ?? progress.Status.ToString()}");
+            }
+            if (System.IO.File.Exists(localPath))
+                System.IO.File.SetAttributes(localPath, FileAttributes.Normal);
+            System.IO.File.Move(tmp, localPath, overwrite: true);
+        }
+        finally
+        {
+            if (System.IO.File.Exists(tmp)) System.IO.File.Delete(tmp);
+        }
+    }
+
+    /// <summary>Creates a new file under <paramref name="parentId"/> with the local content and modified time.</summary>
+    public async Task<File> UploadNewAsync(string localPath, string name, string parentId, CancellationToken ct)
+    {
+        var meta = new File
+        {
+            Name = name,
+            Parents = new[] { parentId },
+            ModifiedTimeDateTimeOffset = new DateTimeOffset(System.IO.File.GetLastWriteTimeUtc(localPath)),
+        };
+        await using var fs = OpenShared(localPath);
+        var up = _service.Files.Create(meta, fs, OctetStream);
+        up.Fields = FileFields;
+        var progress = await up.UploadAsync(ct);
+        if (progress.Status != UploadStatus.Completed)
+            throw new IOException($"Upload of '{name}' failed: {progress.Exception?.Message ?? progress.Status.ToString()}");
+        return up.ResponseBody;
+    }
+
+    /// <summary>Replaces the content of an existing file and stamps the local modified time on it.</summary>
+    public async Task<File> UploadUpdateAsync(string localPath, string fileId, CancellationToken ct)
+    {
+        var meta = new File { ModifiedTimeDateTimeOffset = new DateTimeOffset(System.IO.File.GetLastWriteTimeUtc(localPath)) };
+        await using var fs = OpenShared(localPath);
+        var up = _service.Files.Update(meta, fileId, fs, OctetStream);
+        up.Fields = FileFields;
+        var progress = await up.UploadAsync(ct);
+        if (progress.Status != UploadStatus.Completed)
+            throw new IOException($"Upload of '{Path.GetFileName(localPath)}' failed: {progress.Exception?.Message ?? progress.Status.ToString()}");
+        return up.ResponseBody;
+    }
+
+    public async Task<File> CreateFolderAsync(string name, string parentId, CancellationToken ct)
+    {
+        var req = _service.Files.Create(new File { Name = name, MimeType = FolderMime, Parents = new[] { parentId } });
+        req.Fields = FileFields;
+        return await req.ExecuteAsync(ct);
+    }
+
+    /// <summary>Never a permanent delete: the item goes to the Drive trash, where it can be restored for 30 days.</summary>
+    public async Task TrashAsync(string fileId, CancellationToken ct)
+    {
+        var req = _service.Files.Update(new File { Trashed = true }, fileId);
+        req.Fields = "id";
+        await req.ExecuteAsync(ct);
     }
 
     public static bool IsFolder(File f) => f.MimeType == FolderMime;
@@ -137,11 +258,19 @@ public sealed class DriveClient
         if (!System.IO.File.Exists(localPath) || f.Md5Checksum == null) return false;
         var info = new FileInfo(localPath);
         if (f.Size is { } size && info.Length != size) return false;
-        using var md5 = MD5.Create();
-        using var fs = System.IO.File.OpenRead(localPath);
-        var hash = Convert.ToHexString(md5.ComputeHash(fs));
-        return string.Equals(hash, f.Md5Checksum, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(Md5Of(localPath), f.Md5Checksum, StringComparison.OrdinalIgnoreCase);
     }
+
+    public static string Md5Of(string localPath)
+    {
+        using var md5 = MD5.Create();
+        using var fs = OpenShared(localPath);
+        return Convert.ToHexString(md5.ComputeHash(fs)).ToLowerInvariant();
+    }
+
+    /// <summary>Read even while another program has the file open for writing (Office keeps its documents open).</summary>
+    private static FileStream OpenShared(string path) =>
+        new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 
     private static string Escape(string name) => name.Replace("\\", "\\\\").Replace("'", "\\'");
 }
