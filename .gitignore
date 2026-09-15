@@ -1,0 +1,9 @@
+bin/
+obj/
+dist/
+*.user
+*.suo
+.vs/
+*.log
+# Probe reports are per machine and sync via OneDrive, not git.
+tools/probe-*.txt
