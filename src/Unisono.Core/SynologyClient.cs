@@ -41,10 +41,13 @@ public sealed class SynologyClient : IDisposable
 
     public string BaseUrl => _base;
 
-    private SynologyClient(SynologyCredentials creds, bool allowInvalidCertificate, Func<string?>? otpPrompt)
+    private readonly Action<string>? _trace;
+
+    private SynologyClient(SynologyCredentials creds, bool allowInvalidCertificate, Func<string?>? otpPrompt, Action<string>? trace)
     {
         _creds = creds;
         _otpPrompt = otpPrompt;
+        _trace = trace;
         var handler = new HttpClientHandler { AllowAutoRedirect = true, UseCookies = false };
         if (allowInvalidCertificate)
             handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
@@ -53,27 +56,91 @@ public sealed class SynologyClient : IDisposable
     }
 
     /// <summary>Connects and logs in. <paramref name="otpPrompt"/> is asked for a code when the account has two-factor on and no device token yet.</summary>
-    public static async Task<SynologyClient> ConnectAsync(SynologyCredentials creds, bool allowInvalidCertificate, Func<string?>? otpPrompt, CancellationToken ct)
+    public static async Task<SynologyClient> ConnectAsync(SynologyCredentials creds, bool allowInvalidCertificate, Func<string?>? otpPrompt,
+        CancellationToken ct, Action<string>? trace = null)
     {
-        var c = new SynologyClient(creds, allowInvalidCertificate, otpPrompt);
-        await c.ResolveBaseAsync(ct);
-        await c.QueryApiInfoAsync(ct);
-        await c.LoginAsync(ct);
-        return c;
+        var c = new SynologyClient(creds, allowInvalidCertificate, otpPrompt, trace);
+        try
+        {
+            await c.ResolveBaseAsync(ct);
+            await c.QueryApiInfoAsync(ct);
+            await c.LoginAsync(ct);
+            return c;
+        }
+        catch
+        {
+            c.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Canonical form for a server as typed by a person: a QuickConnect ID becomes https://id.quickconnect.to, anything else scheme://host:port.</summary>
+    public static string NormalizeServer(string input)
+    {
+        if (QuickConnect.IdFrom(input) is { } id) return $"https://{id.ToLowerInvariant()}.quickconnect.to";
+        var s = input.Trim().TrimEnd('/');
+        if (!s.Contains("://")) s = "https://" + s;
+        return new Uri(s).GetLeftPart(UriPartial.Authority);
     }
 
     private async Task ResolveBaseAsync(CancellationToken ct)
     {
-        var start = _creds.Server.TrimEnd('/');
-        if (!start.Contains("://")) start = "https://" + start;
-        // QuickConnect (xxx.quickconnect.to) answers with a redirect to a relay or the LAN address; keep whatever
-        // it lands on so that every later request goes straight there.
-        using var res = await _http.GetAsync(start + "/", HttpCompletionOption.ResponseHeadersRead, ct);
-        var final = res.RequestMessage?.RequestUri ?? new Uri(start);
-        _base = final.GetLeftPart(UriPartial.Authority);
+        // The last address that worked is tried first; at home that is often the LAN, elsewhere a DDNS name or the relay.
+        if (_creds.ResolvedBase is { Length: > 0 } known && await ProbeAsync(known, ct))
+        {
+            _base = known;
+            return;
+        }
+        if (QuickConnect.IdFrom(_creds.Server) is { } id)
+        {
+            _base = await QuickConnect.ResolveAsync(_http, id, ProbeAsync, _trace, ct);
+            _trace?.Invoke($"QuickConnect '{id}' answered at {_base}");
+        }
+        else
+        {
+            var start = NormalizeServer(_creds.Server);
+            if (!await ProbeAsync(start, ct))
+            {
+                // Say why: a web page instead of the API usually means the wrong port or a web server in front.
+                string? kind = null;
+                try
+                {
+                    using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    probeCts.CancelAfter(TimeSpan.FromSeconds(10));
+                    using var res = await _http.GetAsync(start + "/webapi/query.cgi?api=SYNO.API.Info&version=1&method=query", probeCts.Token);
+                    kind = $"HTTP {(int)res.StatusCode}, {res.Content.Headers.ContentType?.MediaType ?? "no content type"}";
+                }
+                catch (HttpRequestException) { throw; }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException($"{start} did not answer."); }
+                throw new InvalidOperationException(
+                    $"{start} answered ({kind}) but not as the DSM API. Use the DSM address with its HTTPS port " +
+                    "(usually https://your-nas:5001) or just the QuickConnect ID.");
+            }
+            _base = start;
+        }
         _creds.ResolvedBase = _base;
     }
 
+    /// <summary>True when the DSM API answers with JSON at <paramref name="baseUrl"/> within a few seconds.</summary>
+    private async Task<bool> ProbeAsync(string baseUrl, CancellationToken ct)
+    {
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(6));
+            using var res = await _http.GetAsync(baseUrl + "/webapi/query.cgi?api=SYNO.API.Info&version=1&method=query&query=SYNO.API.Auth", cts.Token);
+            if (!res.IsSuccessStatusCode) return false;
+            var text = (await res.Content.ReadAsStringAsync(cts.Token)).TrimStart();
+            return text.StartsWith('{') && text.Contains("\"success\":true");
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return false; }
+        catch (HttpRequestException ex) when (ex.InnerException is System.Security.Authentication.AuthenticationException)
+        {
+            _trace?.Invoke($"{baseUrl}: certificate not trusted");
+            return false;
+        }
+        catch (HttpRequestException) { return false; }
+    }
     private async Task QueryApiInfoAsync(CancellationToken ct)
     {
         var doc = await CallAsync("query.cgi", new Dictionary<string, string>
@@ -216,7 +283,7 @@ public sealed class SynologyClient : IDisposable
         content.Add(fileContent, "file", name); // must be the last part
         using var res = await _http.PostAsync(url, content, ct);
         res.EnsureSuccessStatusCode();
-        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+        using var doc = ParseApi(await res.Content.ReadAsStringAsync(ct), "upload");
         ThrowIfError("upload", doc);
     }
 
@@ -265,7 +332,7 @@ public sealed class SynologyClient : IDisposable
         if (withSid) form["_sid"] = _sid;
         using var res = await _http.PostAsync($"{_base}/webapi/{cgi}", new FormUrlEncodedContent(form), ct);
         res.EnsureSuccessStatusCode();
-        var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+        var doc = ParseApi(await res.Content.ReadAsStringAsync(ct), cgi);
         try
         {
             ThrowIfError(form["api"], doc);
@@ -277,6 +344,16 @@ public sealed class SynologyClient : IDisposable
             return await CallAsync(cgi, form, ct, withSid, retry: false);
         }
         return doc;
+    }
+
+    /// <summary>DSM answers JSON; a web page here means a proxy, portal or login page stood in between.</summary>
+    private JsonDocument ParseApi(string text, string what)
+    {
+        var t = text.TrimStart();
+        if (!t.StartsWith('{'))
+            throw new InvalidOperationException(
+                $"{_base} answered {what} with a web page instead of the DSM API. Use the DSM address with its HTTPS port (usually :5001) or the QuickConnect ID.");
+        return JsonDocument.Parse(t);
     }
 
     private static void ThrowIfError(string api, JsonDocument doc)

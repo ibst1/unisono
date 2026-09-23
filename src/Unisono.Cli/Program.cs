@@ -70,7 +70,7 @@ try
             Console.Write($"DSM password for {creds.User}@{server}: ");
             creds.Password = ReadSecret();
             if (creds.Password.Length == 0) { Console.Error.WriteLine("error: no password given"); return 1; }
-            using var nas = await SynologyClient.ConnectAsync(creds, allowInvalid, PromptOtp, ct);
+            using var nas = await SynologyClient.ConnectAsync(creds, allowInvalid, PromptOtp, ct, m => log.Info(m));
             creds.Save();
             Console.WriteLine($"Signed in to {nas.BaseUrl} as {creds.User}{(creds.DeviceId != null ? " (device token stored; no more 2FA prompts)" : "")}");
             var shares = await nas.ListAsync("/", ct);
@@ -278,11 +278,7 @@ static string SafeName(string name)
     return new string(chars).TrimEnd(' ', '.');
 }
 
-static string NormalizeServer(string s)
-{
-    s = s.Trim().TrimEnd('/');
-    return s.Contains("://") ? s : "https://" + s;
-}
+static string NormalizeServer(string s) => SynologyClient.NormalizeServer(s);
 
 static string? PromptOtp()
 {

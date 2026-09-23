@@ -3,7 +3,7 @@ namespace Unisono.App;
 /// <summary>Test-logs in to DSM (asking for a two-factor code when needed) and stores the login DPAPI-encrypted.</summary>
 sealed class NasLoginForm : Form
 {
-    private readonly TextBox _server = new() { Width = 320, PlaceholderText = "https://nas.example.com:5001" };
+    private readonly TextBox _server = new() { Width = 320, PlaceholderText = "QuickConnect ID, or https://nas.example.com:5001" };
     private readonly TextBox _user = new() { Width = 180 };
     private readonly TextBox _password = new() { Width = 180, UseSystemPasswordChar = true };
     private readonly CheckBox _insecure = new() { Text = "Accept a self-signed certificate", AutoSize = true };
@@ -32,7 +32,7 @@ sealed class NasLoginForm : Form
             _user.Text = existing.User;
             _insecure.Checked = existing.AllowInvalidCertificate;
         }
-        _hint.Text = "DSM address with its HTTPS port (usually 5001), or https://<id>.quickconnect.to. " +
+        _hint.Text = "Your QuickConnect ID (as in DSM, Control Panel > External Access), or the DSM address with its HTTPS port (usually 5001). " +
                      "The password is stored encrypted for your Windows user only. With two-factor on you are asked for a code once.";
 
         _ok = new Button { Text = "Log in", AutoSize = true };
@@ -53,34 +53,35 @@ sealed class NasLoginForm : Form
 
     private async Task LoginAsync()
     {
-        var server = _server.Text.Trim().TrimEnd('/');
-        if (server.Length == 0 || _user.Text.Trim().Length == 0 || _password.Text.Length == 0)
+        if (_server.Text.Trim().Length == 0 || _user.Text.Trim().Length == 0 || _password.Text.Length == 0)
         {
             Ui.Error(this, "Fill in server, user and password.");
             return;
         }
-        if (!server.Contains("://")) server = "https://" + server;
-        if (!Uri.TryCreate(server, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+        string server;
+        try { server = SynologyClient.NormalizeServer(_server.Text); }
+        catch (UriFormatException) { Ui.Error(this, "That is not a server address or QuickConnect ID."); return; }
+        if (!server.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
         {
-            Ui.Error(this, "The server must be an https:// address.");
+            Ui.Error(this, "Use an https:// address; the password must not travel unencrypted.");
             return;
         }
 
         var creds = new SynologyCredentials
         {
-            Server = uri.GetLeftPart(UriPartial.Authority),
+            Server = server,
             User = _user.Text.Trim(),
             Password = _password.Text,
             AllowInvalidCertificate = _insecure.Checked,
         };
         _ok.Enabled = false;
         UseWaitCursor = true;
-        _hint.Text = "Logging in...";
+        _hint.Text = QuickConnect.IdFrom(server) != null ? "Looking up the NAS via QuickConnect..." : "Logging in...";
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
             using var nas = await SynologyClient.ConnectAsync(creds, creds.AllowInvalidCertificate,
-                () => Ui.Prompt(this, "Two-factor code", "Enter the code from your authenticator app:"), cts.Token);
+                () => Ui.Prompt(this, "Two-factor code", "Enter the code from your authenticator app:"), cts.Token, _log.Info);
             var shares = await nas.ListAsync("/", cts.Token);
             await nas.LogoutAsync(cts.Token);
             creds.Save();

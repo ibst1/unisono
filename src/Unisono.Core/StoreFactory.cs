@@ -42,7 +42,7 @@ public sealed class StoreFactory : IAsyncDisposable
             throw new InvalidOperationException($"the stored login for {pair.Server} is for '{creds.User}', the pair wants '{pair.User}'");
         try
         {
-            client = await SynologyClient.ConnectAsync(creds, creds.AllowInvalidCertificate || pair.AllowInvalidCertificate, otpPrompt: null, ct);
+            client = await SynologyClient.ConnectAsync(creds, creds.AllowInvalidCertificate || pair.AllowInvalidCertificate, otpPrompt: null, ct, _log.Debug);
         }
         catch (SynologyApiException ex) when (ex.Code is 403 or 404 or 406)
         {
@@ -52,6 +52,12 @@ public sealed class StoreFactory : IAsyncDisposable
         _log.Debug($"NAS session on {client.BaseUrl} as {creds.User}");
         _nas[pair.Server] = client;
         return client;
+    }
+
+    /// <summary>Drop a NAS session after a failure, so the next attempt resolves the address again (e.g. after moving from home to work).</summary>
+    public void Forget(SyncPair pair)
+    {
+        if (pair.Server != null && _nas.Remove(pair.Server, out var c)) c.Dispose();
     }
 
     public async ValueTask DisposeAsync()

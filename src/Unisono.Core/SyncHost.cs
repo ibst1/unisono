@@ -136,6 +136,7 @@ public sealed class SyncHost : IAsyncDisposable
                         catch (Exception ex)
                         {
                             ok = false;
+                            if (ps.Pair.Kind == RemoteKind.Synology) { engines[i] = null; stores.Forget(ps.Pair); }
                             ps.LastError = ex.Message;
                             Update(ps, "failed");
                             _log.Error($"[{ps.Pair.Name}] {ex.Message}");
