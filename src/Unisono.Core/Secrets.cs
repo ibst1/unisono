@@ -17,7 +17,10 @@ public sealed class SynologyCredentials
     public string? DeviceId { get; set; }
     /// <summary>Where the server actually answered (QuickConnect resolves to a relay or the LAN address).</summary>
     public string? ResolvedBase { get; set; }
-    /// <summary>Accept a self-signed DSM certificate for this server.</summary>
+    /// <summary>SHA-256 fingerprints of certificates the user reviewed and chose to trust for this NAS
+    /// (DSM's self-signed one, or an expired QuickConnect one). Only these are accepted besides properly valid ones.</summary>
+    public List<string> PinnedCertificates { get; set; } = new();
+    /// <summary>Accept any certificate for this server (CLI --insecure). Pinning is the better choice.</summary>
     public bool AllowInvalidCertificate { get; set; }
 
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("Unisono.Synology.v1");

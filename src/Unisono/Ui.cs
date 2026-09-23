@@ -89,7 +89,7 @@ static class Ui
     public static string Explain(Exception ex) => ex switch
     {
         HttpRequestException { InnerException: System.Security.Authentication.AuthenticationException } =>
-            "The server's certificate is not trusted. If the NAS uses a self-signed certificate, tick 'Accept a self-signed certificate'.",
+            "The server's certificate is not trusted, and nothing else answered.",
         HttpRequestException h => $"Could not reach the server: {h.Message}",
         TaskCanceledException => "The server did not answer in time.",
         _ => ex.Message,

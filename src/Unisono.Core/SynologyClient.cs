@@ -42,6 +42,7 @@ public sealed class SynologyClient : IDisposable
     public string BaseUrl => _base;
 
     private readonly Action<string>? _trace;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CertificateInfo> _rejected = new();
 
     private SynologyClient(SynologyCredentials creds, bool allowInvalidCertificate, Func<string?>? otpPrompt, Action<string>? trace)
     {
@@ -49,8 +50,16 @@ public sealed class SynologyClient : IDisposable
         _otpPrompt = otpPrompt;
         _trace = trace;
         var handler = new HttpClientHandler { AllowAutoRedirect = true, UseCookies = false };
-        if (allowInvalidCertificate)
-            handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+        handler.ServerCertificateCustomValidationCallback = (req, cert, chain, errors) =>
+        {
+            if (errors == System.Net.Security.SslPolicyErrors.None || allowInvalidCertificate) return true;
+            if (cert == null) return false;
+            var sha = cert.GetCertHashString(System.Security.Cryptography.HashAlgorithmName.SHA256);
+            if (_creds.PinnedCertificates.Contains(sha, StringComparer.OrdinalIgnoreCase)) return true;
+            var address = req.RequestUri?.GetLeftPart(UriPartial.Authority) ?? "?";
+            _rejected[address] = CertificateInfo.From(address, cert, chain, errors);
+            return false;
+        };
         _http = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(30) };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("Unisono");
     }
@@ -62,7 +71,15 @@ public sealed class SynologyClient : IDisposable
         var c = new SynologyClient(creds, allowInvalidCertificate, otpPrompt, trace);
         try
         {
-            await c.ResolveBaseAsync(ct);
+            try
+            {
+                await c.ResolveBaseAsync(ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && !c._rejected.IsEmpty)
+            {
+                // Something answered but was turned away over its certificate: let the user decide about exactly that one.
+                throw new UntrustedCertificateException(c._rejected.Values.ToList(), ex);
+            }
             await c.QueryApiInfoAsync(ct);
             await c.LoginAsync(ct);
             return c;

@@ -6,10 +6,11 @@ sealed class NasLoginForm : Form
     private readonly TextBox _server = new() { Width = 320, PlaceholderText = "QuickConnect ID, or https://nas.example.com:5001" };
     private readonly TextBox _user = new() { Width = 180 };
     private readonly TextBox _password = new() { Width = 180, UseSystemPasswordChar = true };
-    private readonly CheckBox _insecure = new() { Text = "Accept a self-signed certificate", AutoSize = true };
     private readonly Label _hint = new() { AutoSize = true, MaximumSize = new Size(420, 0), ForeColor = SystemColors.GrayText };
     private readonly Button _ok;
     private readonly Log _log;
+    private List<string> _pins = new();
+    private bool _allowAny;
 
     public SynologyCredentials? Result { get; private set; }
 
@@ -30,7 +31,8 @@ sealed class NasLoginForm : Form
         {
             _server.Text = existing.Server;
             _user.Text = existing.User;
-            _insecure.Checked = existing.AllowInvalidCertificate;
+            _pins = existing.PinnedCertificates.ToList();
+            _allowAny = existing.AllowInvalidCertificate;
         }
         _hint.Text = "Your QuickConnect ID (as in DSM, Control Panel > External Access), or the DSM address with its HTTPS port (usually 5001). " +
                      "The password is stored encrypted for your Windows user only. With two-factor on you are asked for a code once.";
@@ -43,7 +45,6 @@ sealed class NasLoginForm : Form
         grid.Controls.Add(Ui.Label("Server"), 0, 0); grid.Controls.Add(_server, 1, 0);
         grid.Controls.Add(Ui.Label("User"), 0, 1); grid.Controls.Add(_user, 1, 1);
         grid.Controls.Add(Ui.Label("Password"), 0, 2); grid.Controls.Add(_password, 1, 2);
-        grid.Controls.Add(_insecure, 1, 3);
         grid.Controls.Add(_hint, 0, 4); grid.SetColumnSpan(_hint, 2);
         grid.Controls.Add(Ui.Row(_ok, cancel), 1, 5);
         Controls.Add(grid);
@@ -72,20 +73,55 @@ sealed class NasLoginForm : Form
             Server = server,
             User = _user.Text.Trim(),
             Password = _password.Text,
-            AllowInvalidCertificate = _insecure.Checked,
+            AllowInvalidCertificate = _allowAny,
+            PinnedCertificates = _pins.ToList(),
         };
         _ok.Enabled = false;
         UseWaitCursor = true;
         _hint.Text = QuickConnect.IdFrom(server) != null ? "Looking up the NAS via QuickConnect..." : "Logging in...";
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
-            using var nas = await SynologyClient.ConnectAsync(creds, creds.AllowInvalidCertificate,
-                () => Ui.Prompt(this, "Two-factor code", "Enter the code from your authenticator app:"), cts.Token, _log.Info);
-            var shares = await nas.ListAsync("/", cts.Token);
-            await nas.LogoutAsync(cts.Token);
-            creds.Save();
-            _log.Info($"NAS login stored for {creds.User} @ {creds.Server} (answered at {nas.BaseUrl}); shared folders: {string.Join(", ", shares.Select(s => s.Path))}");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            SynologyClient nas;
+            while (true)
+            {
+                try
+                {
+                    nas = await SynologyClient.ConnectAsync(creds, creds.AllowInvalidCertificate,
+                        () => Ui.Prompt(this, "Two-factor code", "Enter the code from your authenticator app:"), cts.Token, _log.Info);
+                    break;
+                }
+                catch (UntrustedCertificateException ex)
+                {
+                    var certs = ex.Distinct.Where(c => !creds.PinnedCertificates.Contains(c.Sha256, StringComparer.OrdinalIgnoreCase)).ToList();
+                    if (certs.Count == 0) throw;
+                    var text =
+                        "The NAS answered, but with a certificate Windows does not trust:\n\n" +
+                        string.Join("\n\n", certs.Select(c => c.Describe())) +
+                        "\n\nThis is expected for DSM's own self-signed certificate, and happens when DSM failed to renew its " +
+                        "QuickConnect certificate (renew it in DSM: Control Panel > Security > Certificate).\n\n" +
+                        "Trust exactly these certificates for this NAS? Unisono will accept them and no other untrusted ones.";
+                    UseWaitCursor = false;
+                    if (MessageBox.Show(this, text, "Unisono: untrusted certificate", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                            MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                    {
+                        _hint.Text = "";
+                        return;
+                    }
+                    UseWaitCursor = true;
+                    creds.PinnedCertificates.AddRange(certs.Select(c => c.Sha256));
+                    _pins = creds.PinnedCertificates.ToList();
+                    _log.Info($"trusting {certs.Count} certificate(s) for {creds.Server}: {string.Join(", ", certs.Select(c => c.Sha256[..16] + "..."))}");
+                    _hint.Text = "Trying again with the trusted certificate...";
+                }
+            }
+            using (nas)
+            {
+                var shares = await nas.ListAsync("/", cts.Token);
+                await nas.LogoutAsync(cts.Token);
+                creds.Save();
+                _log.Info($"NAS login stored for {creds.User} @ {creds.Server} (answered at {nas.BaseUrl}); shared folders: {string.Join(", ", shares.Select(s => s.Path))}");
+            }
             Result = creds;
             DialogResult = DialogResult.OK;
             Close();

@@ -70,7 +70,26 @@ try
             Console.Write($"DSM password for {creds.User}@{server}: ");
             creds.Password = ReadSecret();
             if (creds.Password.Length == 0) { Console.Error.WriteLine("error: no password given"); return 1; }
-            using var nas = await SynologyClient.ConnectAsync(creds, allowInvalid, PromptOtp, ct, m => log.Info(m));
+            SynologyClient nasClient;
+            while (true)
+            {
+                try
+                {
+                    nasClient = await SynologyClient.ConnectAsync(creds, allowInvalid, PromptOtp, ct, m => log.Info(m));
+                    break;
+                }
+                catch (UntrustedCertificateException ex)
+                {
+                    var certs = ex.Distinct.Where(c => !creds.PinnedCertificates.Contains(c.Sha256, StringComparer.OrdinalIgnoreCase)).ToList();
+                    if (certs.Count == 0) throw;
+                    Console.WriteLine("The NAS answered with certificate(s) Windows does not trust:");
+                    foreach (var cert in certs) Console.WriteLine(cert.Describe());
+                    Console.Write("Trust exactly these for this NAS? [y/N] ");
+                    if (!string.Equals(Console.ReadLine()?.Trim(), "y", StringComparison.OrdinalIgnoreCase)) return 1;
+                    creds.PinnedCertificates.AddRange(certs.Select(c => c.Sha256));
+                }
+            }
+            using var nas = nasClient;
             creds.Save();
             Console.WriteLine($"Signed in to {nas.BaseUrl} as {creds.User}{(creds.DeviceId != null ? " (device token stored; no more 2FA prompts)" : "")}");
             var shares = await nas.ListAsync("/", ct);

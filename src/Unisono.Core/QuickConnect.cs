@@ -43,23 +43,40 @@ public static class QuickConnect
         var found = await FirstWorkingAsync(candidates, probe, ct);
         if (found != null) return found;
 
-        // Nothing direct answered (typical from outside without port forwarding): ask for a relay tunnel.
+        // Nothing direct answered (typical away from home without port forwarding): go through Synology's relay.
+        // The relay passes TLS through to the NAS, so the NAS's own certificate is what the client sees.
+        if (Relay(info) is { } relay)
+        {
+            trace?.Invoke($"QuickConnect '{id}': trying relay {relay}");
+            if (await probe(relay, ct)) return relay;
+            candidates.Add(relay);
+        }
         var controlHost = info.TryGetProperty("env", out var env) && env.TryGetProperty("control_host", out var ch) ? ch.GetString() : null;
         if (!string.IsNullOrEmpty(controlHost))
         {
+            // Ask for a (fresh) tunnel; the answer names the relay host and port to use.
             var tunnel = await ServAsync(http, $"https://{controlHost}/Serv.php", "request_tunnel", id, ct);
             var terr = tunnel.TryGetProperty("errno", out var te) ? te.GetInt32() : -1;
-            if (terr == 0)
+            if (terr == 0 && Relay(tunnel) is { } fresh)
             {
-                var relay = $"https://{id}.{controlHost}";
-                trace?.Invoke($"QuickConnect '{id}': trying relay {relay}");
-                if (await probe(relay, ct)) return relay;
+                trace?.Invoke($"QuickConnect '{id}': trying relay {fresh}");
+                if (await probe(fresh, ct)) return fresh;
+                if (!candidates.Contains(fresh)) candidates.Add(fresh);
             }
-            else trace?.Invoke($"QuickConnect '{id}': relay tunnel refused (errno {terr})");
+            else if (terr != 0) trace?.Invoke($"QuickConnect '{id}': relay tunnel refused (errno {terr})");
         }
         throw new InvalidOperationException(
-            $"QuickConnect found the NAS '{id}' but none of its addresses answered ({string.Join(", ", candidates)}), and the relay did not work. " +
+            $"QuickConnect found the NAS '{id}' but none of its addresses answered, not even through the relay ({string.Join(", ", candidates)}). " +
             "Check that QuickConnect is enabled with 'DSM' allowed under Advanced settings, or use a DDNS address with port 5001 forwarded.");
+    }
+
+    /// <summary>The relay endpoint from a get_server_info / request_tunnel answer: https://synr-xx.ID.direct.quickconnect.to:port.</summary>
+    private static string? Relay(JsonElement info)
+    {
+        var service = info.TryGetProperty("service", out var sv) ? sv : default;
+        var host = Str(service, "relay_dn") ?? Str(service, "relay_dualstack");
+        var port = Int(service, "relay_port");
+        return string.IsNullOrEmpty(host) || host == "NULL" || port <= 0 ? null : $"https://{host}:{port}";
     }
 
     private static async Task<JsonElement> ServAsync(HttpClient http, string url, string command, string id, CancellationToken ct)
