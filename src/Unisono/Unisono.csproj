@@ -1,32 +1,29 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- The tray app: accounts, sync pairs, live log, pause, autostart. -->
   <PropertyGroup>
-    <!-- Console exe for now: v0 only proves the API path (auth, list, one-way pull).
-         The tray app and the sync engine come once that works on both machines. -->
-    <OutputType>Exe</OutputType>
+    <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PlatformTarget>x64</PlatformTarget>
-    <RootNamespace>Unisono</RootNamespace>
+    <RootNamespace>Unisono.App</RootNamespace>
     <AssemblyName>Unisono</AssemblyName>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
+    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <!-- build.ps1 sets InformationalVersion to 0.1.N+shorthash itself; stop the SDK appending the full SHA. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- build.ps1 passes -p:BuildTime; shown next to the version. -->
     <AssemblyMetadata Include="BuildTime" Value="$(BuildTime)" Condition="'$(BuildTime)' != ''" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Google.Apis.Drive.v3" Version="1.76.0.4261" />
-    <!-- DPAPI for the NAS password (per Windows user; no admin, no key management). -->
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <ProjectReference Include="..\Unisono.Core\Unisono.Core.csproj" />
   </ItemGroup>
 
 </Project>

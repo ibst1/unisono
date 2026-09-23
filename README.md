@@ -5,9 +5,25 @@ own Drive client cannot be installed (it needs admin for its driver and shell ex
 Unisono talks to the Drive v3 API directly over HTTPS and runs entirely under the user's
 profile: no installer, no driver, no elevation.
 
-Status: v0.1. Two-way sync of files and folders, Google Docs as exports or links,
-cloud-only files as links, a console daemon with a file watcher. A tray app and autostart
-are next.
+Status: v0.2. Tray app (`Unisono.exe`) and command line (`UnisonoCli.exe`) over one
+sync engine. Two-way sync with Google Drive or a Synology NAS, Google Docs as exports or
+links, cloud-only files as links, file watcher, autostart.
+
+## The tray app
+
+Start `%USERPROFILE%\Program\Unisono\Unisono.exe`. The window has three parts:
+
+* **Accounts**: pick the OAuth client JSON and sign in to Google (browser), add or
+  refresh Synology NAS logins (asks for a two-factor code when needed).
+* **Sync pairs**: add, edit and remove pairs with live status. The pair dialog browses
+  Drive and NAS folders, checks the remote folder, refuses overlapping local folders, and
+  asks before a first sync between two non-empty folders or into a OneDrive folder.
+* **Log**: live log (tick *Details* for debug lines), links to the log and settings folders.
+
+Closing the window keeps syncing in the tray; the icon is green (up to date), blue
+(syncing), amber (paused) or red (problems). Conflicts show a notification. *Start with
+Windows* adds an HKCU Run entry that starts it hidden in the tray. Only one Unisono may
+sync at a time; `UnisonoCli sync/run` refuses while the tray app runs.
 
 ## Requirements on the machine that runs it
 
@@ -40,7 +56,7 @@ takes a few minutes) and drop the JSON in `%LOCALAPPDATA%\Unisono\client_secret.
    name "Unisono". Download the JSON.
 6. Save it as `%LOCALAPPDATA%\Unisono\client_secret.json` on each machine.
 
-On first `unisono auth` a browser opens. An *External* unverified app shows "Google hasn't
+On the first sign-in (the *Sign in* button, or `UnisonoCli auth`) a browser opens. An *External* unverified app shows "Google hasn't
 verified this app": click *Advanced* and *Go to Unisono (unsafe)*. That is your own client
 id and your own account, so the warning is expected. The refresh token is then stored in
 `%LOCALAPPDATA%\Unisono\tokens` and sign-in is silent from then on. `auth` prints which
@@ -55,8 +71,8 @@ forwarded, or a QuickConnect address (`https://myid.quickconnect.to`), which Uni
 resolves by following its redirect.
 
 ```
-unisono nas login https://nas.example.com:5001 myuser
-unisono init /home/Sync C:\Users\me\Sync --nas https://nas.example.com:5001 myuser --create
+UnisonoCli nas login https://nas.example.com:5001 myuser
+UnisonoCli init /home/Sync C:\Users\me\Sync --nas https://nas.example.com:5001 myuser --create
 ```
 
 `nas login` asks for the DSM password in its own prompt, tries a login, asks for a
@@ -79,17 +95,17 @@ Remote paths start with the shared folder as DSM shows it, e.g. `/home/Sync` or
 ## Usage
 
 ```
-unisono auth                                  sign in and show account, quota and the changes token
-unisono nas login <server> <user>             store DSM credentials after a test login
-unisono init <Remote/Path> <localDir> [--create] [--nas <server> <user>]
+UnisonoCli auth                                sign in and show account, quota and the changes token
+UnisonoCli nas login <server> <user>             store DSM credentials after a test login
+UnisonoCli init <Remote/Path> <localDir> [--create] [--nas <server> <user>]
                                               add a sync pair (--create makes the remote folder)
-unisono sync [-v]                             one sync cycle for every pair
-unisono run [-v]                              keep syncing: watch local folders, poll Drive
-unisono config                                show config path and pairs
-unisono ls [Drive/Path]                       list a Drive folder
-unisono pull <Drive/Path> <localDir>          one-way mirror Drive -> local, never deletes
-unisono changes <token>                       raw Drive change feed (diagnostic)
-unisono version
+UnisonoCli sync [-v]                             one sync cycle for every pair
+UnisonoCli run [-v]                              keep syncing: watch local folders, poll Drive
+UnisonoCli config                                show config path and pairs
+UnisonoCli ls [Drive/Path]                       list a Drive folder
+UnisonoCli pull <Drive/Path> <localDir>          one-way mirror Drive -> local, never deletes
+UnisonoCli changes <token>                       raw Drive change feed (diagnostic)
+UnisonoCli version
 ```
 
 Settings live in `%LOCALAPPDATA%\Unisono\config.json`, one object per pair:

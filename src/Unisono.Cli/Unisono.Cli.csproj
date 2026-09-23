@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Command line: auth, nas login, init, sync, run, diagnostics. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <RootNamespace>Unisono.Cli</RootNamespace>
+    <AssemblyName>UnisonoCli</AssemblyName>
+    <Version>0.2.0</Version>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="BuildTime" Value="$(BuildTime)" Condition="'$(BuildTime)' != ''" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Unisono.Core\Unisono.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -66,6 +66,28 @@ public sealed class DriveClient
         return new DriveClient(service);
     }
 
+    public static bool HasClientSecret() => System.IO.File.Exists(AppPaths.ClientSecretPath);
+
+    /// <summary>True when a refresh token for the current OAuth client is stored, i.e. connecting will not open a browser.</summary>
+    public static bool HasStoredToken()
+    {
+        if (!HasClientSecret()) return false;
+        try
+        {
+            var dir = Path.Combine(AppPaths.TokenDir, OAuthClientInfo.Read(AppPaths.ClientSecretPath).TokenFolderName);
+            return Directory.Exists(dir) && Directory.EnumerateFiles(dir).Any();
+        }
+        catch { return false; }
+    }
+
+    /// <summary>Forget the stored Google sign-in for the current client.</summary>
+    public static void SignOut()
+    {
+        if (!HasClientSecret()) return;
+        var dir = Path.Combine(AppPaths.TokenDir, OAuthClientInfo.Read(AppPaths.ClientSecretPath).TokenFolderName);
+        if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+    }
+
     public async Task<(string Email, long Usage, long Limit, string StartPageToken)> WhoAmIAsync(CancellationToken ct)
     {
         var about = _service.About.Get();
