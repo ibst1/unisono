@@ -36,6 +36,9 @@ public sealed class SyncPair
 
     public string LocalPath { get; set; } = "";
 
+    /// <summary>Drive only: the Google account's e-mail address. Empty means the default (first) account.</summary>
+    public string? Account { get; set; }
+
     /// <summary>Synology only: DSM address, e.g. "https://nas.example.com:5001" or "https://myid.quickconnect.to".</summary>
     public string? Server { get; set; }
 
@@ -50,6 +53,14 @@ public sealed class SyncPair
 
     /// <summary>Files at or above this size stay cloud-only (a .url link) unless a local copy already exists. 0 disables. Drive only.</summary>
     public int CloudOnlyMinMB { get; set; } = 0;
+
+    /// <summary>
+    /// Selective sync, paths relative to RemotePath. When IncludeFolders has entries only those folders (with everything
+    /// in them) are synced; folders that appear later are ignored. ExcludeFolders are left out; with no includes, every
+    /// other folder is synced, new ones too. Anything out of scope is never touched on either side.
+    /// </summary>
+    public List<string> IncludeFolders { get; set; } = new();
+    public List<string> ExcludeFolders { get; set; } = new();
 
     /// <summary>Subfolders (relative to RemotePath) whose files stay cloud-only. Drive only.</summary>
     public List<string> CloudOnlyFolders { get; set; } = new();
@@ -71,7 +82,7 @@ public sealed class SyncPair
         {
             var readable = Regex.Replace(RemotePath.Trim('/', '\\'), "[^A-Za-z0-9]+", "_").Trim('_');
             if (readable.Length == 0) readable = "MyDrive";
-            var key = $"{Kind}|{Server?.ToLowerInvariant()}|{RemotePath.ToLowerInvariant()}|{LocalPath.ToLowerInvariant()}";
+            var key = $"{Kind}|{Server?.ToLowerInvariant()}|{RemotePath.ToLowerInvariant()}|{LocalPath.ToLowerInvariant()}" + (string.IsNullOrEmpty(Account) ? "" : "|" + Account.ToLowerInvariant());
             var hash = Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(key)))[..8].ToLowerInvariant();
             return $"{readable}-{hash}";
         }

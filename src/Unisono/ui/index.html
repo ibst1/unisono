@@ -1,0 +1,785 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Unisono</title>
+<style>
+:root {
+  --bg: #f6f6f4; --panel: #ffffff; --panel2: #f0f0ed; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dd;
+  --accent: #2f6fbd; --accent-text: #ffffff; --green: #2e8b57; --amber: #c98300; --red: #c83232; --blue: #1e6ec8;
+  --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.06); --radius: 10px;
+  --mono: "Cascadia Mono", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1b1a; --panel: #252524; --panel2: #2e2e2c; --text: #ececea; --muted: #9d9d97; --line: #383836;
+    --accent: #5b9be6; --accent-text: #0e1a2a; --green: #4fbf83; --amber: #e6a632; --red: #ec6a6a; --blue: #6aa8f0;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.3);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; display: flex; flex-direction: column; }
+button, input, select { font: inherit; color: inherit; }
+header { display: flex; align-items: center; gap: 14px; padding: 12px 20px 0; }
+.brand { font-weight: 650; font-size: 17px; letter-spacing: .2px; display: flex; align-items: center; gap: 8px; }
+.brand .dot { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 13px; font-weight: 700; background: var(--muted); }
+.status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.spacer { flex: 1; }
+nav { display: flex; gap: 2px; padding: 10px 20px 0; border-bottom: 1px solid var(--line); }
+nav button { border: 0; background: none; padding: 9px 14px 10px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+nav button:hover { color: var(--text); }
+nav button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+main { flex: 1; overflow: auto; padding: 20px; }
+.tab { display: none; max-width: 1100px; margin: 0 auto; }
+.tab.active { display: block; }
+h2 { font-size: 15px; margin: 0 0 4px; }
+h2 + .sub { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+section { margin-bottom: 28px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 16px; margin-bottom: 10px; }
+.row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.grow { flex: 1; min-width: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 12.5px; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn { border: 1px solid var(--line); background: var(--panel2); border-radius: 7px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+.btn.danger:hover { border-color: var(--red); color: var(--red); }
+.btn.link { background: none; border: 0; color: var(--accent); padding: 4px 6px; }
+.btn:disabled { opacity: .5; cursor: default; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--panel2); color: var(--muted); border: 1px solid var(--line); }
+.chip.ok { color: var(--green); } .chip.warn { color: var(--amber); } .chip.err { color: var(--red); } .chip.busy { color: var(--blue); }
+.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.chip.plain::before { display: none; }
+.bar { height: 5px; border-radius: 3px; background: var(--panel2); overflow: hidden; margin-top: 6px; max-width: 280px; }
+.bar > i { display: block; height: 100%; background: var(--accent); }
+.empty { color: var(--muted); padding: 18px; text-align: center; border: 1px dashed var(--line); border-radius: var(--radius); }
+.note { background: var(--panel2); border-radius: 8px; padding: 10px 12px; font-size: 13px; color: var(--muted); margin: 8px 0; }
+.note.err { color: var(--red); } .note.warn { color: var(--amber); }
+.pair { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 14px; align-items: center; }
+.pair .side .label { font-size: 11.5px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
+.pair .arrow { color: var(--muted); font-size: 18px; }
+.pairfoot { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+a.path { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--muted); cursor: pointer; }
+a.path:hover { color: var(--accent); border-color: var(--accent); }
+/* forms */
+.field { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 6px 14px; align-items: center; margin-bottom: 12px; }
+.field > label:first-child { color: var(--muted); font-size: 13px; }
+.field .help { grid-column: 2; font-size: 12.5px; color: var(--muted); margin-top: -2px; }
+input[type=text], input[type=password], input[type=number], select { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; width: 100%; min-width: 0; }
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+input:disabled { opacity: .55; }
+.inline { display: flex; gap: 8px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: var(--panel); padding: 6px 14px; cursor: pointer; }
+.seg button.on { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+/* switch */
+.switch { position: relative; width: 38px; height: 22px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch span { position: absolute; inset: 0; background: var(--line); border-radius: 22px; transition: .15s; cursor: pointer; }
+.switch span::before { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .15s; }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::before { transform: translateX(16px); }
+.setting { display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.setting:last-child { border-bottom: 0; }
+/* modal */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: none; align-items: flex-start; justify-content: center; padding: 6vh 16px; z-index: 10; overflow: auto; }
+.modal.open { display: flex; }
+.dialog { background: var(--panel); border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,.3); width: min(680px, 100%); padding: 20px 22px; }
+.dialog h3 { margin: 0 0 14px; font-size: 16px; }
+.dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+/* tree */
+.tree { border: 1px solid var(--line); border-radius: 8px; height: 360px; overflow: auto; padding: 6px 0; background: var(--panel); }
+.tree ul { list-style: none; margin: 0; padding-left: 18px; }
+.tree > ul { padding-left: 4px; }
+.tree .node { display: flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; cursor: pointer; }
+.tree .node:hover { background: var(--panel2); }
+.tree .node.sel { background: var(--accent); color: var(--accent-text); }
+.tree .tw { width: 16px; text-align: center; color: var(--muted); flex: none; }
+.tree .node.sel .tw { color: inherit; }
+.tree .node input { margin: 0 4px 0 0; }
+.tree .node.off { color: var(--muted); }
+.tree .tag { font-size: 11.5px; color: var(--amber); margin-left: 8px; white-space: nowrap; }
+/* log */
+.logbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.logbar .seg button { padding: 5px 12px; font-size: 13px; }
+#log { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); font-family: var(--mono); font-size: 12.5px; height: calc(100vh - 200px); overflow: auto; padding: 8px 0; }
+#log div { padding: 1px 12px; white-space: pre-wrap; word-break: break-word; }
+#log div:hover { background: var(--panel2); }
+#log .t { color: var(--muted); }
+#log .warn { color: var(--amber); } #log .error { color: var(--red); } #log .debug { color: var(--muted); }
+#log .pairname { color: var(--accent); }
+.cert { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0; font-size: 13px; }
+.cert .fp { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+.toast { position: fixed; right: 20px; bottom: 20px; background: var(--text); color: var(--bg); padding: 10px 14px; border-radius: 8px; box-shadow: var(--shadow); max-width: 480px; display: none; z-index: 20; }
+.toast.err { background: var(--red); color: #fff; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot" id="brandDot">U</span>Unisono</div>
+  <div class="status"><span id="statusChip" class="chip">starting</span></div>
+  <div class="spacer"></div>
+  <button class="btn" id="btnSync">Sync now</button>
+  <button class="btn" id="btnPause">Pause</button>
+</header>
+<nav id="tabs">
+  <button data-tab="accounts">Accounts</button>
+  <button data-tab="pairs">Sync pairs</button>
+  <button data-tab="settings">Settings</button>
+  <button data-tab="log">Log</button>
+</nav>
+<main>
+  <!-- ============================================================ accounts -->
+  <div class="tab" id="tab-accounts">
+    <section>
+      <h2>Google Drive</h2>
+      <div class="sub">Each account signs in once in your browser; Unisono keeps its own sign-in per account.</div>
+      <div id="oauth"></div>
+      <div id="googleList"></div>
+      <div id="googlePending"></div>
+      <button class="btn primary" id="btnAddGoogle">+ Add Google account</button>
+    </section>
+    <section>
+      <h2>Synology NAS</h2>
+      <div class="sub">DSM logins, stored encrypted for your Windows user. Several users and several NAS are fine.</div>
+      <div id="nasList"></div>
+      <button class="btn primary" id="btnAddNas">+ Add NAS login</button>
+    </section>
+  </div>
+
+  <!-- =============================================================== pairs -->
+  <div class="tab" id="tab-pairs">
+    <section>
+      <div class="row" style="margin-bottom:12px">
+        <div class="grow"><h2>Sync pairs</h2><div class="sub" style="margin:0">A remote folder and a local folder kept identical in both directions.</div></div>
+        <button class="btn primary" id="btnAddPair">+ Add pair</button>
+      </div>
+      <div id="pairList"></div>
+    </section>
+  </div>
+
+  <!-- ============================================================ settings -->
+  <div class="tab" id="tab-settings">
+    <section class="card">
+      <div class="setting"><label class="switch"><input type="checkbox" id="setAutostart"><span></span></label>
+        <div class="grow"><div>Start with Windows</div><div class="small muted">Starts hidden in the tray when you sign in to Windows.</div></div></div>
+      <div class="setting"><label class="switch"><input type="checkbox" id="setPaused"><span></span></label>
+        <div class="grow"><div>Pause syncing</div><div class="small muted">Nothing is transferred until you resume. "Sync now" still runs one round.</div></div></div>
+      <div class="setting"><label class="switch"><input type="checkbox" id="setVerbose"><span></span></label>
+        <div class="grow"><div>Detailed log</div><div class="small muted">Also log index runs, change-feed polls and connection attempts.</div></div></div>
+    </section>
+    <section class="card">
+      <div class="setting"><div class="grow"><div>Settings and state</div><div class="small muted mono" id="dataDir"></div></div>
+        <button class="btn" data-open="data">Open folder</button></div>
+      <div class="setting"><div class="grow"><div>Log files</div><div class="small muted">One file per day.</div></div>
+        <button class="btn" data-open="log">Open folder</button></div>
+      <div class="setting"><div class="grow"><div>Version</div><div class="small muted mono" id="version"></div></div></div>
+    </section>
+  </div>
+
+  <!-- ================================================================= log -->
+  <div class="tab" id="tab-log">
+    <div class="logbar">
+      <div class="seg" id="logFilter">
+        <button data-f="all" class="on">All</button><button data-f="changes">Changes</button>
+        <button data-f="conflicts">Conflicts</button><button data-f="problems">Warnings &amp; errors</button>
+      </div>
+      <input type="text" id="logSearch" placeholder="Filter text..." style="max-width:260px">
+      <label class="check small"><input type="checkbox" id="logFollow" checked> Follow</label>
+      <div class="spacer"></div>
+      <button class="btn" id="logClear">Clear view</button>
+      <button class="btn" data-open="log">Open log folder</button>
+    </div>
+    <div id="log"></div>
+  </div>
+</main>
+
+<!-- ================================================================ dialogs -->
+<div class="modal" id="dlgNas"><div class="dialog">
+  <h3 id="nasTitle">Synology NAS login</h3>
+  <div class="field"><label>Server</label><input type="text" id="nasServer" placeholder="QuickConnect ID, or https://nas.example.com:5001">
+    <div class="help">Your QuickConnect ID (DSM: Control Panel &gt; External Access) or the DSM address with its HTTPS port.</div></div>
+  <div class="field"><label>User</label><input type="text" id="nasUser" autocomplete="off"></div>
+  <div class="field"><label>Password</label><input type="password" id="nasPassword" autocomplete="off">
+    <div class="help" id="nasPwHelp">Stored encrypted for your Windows user only.</div></div>
+  <div class="field" id="nasOtpRow" hidden><label>Two-factor code</label><input type="text" id="nasOtp" inputmode="numeric" autocomplete="one-time-code">
+    <div class="help">From your authenticator app. Asked once; the NAS then remembers this computer.</div></div>
+  <div id="nasCerts"></div>
+  <div id="nasMsg"></div>
+  <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="nasGo">Log in</button></div>
+</div></div>
+
+<div class="modal" id="dlgPair"><div class="dialog">
+  <h3 id="pairTitle">Add sync pair</h3>
+  <div class="field"><label>Remote</label><div class="seg" id="pairKind"><button data-k="Drive">Google Drive</button><button data-k="Synology">Synology NAS</button></div></div>
+  <div class="field"><label id="pairAcctLabel">Account</label><select id="pairAcct"></select></div>
+  <div class="field"><label>Remote folder</label>
+    <div class="inline"><input type="text" id="pairRemote"><button class="btn" id="pairBrowse">Browse...</button></div>
+    <label class="check help" id="pairRootRow" style="margin-top:4px"><input type="checkbox" id="pairRoot"> Whole My Drive (the root folder)</label>
+    <div class="help" id="pairRemoteHelp"></div>
+    <label class="check help"><input type="checkbox" id="pairCreate" checked> Create it if missing</label></div>
+  <div class="field"><label>Folders</label>
+    <div class="inline"><span id="pairScopeText" class="grow">Everything in the remote folder</span><button class="btn" id="pairScopeBtn">Choose folders...</button></div>
+    <div class="help">Sync only some subfolders, e.g. 14 of 15. What is left out is never touched on either side.</div></div>
+  <div class="field"><label>Local folder</label>
+    <div class="inline"><input type="text" id="pairLocal"><button class="btn" id="pairPickLocal">Browse...</button></div>
+    <div class="help">May lie inside another pair's folder (e.g. a Drive folder inside a NAS folder); the outer pair then leaves it alone.</div></div>
+  <div class="field"><label id="pairDocsLabel">Google Docs</label>
+    <select id="pairDocs"><option value="Export">Export to docx / xlsx / pptx (read-only copies)</option>
+      <option value="Link">Link that opens the document in the browser</option><option value="Skip">Skip</option></select></div>
+  <div class="field drive-only"><label>Cloud-only files</label>
+    <div class="inline"><input type="number" id="pairMb" min="0" style="width:110px"> <span class="muted small">MB and larger stay online as links (0 = off)</span></div></div>
+  <div class="field drive-only"><label>Cloud-only folders</label><input type="text" id="pairFolders" placeholder="e.g. Archive, Video/Raw"></div>
+  <div class="field"><label>Check remote every</label>
+    <div class="inline"><input type="number" id="pairPoll" min="10" max="3600" style="width:110px"> <span class="muted small">seconds; local changes are picked up at once</span></div></div>
+  <div id="pairMsg"></div>
+  <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="pairSave">Save</button></div>
+</div></div>
+
+<div class="modal" id="dlgBrowse"><div class="dialog">
+  <h3 id="browseTitle">Choose a folder</h3>
+  <div class="tree" id="tree"></div>
+  <div class="row small muted" style="margin-top:8px"><span class="grow ellipsis" id="browseSel">Nothing selected</span></div>
+  <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="browseOk" disabled>Select</button></div>
+</div></div>
+
+<div class="modal" id="dlgScope"><div class="dialog">
+  <h3>Choose folders to sync</h3>
+  <div class="seg" id="scopeMode" style="margin-bottom:8px"><button data-m="exclude">All except unchecked</button><button data-m="include">Only checked</button></div>
+  <div class="small muted" id="scopeHelp" style="margin-bottom:8px"></div>
+  <div class="tree" id="scopeTree"></div>
+  <div class="row small muted" style="margin-top:8px"><span class="grow" id="scopeSummary"></span></div>
+  <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="scopeOk">OK</button></div>
+</div></div>
+
+<div class="modal" id="dlgConfirm"><div class="dialog">
+  <h3 id="confirmTitle">Please confirm</h3>
+  <div id="confirmBody"></div>
+  <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="confirmOk">Continue</button></div>
+</div></div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+// ------------------------------------------------------------------ bridge
+const pending = new Map(); let seq = 0;
+function call(method, params) {
+  return new Promise((resolve, reject) => {
+    const id = String(++seq);
+    pending.set(id, { resolve, reject });
+    window.chrome.webview.postMessage({ id, method, params: params || {} });
+  });
+}
+window.chrome.webview.addEventListener("message", e => {
+  const m = e.data;
+  if (m.event === "state") { S = m.data; render(); return; }
+  if (m.event === "log") { addLog(m.data); return; }
+  const p = pending.get(m.id); if (!p) return; pending.delete(m.id);
+  m.ok ? p.resolve(m.result) : p.reject(new Error(m.error));
+});
+
+// ------------------------------------------------------------------ helpers
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const gb = b => (b / 1073741824).toFixed(1) + " GB";
+let S = null;
+function toast(text, isErr) {
+  const t = $("#toast"); t.textContent = text; t.className = "toast" + (isErr ? " err" : ""); t.style.display = "block";
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = "none", isErr ? 8000 : 3500);
+}
+function openModal(id) { $(id).classList.add("open"); }
+function closeModal(id) { $(id).classList.remove("open"); }
+document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => closeModal("#" + b.closest(".modal").id));
+document.querySelectorAll("[data-open]").forEach(b => b.onclick = () => call("open", { what: b.dataset.open }));
+function busy(btn, on, text) { if (on) { btn.dataset.t = btn.textContent; btn.textContent = text || "Working..."; btn.disabled = true; } else { btn.textContent = btn.dataset.t || btn.textContent; btn.disabled = false; } }
+function confirmBox(title, messages) {
+  return new Promise(resolve => {
+    $("#confirmTitle").textContent = title;
+    $("#confirmBody").innerHTML = messages.map(m => `<p class="note warn" style="color:var(--text)">${esc(m)}</p>`).join("");
+    openModal("#dlgConfirm");
+    $("#confirmOk").onclick = () => { closeModal("#dlgConfirm"); resolve(true); };
+    $("#dlgConfirm [data-close]").onclick = () => { closeModal("#dlgConfirm"); resolve(false); };
+  });
+}
+
+// --------------------------------------------------------------------- tabs
+function showTab(name, persist) {
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.id === "tab-" + name));
+  if (persist) call("tab", { tab: name });
+  if (name === "log") scrollLog();
+}
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab, true));
+
+// ------------------------------------------------------------------- header
+const STATE = {
+  Syncing: ["busy", "Syncing"], Idle: ["ok", "Up to date"], Paused: ["warn", "Paused"], Trouble: ["err", "Problems, retrying"],
+  Starting: ["busy", "Starting"], Stopped: ["", "Not syncing"],
+};
+function renderHeader() {
+  let [cls, text] = STATE[S.host.state] || ["", S.host.state];
+  if (S.host.paused && S.host.state !== "Syncing") [cls, text] = ["warn", "Paused"];
+  if (!S.pairs.length) [cls, text] = ["", "No sync pairs yet"];
+  const chip = $("#statusChip"); chip.className = "chip " + cls; chip.textContent = text;
+  $("#brandDot").style.background = { ok: "var(--green)", busy: "var(--blue)", warn: "var(--amber)", err: "var(--red)" }[cls] || "var(--muted)";
+  $("#btnPause").textContent = S.host.paused ? "Resume" : "Pause";
+}
+$("#btnSync").onclick = () => { call("sync.now"); toast("Syncing all pairs now"); };
+$("#btnPause").onclick = () => call("sync.pause", { paused: !S.host.paused });
+
+// ----------------------------------------------------------------- accounts
+function renderAccounts() {
+  const o = S.oauthClient;
+  $("#oauth").innerHTML = o
+    ? `<div class="note">OAuth client: project <b>${esc(o.project || "?")}</b>${o.desktop ? "" : " <span class='chip err plain'>not a Desktop app client</span>"}.
+        With an <i>Internal</i> consent screen only accounts of that project's Google Workspace organisation can sign in;
+        for other accounts (e.g. private Gmail) set it to <i>External</i> and publish it.
+        <button class="btn link" id="btnClient">Change...</button></div>`
+    : `<div class="note warn">No OAuth client yet. Create one in Google Cloud Console (see README: one-time setup) and choose its JSON here.
+        <button class="btn link" id="btnClient">Choose OAuth client JSON...</button></div>`;
+  $("#btnClient").onclick = async () => { try { const s = await call("google.setClient"); if (s) { S = s; render(); } } catch (e) { toast(e.message, true); } };
+  $("#btnAddGoogle").disabled = !o;
+
+  $("#googleList").innerHTML = S.google.length ? S.google.map(a => {
+    const used = a.limit > 0 ? Math.min(100, a.usage / a.limit * 100) : 0;
+    return `<div class="card"><div class="row">
+      <div class="grow"><div><b>${esc(a.email || "(checking account...)")}</b> ${a.isDefault ? '<span class="chip plain">default</span>' : ""}
+        ${a.signedIn ? "" : '<span class="chip err">needs sign-in</span>'}</div>
+        ${a.error ? `<div class="small" style="color:var(--red)">${esc(a.error)}</div>` : a.limit ? `<div class="small muted">${gb(a.usage)} of ${gb(a.limit)} used</div><div class="bar"><i style="width:${used}%"></i></div>` : ""}
+      </div>
+      <button class="btn danger" data-rmg="${esc(a.id)}">Remove</button></div></div>`;
+  }).join("") : `<div class="empty">No Google account yet.</div>`;
+  document.querySelectorAll("[data-rmg]").forEach(b => b.onclick = async () => {
+    const a = S.google.find(x => x.id === b.dataset.rmg);
+    const using = S.pairs.filter(p => p.kind === "Drive" && ((p.account || "").toLowerCase() === (a.email || "").toLowerCase() || (!p.account && a.isDefault)));
+    if (!await confirmBox("Remove Google account", [`Remove ${a.email || a.id}? Its sign-in on this computer is deleted; nothing on Google Drive or on this computer is touched.` +
+        (using.length ? ` ${using.length} sync pair(s) use it and will stop until you add it again.` : "")])) return;
+    try { await call("google.remove", { id: a.id }); } catch (e) { toast(e.message, true); }
+  });
+
+  $("#nasList").innerHTML = S.nas.length ? S.nas.map(n => `<div class="card"><div class="row">
+      <div class="grow"><div><b>${esc(n.user)}</b> <span class="muted">@ ${esc(n.server)}</span></div>
+        <div class="small muted">${n.resolved ? "last reached at " + esc(n.resolved) : "not reached yet"}${n.pinned ? ` &middot; ${n.pinned} trusted certificate(s)` : ""}</div></div>
+      <button class="btn" data-renas="${esc(n.server)}|${esc(n.user)}">Log in again</button>
+      <button class="btn danger" data-rmnas="${esc(n.server)}|${esc(n.user)}">Remove</button></div></div>`).join("")
+    : `<div class="empty">No NAS login yet.</div>`;
+  document.querySelectorAll("[data-renas]").forEach(b => b.onclick = () => { const [s, u] = b.dataset.renas.split("|"); nasDialog(s, u); });
+  document.querySelectorAll("[data-rmnas]").forEach(b => b.onclick = async () => {
+    const [server, user] = b.dataset.rmnas.split("|");
+    const using = S.pairs.filter(p => p.kind === "Synology" && p.server === server && p.user === user).length;
+    if (!await confirmBox("Remove NAS login", [`Forget ${user} @ ${server}?` + (using ? ` ${using} sync pair(s) use it and will stop.` : "")])) return;
+    call("nas.remove", { server, user }).catch(e => toast(e.message, true));
+  });
+}
+
+$("#btnAddGoogle").onclick = async () => {
+  $("#btnAddGoogle").hidden = true;
+  $("#googlePending").innerHTML = `<div class="card row"><span class="chip busy">waiting</span>
+    <div class="grow">Finish the sign-in in your browser. Pick the account to add; Unisono asks for access to Google Drive.</div>
+    <button class="btn" id="btnCancelGoogle">Cancel</button></div>`;
+  $("#btnCancelGoogle").onclick = () => call("google.cancel");
+  try {
+    const r = await call("google.add");
+    toast(r.duplicate ? `${r.email} was already added` : `Added ${r.email}`);
+  } catch (e) { toast("Google sign-in did not complete: " + e.message, true); }
+  $("#googlePending").innerHTML = ""; $("#btnAddGoogle").hidden = false;
+};
+
+// NAS login: one request per attempt; the answer may ask for a code or for trust in a certificate.
+let nasTrust = [];
+function nasDialog(server, user) {
+  nasTrust = [];
+  $("#nasTitle").textContent = server ? "Log in again" : "Add NAS login";
+  $("#nasServer").value = server || ""; $("#nasUser").value = user || ""; $("#nasPassword").value = ""; $("#nasOtp").value = "";
+  $("#nasServer").disabled = $("#nasUser").disabled = !!server;
+  $("#nasPwHelp").textContent = server ? "Leave empty to keep the stored password." : "Stored encrypted for your Windows user only.";
+  $("#nasOtpRow").hidden = true; $("#nasCerts").innerHTML = ""; $("#nasMsg").innerHTML = "";
+  $("#nasGo").textContent = "Log in";
+  openModal("#dlgNas"); (server ? $("#nasPassword") : $("#nasServer")).focus();
+}
+$("#btnAddNas").onclick = () => nasDialog();
+$("#nasGo").onclick = async () => {
+  const btn = $("#nasGo");
+  $("#nasMsg").innerHTML = ""; busy(btn, true, "Connecting...");
+  try {
+    const r = await call("nas.login", { server: $("#nasServer").value, user: $("#nasUser").value, password: $("#nasPassword").value,
+                                        otp: $("#nasOtp").value.trim(), trust: nasTrust });
+    busy(btn, false);
+    if (r.status === "ok") { closeModal("#dlgNas"); toast("NAS login stored. Shared folders: " + r.shares.join(", ")); return; }
+    if (r.status === "needOtp") { $("#nasOtpRow").hidden = false; $("#nasOtp").focus(); $("#nasMsg").innerHTML = `<div class="note">This account uses two-factor authentication. Enter the current code and log in again.</div>`; return; }
+    if (r.status === "untrusted") {
+      $("#nasCerts").innerHTML = `<div class="note warn">The NAS answered, but with a certificate Windows does not trust. This is expected for DSM's own
+        self-signed certificate, and happens when DSM failed to renew its QuickConnect certificate. Compare the fingerprint with DSM
+        (Control Panel &gt; Security &gt; Certificate) if you want to be sure, then trust exactly these.</div>` +
+        r.certs.map(c => `<div class="cert"><div><b>${esc(c.subject)}</b></div><div class="muted">issued by ${esc(c.issuer)}</div>
+          <div>Seen at <span class="mono">${esc(c.address)}</span></div><div style="color:var(--amber)">${esc(c.problem)}</div>
+          <div class="fp">SHA-256 ${esc(c.fingerprint)}</div></div>`).join("");
+      nasTrust = nasTrust.concat(r.certs.map(c => c.sha256));
+      btn.textContent = "Trust and log in";
+    }
+  } catch (e) { busy(btn, false); $("#nasMsg").innerHTML = `<div class="note err">${esc(e.message)}</div>`; }
+};
+
+// -------------------------------------------------------------------- pairs
+function statusChip(p) {
+  const cls = p.failed || p.status === "failed" || p.status === "errors" ? "err" : p.status === "syncing" ? "busy" : p.status === "in sync" ? "ok" : "";
+  return `<span class="chip ${cls}">${esc(p.status)}</span>`;
+}
+function remoteLabel(p) {
+  if (p.kind === "Synology") {
+    let host = p.server; try { host = new URL(p.server).host; } catch {}
+    return { what: "Synology NAS", who: `${p.user} @ ${host}`, path: p.remotePath };
+  }
+  const def = S.google.find(a => a.isDefault);
+  return { what: "Google Drive", who: p.account || (def && def.email) || "default account", path: p.remotePath ? "My Drive/" + p.remotePath : "My Drive (whole)" };
+}
+function renderPairs() {
+  $("#pairList").innerHTML = S.pairs.length ? S.pairs.map(p => {
+    const r = remoteLabel(p);
+    return `<div class="card">
+      <div class="pair">
+        <div class="side"><div class="label">${esc(r.what)} &middot; ${esc(r.who)}</div><div class="ellipsis" title="${esc(r.path)}"><b>${esc(r.path)}</b></div></div>
+        <div class="arrow">&#8646;</div>
+        <div class="side"><div class="label">This computer</div><div class="ellipsis" title="${esc(p.localPath)}"><a class="path" data-openpair="${esc(p.id)}">${esc(p.localPath)}</a></div></div>
+      </div>
+      <div class="pairfoot">${statusChip(p)}
+        <span class="small muted">${p.lastSync ? "last run " + esc(p.lastSync) : "not run yet"}</span>
+        <span class="small grow ellipsis" style="${p.failed ? "color:var(--red)" : ""}" title="${esc(p.lastResult)}">${esc(p.lastResult)}</span>
+        <button class="btn" data-editpair="${esc(p.id)}">Edit</button>
+        <button class="btn danger" data-rmpair="${esc(p.id)}">Remove</button></div>
+    </div>`;
+  }).join("") : `<div class="empty">No sync pairs yet. Add an account first, then a pair.</div>`;
+  document.querySelectorAll("[data-openpair]").forEach(a => a.onclick = () => call("open", { what: "pair", id: a.dataset.openpair }));
+  document.querySelectorAll("[data-editpair]").forEach(b => b.onclick = () => pairDialog(S.pairs.find(p => p.id === b.dataset.editpair)));
+  document.querySelectorAll("[data-rmpair]").forEach(b => b.onclick = async () => {
+    const p = S.pairs.find(x => x.id === b.dataset.rmpair);
+    if (!await confirmBox("Remove sync pair", [`Stop syncing ${remoteLabel(p).path} with ${p.localPath}? No files are deleted on either side.`])) return;
+    call("pair.remove", { id: p.id }).catch(e => toast(e.message, true));
+  });
+}
+
+let editing = null, pairKind = "Drive";
+function setKind(k) {
+  pairKind = k;
+  document.querySelectorAll("#pairKind button").forEach(b => b.classList.toggle("on", b.dataset.k === k));
+  const nas = k === "Synology";
+  $("#pairAcctLabel").textContent = nas ? "NAS login" : "Google account";
+  $("#pairAcct").innerHTML = nas
+    ? (S.nas.length ? S.nas.map(n => `<option value="${esc(n.server)}|${esc(n.user)}">${esc(n.user)} @ ${esc(n.server)}</option>`).join("") : `<option value="">(add a NAS login under Accounts first)</option>`)
+    : (S.google.length ? S.google.map(a => `<option value="${esc(a.email || "")}">${esc(a.email || a.id)}${a.isDefault ? " (default)" : ""}</option>`).join("") : `<option value="">(add a Google account under Accounts first)</option>`);
+  $("#pairDocsLabel").textContent = nas ? "Synology Office" : "Google Docs";
+  document.querySelectorAll("#dlgPair .drive-only").forEach(e => e.hidden = nas);
+  $("#pairRootRow").hidden = nas;
+  $("#pairRemoteHelp").textContent = nas
+    ? "A shared folder (e.g. /home) or a folder inside one. Turn on the Recycle Bin for that shared folder in DSM so deletions can be undone."
+    : "A folder under My Drive, e.g. Projects/2026. Deletions go to the Drive trash.";
+  if (!editing) $("#pairPoll").value = nas ? 60 : 30;
+  syncRootBox();
+}
+function syncRootBox() {
+  const root = pairKind === "Drive" && $("#pairRoot").checked;
+  $("#pairRemote").disabled = root; if (root) $("#pairRemote").value = "";
+  $("#pairRemote").placeholder = pairKind === "Drive" ? "Projects/2026" : "/home/Sync";
+}
+$("#pairRoot").onchange = syncRootBox;
+document.querySelectorAll("#pairKind button").forEach(b => b.onclick = () => { if (!editing) setKind(b.dataset.k); });
+
+function pairDialog(p) {
+  editing = p || null;
+  $("#pairTitle").textContent = p ? "Edit sync pair" : "Add sync pair";
+  $("#pairMsg").innerHTML = "";
+  setKind(p ? p.kind : (S.google.length || !S.nas.length ? "Drive" : "Synology"));
+  document.querySelectorAll("#pairKind button").forEach(b => b.disabled = !!p && b.dataset.k !== p.kind);
+  if (p) {
+    if (p.kind === "Synology") $("#pairAcct").value = `${p.server}|${p.user}`;
+    else { const def = S.google.find(a => a.isDefault); $("#pairAcct").value = p.account || (def && def.email) || ""; }
+  }
+  $("#pairRoot").checked = !!p && p.kind === "Drive" && !p.remotePath;
+  $("#pairRemote").value = p ? p.remotePath : "";
+  $("#pairLocal").value = p ? p.localPath : "";
+  $("#pairCreate").checked = !p;
+  $("#pairDocs").value = p ? p.docs : "Export";
+  $("#pairMb").value = p ? p.cloudOnlyMinMB : 0;
+  $("#pairFolders").value = p ? p.cloudOnlyFolders.join(", ") : "";
+  $("#pairPoll").value = p ? p.pollSeconds : (pairKind === "Synology" ? 60 : 30);
+  scope = { include: p ? [...p.includeFolders] : [], exclude: p ? [...p.excludeFolders] : [] };
+  renderScopeText();
+  syncRootBox();
+  openModal("#dlgPair");
+}
+$("#btnAddPair").onclick = () => pairDialog();
+$("#pairPickLocal").onclick = async () => { const r = await call("pickLocal", { current: $("#pairLocal").value }); if (r) $("#pairLocal").value = r; };
+$("#pairBrowse").onclick = () => browseDialog();
+
+// ------------------------------------------------------- selective sync
+// scope.include / scope.exclude are paths relative to the pair's remote folder. The picker keeps explicit
+// overrides per path; a folder inherits its parent's state. "All except unchecked" starts with everything on,
+// "Only checked" with everything off. Inside an explicitly unchecked folder nothing can be re-checked.
+let scope = { include: [], exclude: [] }, scopeBase = null;
+function currentRemote() { return pairKind === "Drive" && $("#pairRoot").checked ? "" : $("#pairRemote").value.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").replace(/^/, pairKind === "Synology" ? "/" : ""); }
+function renderScopeText() {
+  const t = !scope.include.length && !scope.exclude.length ? "Everything in the remote folder"
+    : scope.include.length ? `Only ${scope.include.length} folder(s)` + (scope.exclude.length ? `, minus ${scope.exclude.length}` : "") + "; new folders are ignored"
+    : `Everything except ${scope.exclude.length} folder(s); new folders are synced`;
+  $("#pairScopeText").textContent = t;
+}
+function resetScope(why) {
+  if ((scope.include.length || scope.exclude.length) && why) toast("Folder selection reset: " + why);
+  scope = { include: [], exclude: [] }; renderScopeText();
+}
+$("#pairRemote").addEventListener("input", () => resetScope("the remote folder changed"));
+$("#pairRoot").addEventListener("change", () => resetScope("the remote folder changed"));
+
+$("#pairScopeBtn").onclick = () => {
+  const acct = $("#pairAcct").value; if (!acct) { toast("Choose an account first", true); return; }
+  const nas = pairKind === "Synology";
+  const base = currentRemote();
+  if (!nas && !$("#pairRoot").checked && !base) { toast("Choose the remote folder first", true); return; }
+  if (nas && base.replace(/\//g, "") === "") { toast("Choose the remote folder first", true); return; }
+  const [server, user] = nas ? acct.split("|") : [null, null];
+  const req = nas ? { kind: "Synology", server, user } : { kind: "Drive", account: acct };
+  let mode = scope.include.length ? "include" : "exclude";
+  const over = new Map(); scope.include.forEach(r => over.set(r, true)); scope.exclude.forEach(r => over.set(r, false));
+  // Folders another pair already syncs (same account, inside this remote folder) get a marker.
+  const others = S.pairs.filter(p => p.kind === pairKind && (!editing || p.id !== editing.id) &&
+      (nas ? p.server === server && p.user === user : (p.account || (S.google.find(a => a.isDefault) || {}).email) === acct))
+    .map(p => p.remotePath);
+  const relOfPath = path => { const b = base.replace(/\/+$/, ""); return b === "" ? path.replace(/^\/+/, "") : path.slice(b.length + 1); };
+  const parentOf = r => r.includes("/") ? r.slice(0, r.lastIndexOf("/")) : "";
+  const effective = r => { for (let x = r; ; x = parentOf(x)) { if (over.has(x)) return over.get(x); if (x === "") return mode === "exclude"; } };
+  const lockedByAncestor = r => { for (let x = parentOf(r); x !== ""; x = parentOf(x)) if (over.get(x) === false) return true; return false; };
+  const tree = $("#scopeTree"); tree.innerHTML = "<ul></ul>";
+
+  function setMode(m, reset) {
+    mode = m; if (reset) over.clear();
+    document.querySelectorAll("#scopeMode button").forEach(b => b.classList.toggle("on", b.dataset.m === m));
+    $("#scopeHelp").textContent = m === "exclude"
+      ? "Uncheck the folders to leave out. Folders that appear later are synced automatically."
+      : "Check the folders to sync. Folders that appear later are ignored until you check them.";
+    refresh();
+  }
+  function refresh() {
+    tree.querySelectorAll("li[data-rel]").forEach(li => {
+      const r = li.dataset.rel, cb = li.querySelector(":scope > .node input");
+      cb.checked = effective(r); cb.disabled = lockedByAncestor(r);
+      li.querySelector(":scope > .node").classList.toggle("off", !cb.checked);
+    });
+    const inc = [...over].filter(([, v]) => v).length, exc = [...over].filter(([, v]) => !v).length;
+    $("#scopeSummary").textContent = !inc && !exc ? (mode === "exclude" ? "Everything is synced." : "Nothing checked yet.")
+      : `${inc ? inc + " checked" : ""}${inc && exc ? ", " : ""}${exc ? exc + " left out" : ""}`;
+  }
+  function toggle(r) {
+    const v = !effective(r);
+    for (const k of [...over.keys()]) if (k.startsWith(r + "/")) over.delete(k);
+    over.delete(r);
+    if (effective(r) !== v) over.set(r, v); // only store it when it differs from what the parent gives
+    refresh();
+  }
+  function node(name, key, path) {
+    const r = relOfPath(path);
+    const li = document.createElement("li"); li.dataset.rel = r;
+    const other = others.find(o => o === path || (nas ? o : o).toLowerCase() === path.toLowerCase());
+    li.innerHTML = `<div class="node"><span class="tw">&#9656;</span><input type="checkbox"><span class="ellipsis"></span>${other !== undefined ? '<span class="tag">synced by another pair</span>' : ""}</div><ul hidden></ul>`;
+    li.querySelector(".ellipsis").textContent = name;
+    li._key = key; li._path = path; li._loaded = false;
+    li.querySelector("input").onclick = ev => { ev.stopPropagation(); toggle(r); };
+    li.querySelector(".tw").onclick = () => open(li);
+    li.querySelector(".ellipsis").onclick = () => open(li);
+    return li;
+  }
+  async function open(li, force) {
+    const ul = li.querySelector("ul");
+    if (!force && !ul.hidden) { ul.hidden = true; li.querySelector(".tw").innerHTML = "&#9656;"; return; }
+    ul.hidden = false; li.querySelector(".tw").innerHTML = "&#9662;";
+    if (li._loaded) return; li._loaded = true;
+    ul.innerHTML = `<li class="muted small" style="padding:3px 30px">loading...</li>`;
+    try {
+      const items = await call("browse", { ...req, key: li._key, path: li._path });
+      ul.innerHTML = items.length ? "" : `<li class="muted small" style="padding:3px 30px">(no subfolders)</li>`;
+      items.forEach(i => ul.appendChild(node(i.name, i.key, i.path)));
+      refresh();
+    } catch (e) { li._loaded = false; ul.innerHTML = `<li class="small" style="padding:3px 30px;color:var(--red)">${esc(e.message)}</li>`; }
+  }
+  // The root row is the remote folder itself: always synced, only its subfolders are chosen.
+  const root = document.createElement("li");
+  root.innerHTML = `<div class="node"><span class="tw">&#9662;</span><span class="ellipsis"><b></b></span></div><ul></ul>`;
+  root.querySelector("b").textContent = nas ? base : (base ? "My Drive/" + base : "My Drive");
+  root._key = nas ? base : null; root._path = base; root._loaded = false;
+  tree.firstChild.appendChild(root);
+  document.querySelectorAll("#scopeMode button").forEach(b => b.onclick = () => { if (b.dataset.m !== mode) setMode(b.dataset.m, true); });
+  setMode(mode, false);
+  open(root, true);
+  openModal("#dlgScope");
+  $("#scopeOk").onclick = () => {
+    scope = { include: [...over].filter(([, v]) => v).map(([k]) => k), exclude: [...over].filter(([, v]) => !v).map(([k]) => k) };
+    if (mode === "include" && !scope.include.length) { toast("Check at least one folder, or switch to 'All except unchecked'", true); return; }
+    scopeBase = base; renderScopeText(); closeModal("#dlgScope");
+  };
+};
+
+function pairFromForm() {
+  const nas = pairKind === "Synology";
+  const [server, user] = nas ? ($("#pairAcct").value || "|").split("|") : [null, null];
+  return {
+    includeFolders: scope.include, excludeFolders: scope.exclude,
+    kind: pairKind, account: nas ? null : $("#pairAcct").value, server, user,
+    remotePath: nas ? $("#pairRemote").value : ($("#pairRoot").checked ? "" : $("#pairRemote").value),
+    localPath: $("#pairLocal").value, docs: $("#pairDocs").value,
+    cloudOnlyMinMB: parseInt($("#pairMb").value || "0", 10), cloudOnlyFolders: $("#pairFolders").value,
+    pollSeconds: parseInt($("#pairPoll").value || "60", 10),
+  };
+}
+$("#pairSave").onclick = async () => {
+  const btn = $("#pairSave"); $("#pairMsg").innerHTML = "";
+  if (pairKind === "Drive" && !$("#pairRoot").checked && !$("#pairRemote").value.trim()) {
+    $("#pairMsg").innerHTML = `<div class="note err">Choose a remote folder, or tick "Whole My Drive" to sync the root.</div>`; return;
+  }
+  const req = { pair: pairFromForm(), originalId: editing ? editing.id : null, create: $("#pairCreate").checked, confirmed: false };
+  busy(btn, true, "Checking...");
+  try {
+    let r = await call("pair.save", req);
+    if (r.status === "confirm") {
+      busy(btn, false);
+      if (!await confirmBox("Before the first sync", r.messages)) return;
+      busy(btn, true, "Saving...");
+      r = await call("pair.save", { ...req, confirmed: true });
+    }
+    closeModal("#dlgPair"); toast(editing ? "Pair updated" : "Pair added; the first sync starts now");
+  } catch (e) { $("#pairMsg").innerHTML = `<div class="note err">${esc(e.message)}</div>`; }
+  finally { busy(btn, false); }
+};
+
+// ------------------------------------------------------------ folder browser
+let browseSel = null;
+function browseDialog() {
+  const nas = pairKind === "Synology";
+  const acct = $("#pairAcct").value;
+  if (!acct) { toast("Choose an account first", true); return; }
+  const [server, user] = nas ? acct.split("|") : [null, null];
+  const base = nas ? { kind: "Synology", server, user } : { kind: "Drive", account: acct };
+  $("#browseTitle").textContent = nas ? "Choose a NAS folder" : "Choose a Google Drive folder";
+  browseSel = null; $("#browseOk").disabled = true; $("#browseSel").textContent = "Nothing selected";
+  const tree = $("#tree"); tree.innerHTML = "<ul></ul>";
+  const rootLi = makeNode(nas ? "Shared folders" : "My Drive", null, nas ? null : "", !nas);
+  tree.firstChild.appendChild(rootLi);
+  openModal("#dlgBrowse");
+  expand(rootLi);
+
+  function makeNode(name, key, path, selectable) {
+    const li = document.createElement("li");
+    li.innerHTML = `<div class="node"><span class="tw">&#9656;</span><span class="ellipsis"></span></div><ul hidden></ul>`;
+    li.querySelector(".ellipsis").textContent = name;
+    li._key = key; li._path = path; li._loaded = false;
+    const node = li.querySelector(".node");
+    node.querySelector(".tw").onclick = ev => { ev.stopPropagation(); toggle(li); };
+    node.onclick = () => {
+      tree.querySelectorAll(".node.sel").forEach(n => n.classList.remove("sel"));
+      if (!selectable) { browseSel = null; $("#browseOk").disabled = true; $("#browseSel").textContent = "Pick a shared folder or a folder inside one"; toggle(li, true); return; }
+      node.classList.add("sel"); browseSel = path;
+      $("#browseSel").textContent = path === "" ? "My Drive (the whole drive)" : path;
+      $("#browseOk").disabled = false;
+      toggle(li, true);
+    };
+    node.ondblclick = () => { if (selectable) $("#browseOk").click(); };
+    return li;
+  }
+  function toggle(li, open) {
+    const ul = li.querySelector("ul");
+    if (open === true || ul.hidden) expand(li); else { ul.hidden = true; li.querySelector(".tw").innerHTML = "&#9656;"; }
+  }
+  async function expand(li) {
+    const ul = li.querySelector("ul"); ul.hidden = false; li.querySelector(".tw").innerHTML = "&#9662;";
+    if (li._loaded) return; li._loaded = true;
+    ul.innerHTML = `<li class="muted small" style="padding:3px 30px">loading...</li>`;
+    try {
+      const items = await call("browse", { ...base, key: li._key, path: li._path });
+      ul.innerHTML = items.length ? "" : `<li class="muted small" style="padding:3px 30px">(no subfolders)</li>`;
+      items.forEach(i => ul.appendChild(makeNode(i.name, i.key, i.path, true)));
+    } catch (e) { li._loaded = false; ul.innerHTML = `<li class="small" style="padding:3px 30px;color:var(--red)">${esc(e.message)}</li>`; }
+  }
+}
+$("#browseOk").onclick = () => {
+  closeModal("#dlgBrowse");
+  if (browseSel !== currentRemote().replace(/^\//, pairKind === "Synology" ? "/" : "")) resetScope("a different remote folder was chosen");
+  if (pairKind === "Drive" && browseSel === "") { $("#pairRoot").checked = true; syncRootBox(); }
+  else { $("#pairRoot").checked = false; syncRootBox(); $("#pairRemote").value = browseSel; }
+};
+
+// ----------------------------------------------------------------- settings
+function renderSettings() {
+  $("#setAutostart").checked = S.settings.autostart;
+  $("#setVerbose").checked = S.settings.verbose;
+  $("#setPaused").checked = S.host.paused;
+  $("#dataDir").textContent = S.dataDir;
+  $("#version").textContent = "Unisono " + S.version;
+}
+$("#setAutostart").onchange = e => call("settings.set", { autostart: e.target.checked }).catch(x => toast(x.message, true));
+$("#setVerbose").onchange = e => call("settings.set", { verbose: e.target.checked });
+$("#setPaused").onchange = e => call("sync.pause", { paused: e.target.checked });
+
+// ---------------------------------------------------------------------- log
+let logFilter = "all";
+const LINE = /^(\d\d:\d\d:\d\d) (\w+)\s+(.*)$/;
+function classify(level, text) {
+  if (/conflict/i.test(text)) return "conflicts";
+  if (level === "warn" || level === "error") return "problems";
+  if (/^\[.+?\] (downloaded|uploaded|exported|deleted|moved|created|trashed|linked|removed|local pointer)/.test(text)) return "changes";
+  return "other";
+}
+function relOf(text) {
+  const c = text.match(/: '([^']+)' kept as/); if (c) return c[1];
+  const i = text.lastIndexOf(": "); if (i < 0) return null;
+  return text.slice(i + 2).replace(/ \([\d,.\s]+bytes\)$/, "");
+}
+function logRow(entry) {
+  const m = entry.line.match(LINE);
+  const div = document.createElement("div");
+  const time = m ? m[1] : "", text = m ? m[3] : entry.line;
+  div.className = entry.level; div._cat = classify(entry.level, text); div._text = entry.line.toLowerCase();
+  const pm = text.match(/^\[(.+?)\] (.*)$/);
+  div.innerHTML = `<span class="t">${esc(time)}</span> ` + (pm ? `<span class="pairname">[${esc(pm[1])}]</span> ${esc(pm[2])}` : esc(text));
+  if (pm && (div._cat === "changes" || div._cat === "conflicts")) {
+    const rel = relOf(pm[2]);
+    if (rel) { div.style.cursor = "pointer"; div.title = "Show " + rel + " in Explorer"; div.onclick = () => call("open", { what: "item", pair: pm[1], rel }); }
+  }
+  applyFilter(div);
+  return div;
+}
+function applyFilter(div) {
+  const q = $("#logSearch").value.trim().toLowerCase();
+  const catOk = logFilter === "all" || div._cat === logFilter || (logFilter === "changes" && div._cat === "conflicts");
+  div.hidden = !(catOk && (!q || div._text.includes(q)));
+}
+function addLog(entry) {
+  const log = $("#log"); log.appendChild(logRow(entry));
+  while (log.childElementCount > 4000) log.removeChild(log.firstChild);
+  if ($("#logFollow").checked) scrollLog();
+}
+function scrollLog() { const log = $("#log"); log.scrollTop = log.scrollHeight; }
+document.querySelectorAll("#logFilter button").forEach(b => b.onclick = () => {
+  logFilter = b.dataset.f;
+  document.querySelectorAll("#logFilter button").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll("#log div").forEach(applyFilter); scrollLog();
+});
+$("#logSearch").oninput = () => document.querySelectorAll("#log div").forEach(applyFilter);
+$("#logClear").onclick = () => $("#log").innerHTML = "";
+
+// -------------------------------------------------------------------- start
+function render() { if (!S) return; renderHeader(); renderAccounts(); renderPairs(); renderSettings(); }
+document.addEventListener("keydown", e => { if (e.key === "Escape") document.querySelectorAll(".modal.open").forEach(m => m.classList.remove("open")); });
+(async () => {
+  const hello = await call("hello");
+  S = hello.state; render();
+  hello.log.forEach(addLog);
+  showTab(S.settings.tab || "accounts", false);
+})();
+</script>
+</body>
+</html>

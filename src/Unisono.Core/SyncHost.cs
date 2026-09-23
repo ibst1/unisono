@@ -123,7 +123,7 @@ public sealed class SyncHost : IAsyncDisposable
                         try
                         {
                             Update(ps, "syncing");
-                            engines[i] ??= new SyncEngine(await stores.CreateAsync(ps.Pair, ct), ps.Pair, _log);
+                            engines[i] ??= new SyncEngine(await stores.CreateAsync(ps.Pair, ct), ps.Pair, _log, pairs.Select(x => x.Pair).ToList());
                             var stats = await engines[i]!.RunCycleAsync(ct);
                             ps.LastStats = stats;
                             ps.LastSync = DateTime.Now;

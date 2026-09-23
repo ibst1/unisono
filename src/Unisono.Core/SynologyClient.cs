@@ -44,7 +44,7 @@ public sealed class SynologyClient : IDisposable
 {
     private readonly HttpClient _http;
     private readonly SynologyCredentials _creds;
-    private readonly Func<string?>? _otpPrompt;
+    private readonly Func<CancellationToken, Task<string?>>? _otpPrompt;
     private string _base = "";
     private string _authPath = "auth.cgi";
     private int _authVersion = 6;
@@ -57,7 +57,7 @@ public sealed class SynologyClient : IDisposable
     private readonly Action<string>? _trace;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CertificateInfo> _rejected = new();
 
-    private SynologyClient(SynologyCredentials creds, bool allowInvalidCertificate, Func<string?>? otpPrompt, Action<string>? trace)
+    private SynologyClient(SynologyCredentials creds, bool allowInvalidCertificate, Func<CancellationToken, Task<string?>>? otpPrompt, Action<string>? trace)
     {
         _creds = creds;
         _otpPrompt = otpPrompt;
@@ -78,7 +78,7 @@ public sealed class SynologyClient : IDisposable
     }
 
     /// <summary>Connects and logs in. <paramref name="otpPrompt"/> is asked for a code when the account has two-factor on and no device token yet.</summary>
-    public static async Task<SynologyClient> ConnectAsync(SynologyCredentials creds, bool allowInvalidCertificate, Func<string?>? otpPrompt,
+    public static async Task<SynologyClient> ConnectAsync(SynologyCredentials creds, bool allowInvalidCertificate, Func<CancellationToken, Task<string?>>? otpPrompt,
         CancellationToken ct, Action<string>? trace = null)
     {
         var c = new SynologyClient(creds, allowInvalidCertificate, otpPrompt, trace);
@@ -209,7 +209,7 @@ public sealed class SynologyClient : IDisposable
         }
         catch (SynologyApiException ex) when (ex.Code is 403 or 404 && _otpPrompt != null)
         {
-            var code = _otpPrompt();
+            var code = await _otpPrompt(ct);
             if (string.IsNullOrWhiteSpace(code)) throw;
             form["otp_code"] = code.Trim();
             form["enable_device_token"] = "yes";

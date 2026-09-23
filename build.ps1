@@ -41,11 +41,15 @@ foreach ($app in @(@{ Proj = "src\Unisono\Unisono.csproj"; Exe = "Unisono" }, @{
     if (Test-Path $exe) {
         $prev = Join-Path $target "$($app.Exe).prev.exe"
         Remove-Item $prev -Force -ErrorAction SilentlyContinue
+        # An older instance may still run from .prev.exe (locked): park this one under a unique name instead.
+        if (Test-Path $prev) { $prev = Join-Path $target ("{0}.prev-{1:yyyyMMddHHmmss}.exe" -f $app.Exe, (Get-Date)) }
         try { Move-Item $exe $prev -Force } catch { Write-Host "note: could not move the old $($app.Exe).exe aside ($_)" }
     }
     & $dotnet publish (Join-Path $root $app.Proj) -c $Configuration -r $Runtime --self-contained $selfContained `
         -p:PublishSingleFile=true -p:Version=$version -p:InformationalVersion=$info -p:BuildTime="$buildTime" -o $target
     if ($LASTEXITCODE -ne 0) { throw "publish of $($app.Exe) failed" }
     Copy-Item $exe (Join-Path $dist "$($app.Exe).exe") -Force
+    # WebView2Loader.dll (native) is not bundled into a single-file exe; it has to sit next to Unisono.exe.
+    if ($app.Exe -eq "Unisono") { Copy-Item (Join-Path $target "WebView2Loader.dll") $dist -Force }
 }
 Write-Host "Published Unisono.exe and UnisonoCli.exe to $target and $dist"

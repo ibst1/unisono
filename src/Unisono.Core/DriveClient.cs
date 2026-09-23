@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Google.Apis.Auth.OAuth2;
+using Google.Apis.Auth.OAuth2.Flows;
 using Google.Apis.Download;
 using Google.Apis.Drive.v3;
 using Google.Apis.Services;
@@ -24,11 +25,12 @@ public sealed class DriveClient
     private DriveClient(DriveService service) => _service = service;
 
     /// <summary>
-    /// Opens the browser for consent the first time; afterwards the refresh token in <see cref="AppPaths.TokenDir"/>
-    /// is used silently. The consent redirect lands on a loopback HttpListener, which the probe confirmed works
-    /// for a standard user.
+    /// Connects as one Google account (see <see cref="GoogleAccounts"/>). Opens the browser for consent the first time;
+    /// afterwards the account's refresh token is used silently. The consent redirect lands on a loopback HttpListener,
+    /// which works for a standard user. <paramref name="chooseAccount"/> makes Google show its account picker, which
+    /// is what adding a second account needs (otherwise the browser's current Google session is reused silently).
     /// </summary>
-    public static async Task<DriveClient> ConnectAsync(CancellationToken ct, bool quiet = false)
+    public static async Task<DriveClient> ConnectAsync(string accountId, CancellationToken ct, bool quiet = true, bool chooseAccount = false)
     {
         if (!System.IO.File.Exists(AppPaths.ClientSecretPath))
             throw new InvalidOperationException(
@@ -51,12 +53,15 @@ public sealed class DriveClient
 
         // Tokens are issued per client id, so keep them per client: swapping client_secret.json
         // then simply triggers a fresh sign-in instead of invalid_grant on a token from the old client.
-        var credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
-            secrets,
-            new[] { DriveService.Scope.Drive },
-            "user",
-            ct,
-            new FileDataStore(Path.Combine(AppPaths.TokenDir, client.TokenFolderName), fullPath: true));
+        var flow = new GoogleAuthorizationCodeFlow(new GoogleAuthorizationCodeFlow.Initializer
+        {
+            ClientSecrets = secrets,
+            Scopes = new[] { DriveService.Scope.Drive },
+            DataStore = new FileDataStore(TokenDir(client), fullPath: true),
+            Prompt = chooseAccount ? "select_account consent" : null,
+        });
+        var credential = await new Google.Apis.Auth.OAuth2.AuthorizationCodeInstalledApp(flow, new LocalServerCodeReceiver())
+            .AuthorizeAsync(accountId, ct);
 
         var service = new DriveService(new BaseClientService.Initializer
         {
@@ -66,28 +71,36 @@ public sealed class DriveClient
         return new DriveClient(service);
     }
 
+    /// <summary>The default account (the first one added); for callers that do not care which.</summary>
+    public static Task<DriveClient> ConnectAsync(CancellationToken ct, bool quiet = false) =>
+        ConnectAsync(GoogleAccounts.Resolve(null)?.Id ?? GoogleAccounts.LegacyId, ct, quiet);
+
+    private static string TokenDir(OAuthClientInfo client) => Path.Combine(AppPaths.TokenDir, client.TokenFolderName);
+
+    private static string TokenFile(OAuthClientInfo client, string accountId) =>
+        Path.Combine(TokenDir(client), "Google.Apis.Auth.OAuth2.Responses.TokenResponse-" + accountId);
+
     public static bool HasClientSecret() => System.IO.File.Exists(AppPaths.ClientSecretPath);
 
-    /// <summary>True when a refresh token for the current OAuth client is stored, i.e. connecting will not open a browser.</summary>
-    public static bool HasStoredToken()
+    /// <summary>True when a refresh token for this account and the current OAuth client is stored, i.e. connecting will not open a browser.</summary>
+    public static bool HasStoredToken(string? accountId = null)
     {
         if (!HasClientSecret()) return false;
         try
         {
-            var dir = Path.Combine(AppPaths.TokenDir, OAuthClientInfo.Read(AppPaths.ClientSecretPath).TokenFolderName);
-            return Directory.Exists(dir) && Directory.EnumerateFiles(dir).Any();
+            accountId ??= GoogleAccounts.Resolve(null)?.Id;
+            return accountId != null && System.IO.File.Exists(TokenFile(OAuthClientInfo.Read(AppPaths.ClientSecretPath), accountId));
         }
         catch { return false; }
     }
 
-    /// <summary>Forget the stored Google sign-in for the current client.</summary>
-    public static void SignOut()
+    /// <summary>Forget the stored Google sign-in of one account.</summary>
+    public static void SignOut(string accountId)
     {
         if (!HasClientSecret()) return;
-        var dir = Path.Combine(AppPaths.TokenDir, OAuthClientInfo.Read(AppPaths.ClientSecretPath).TokenFolderName);
-        if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        var file = TokenFile(OAuthClientInfo.Read(AppPaths.ClientSecretPath), accountId);
+        if (System.IO.File.Exists(file)) System.IO.File.Delete(file);
     }
-
     public async Task<(string Email, long Usage, long Limit, string StartPageToken)> WhoAmIAsync(CancellationToken ct)
     {
         var about = _service.About.Get();

@@ -9,22 +9,44 @@ Status: v0.2. Tray app (`Unisono.exe`) and command line (`UnisonoCli.exe`) over 
 sync engine. Two-way sync with Google Drive or a Synology NAS, Google Docs as exports or
 links, cloud-only files as links, file watcher, autostart.
 
-## The tray app
+## The app
 
-Start `%USERPROFILE%\Program\Unisono\Unisono.exe`. The window has three parts:
+Start `%USERPROFILE%\Program\Unisono\Unisono.exe`. The window is a WebView2 page with four tabs:
 
-* **Accounts**: pick the OAuth client JSON and sign in to Google (browser), add or
-  refresh Synology NAS logins (asks for a two-factor code when needed).
-* **Sync pairs**: add, edit and remove pairs with live status. The pair dialog browses
-  Drive and NAS folders, checks the remote folder, refuses overlapping local folders, and
-  asks before a first sync between two non-empty folders or into a OneDrive folder.
-* **Log**: live log (tick *Details* for debug lines), links to the log and settings folders.
+* **Accounts**: the OAuth client JSON, any number of Google accounts (each signs in once in
+  the browser, with Google's account picker), and any number of Synology DSM logins (several
+  users, several NAS). A NAS login asks for a two-factor code when needed and shows untrusted
+  certificates with their SHA-256 so exactly those can be trusted.
+* **Sync pairs**: add, edit and remove pairs with live status. A pair is a remote folder (a
+  Google account's My Drive, all of it or a folder, or a NAS folder or whole shared folder)
+  and a local folder. **Choose folders...** limits the pair to some subfolders: either *all
+  except unchecked* (new folders are synced) or *only checked* (new folders are ignored).
+  Folders already synced by another pair are marked in that picker.
+* **Settings**: start with Windows, pause, detailed log, data and log folders.
+* **Log**: live log with filters (changes, conflicts, warnings and errors) and text search;
+  clicking a change shows the file in Explorer.
 
-Closing the window keeps syncing in the tray; the icon is green (up to date), blue
-(syncing), amber (paused) or red (problems). Conflicts show a notification. *Start with
-Windows* adds an HKCU Run entry that starts it hidden in the tray. Only one Unisono may
-sync at a time; `UnisonoCli sync/run` refuses while the tray app runs.
+Closing the window keeps syncing in the tray; the icon is green (up to date), blue (syncing),
+amber (paused) or red (problems). The window remembers its position and size. Only one
+Unisono may sync at a time; `UnisonoCli sync/run` refuses while the app runs. Set
+`UNISONO_DEVTOOLS=1` for the page's developer tools.
 
+### Selective sync and nested pairs
+
+What a pair leaves out is invisible to it and never touched on either side. A folder that is
+only partly synced (it holds an included folder, or an excluded one, somewhere below) is never
+deleted as a whole: deleting it on one side deletes its in-scope content on the other side
+item by item. Example: 15 folders in My Drive, 14 to `D:\Work`, 1 to `%APPDATA%\Tool`: pair
+one is *My Drive, all except* that folder; pair two is that folder alone.
+
+Pairs may nest: a Drive pair's local folder can lie inside a NAS pair's local folder. The outer
+pair then leaves that subfolder alone locally and remotely, so every file belongs to one pair.
+
+### Several accounts
+
+Pairs name their Google account by e-mail address (config `Account`; empty means the first
+account). With an *Internal* OAuth consent screen only accounts of that Google Workspace
+organisation can sign in; other accounts need the screen set to *External* and published.
 ## Requirements on the machine that runs it
 
 * Windows 10/11, no admin needed.
@@ -121,7 +143,9 @@ Settings live in `%LOCALAPPDATA%\Unisono\config.json`, one object per pair:
       "CloudOnlyMinMB": 0,
       "CloudOnlyFolders": ["Archive"],
       "PollSeconds": 30,
-      "FullRescanMinutes": 15
+      "FullRescanMinutes": 15,
+      "Account": "me@example.com",
+      "ExcludeFolders": ["Private"]
     },
     {
       "Kind": "Synology",

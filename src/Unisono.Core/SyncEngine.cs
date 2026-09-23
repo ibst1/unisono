@@ -28,11 +28,43 @@ public sealed class SyncEngine
     private readonly string _root;
     private readonly SyncState _state;
     private readonly HashSet<string> _warnedOnce = new(StringComparer.OrdinalIgnoreCase);
+    private SyncScope _scope = null!;
 
     public SyncPair Pair => _pair;
 
-    public SyncEngine(IRemoteStore store, SyncPair pair, Log log)
+    /// <summary>True when the (filtered) side has in-scope content below a folder other than bridge folders.</summary>
+    private bool HasScopedContent<T>(string rel, Dictionary<string, T> side)
     {
+        var prefix = rel + "/";
+        return side.Keys.Any(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && !_scope.IsBridge(k));
+    }
+
+    private readonly IReadOnlyList<SyncPair> _others;
+
+    /// <summary>
+    /// A bridge folder (only there to reach an included folder) that ends up with nothing in scope below it is removed
+    /// locally, but only when it is physically empty: files outside the scope in it are never touched.
+    /// </summary>
+    private void TidyBridgeFolders(Dictionary<string, LocalItem> local)
+    {
+        foreach (var rel in local.Values.Where(i => i.IsDir && _scope.IsBridge(i.RelPath)).Select(i => i.RelPath)
+                     .OrderByDescending(PathUtil.Depth).ToList())
+        {
+            var path = Local(rel);
+            if (!Directory.Exists(path) || Directory.EnumerateFileSystemEntries(path).Any()) continue;
+            try
+            {
+                Directory.Delete(path);
+                local.Remove(rel);
+                _state.Entries.Remove(rel);
+            }
+            catch { /* in use: try again next cycle */ }
+        }
+    }
+
+    public SyncEngine(IRemoteStore store, SyncPair pair, Log log, IReadOnlyList<SyncPair>? allPairs = null)
+    {
+        _others = allPairs ?? Array.Empty<SyncPair>();
         _store = store;
         _pair = pair;
         _log = log;
@@ -50,12 +82,15 @@ public sealed class SyncEngine
             return stats;
         }
 
-        var remote = await _store.GetTreeAsync(_log, ct);
-        var local = LocalScanner.Scan(_root, _log);
+        // Selective sync: out-of-scope items are simply invisible to the rest of the cycle, so they are never touched.
+        _scope = new SyncScope(_pair, _others);
+        var remote = _scope.Filter(await _store.GetTreeAsync(_log, ct), n => n.IsFolder);
+        var local = _scope.Filter(LocalScanner.Scan(_root, _log), i => i.IsDir);
         try
         {
             await SyncFoldersAsync(remote, local, stats, ct);
             await SyncFilesAsync(remote, local, stats, ct);
+            TidyBridgeFolders(local);
         }
         finally
         {
@@ -88,6 +123,18 @@ public sealed class SyncEngine
             {
                 WarnOnce(rel, $"'{rel}' is a folder remotely but a file locally; leaving both alone");
                 RemoveTree(remote, rel);
+                continue;
+            }
+            if (_scope.IsProtected(rel))
+            {
+                // Holds out-of-scope content remotely: never deleted as a whole. It exists locally only while something
+                // in scope lives in it; its in-scope content is synced (or deleted) item by item.
+                if (HasScopedContent(rel, remote))
+                {
+                    Directory.CreateDirectory(Local(rel));
+                    local[rel] = new LocalItem { RelPath = rel, FullPath = Local(rel), IsDir = true };
+                    UpsertFolderEntry(rel, node.Id);
+                }
                 continue;
             }
             if (s is { Kind: EntryKind.Folder } && !RemoteTreeHasChanges(rel, remote))
@@ -123,6 +170,21 @@ public sealed class SyncEngine
             if (!local.ContainsKey(rel) || remote.ContainsKey(rel)) continue;
             _state.Entries.TryGetValue(rel, out var s);
 
+            if (_scope.IsProtected(rel))
+            {
+                // The mirror image: never recycled locally as a whole (it may hold local-only files out of scope);
+                // created remotely only while something in scope lives in it.
+                if (!HasScopedContent(rel, local)) { _state.Entries.Remove(rel); continue; }
+                if (!TryParent(rel, remote, out var bridgeParent)) continue;
+                await Try(rel, stats, async () =>
+                {
+                    var node = await _store.CreateFolderAsync(rel, bridgeParent, ct);
+                    remote[rel] = node;
+                    UpsertFolderEntry(rel, node.Id);
+                    _log.Info($"[{_pair.Name}] created folder remotely: {rel}");
+                });
+                continue;
+            }
             if (s is { Kind: EntryKind.Folder })
             {
                 if (!LocalTreeHasChanges(rel, local))

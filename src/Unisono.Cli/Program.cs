@@ -60,14 +60,15 @@ try
             var server = NormalizeServer(args[2]);
             if (args[1].Equals("logout", StringComparison.OrdinalIgnoreCase))
             {
-                SynologyCredentials.Delete(server);
+                var who = args.Length > 3 ? args[3] : SynologyCredentials.Load(server, null)?.User ?? "";
+                SynologyCredentials.Delete(server, who);
                 Console.WriteLine($"Forgot credentials for {server}");
                 return 0;
             }
             if (args[1].Equals("api", StringComparison.OrdinalIgnoreCase))
             {
                 // Diagnostic: UnisonoCli nas api <server> <cgi> key=value ... [--out file]   (uses the stored login)
-                var stored = SynologyCredentials.Load(server) ?? throw new InvalidOperationException($"no stored login for {server}");
+                var stored = SynologyCredentials.Load(server, null) ?? throw new InvalidOperationException($"no stored login for {server}");
                 using var diag = await SynologyClient.ConnectAsync(stored, stored.AllowInvalidCertificate, null, ct, m => log.Debug(m));
                 var outIdx = Array.IndexOf(args, "--out");
                 var outFile = outIdx > 0 && outIdx + 1 < args.Length ? args[outIdx + 1] : null;
@@ -91,7 +92,7 @@ try
             {
                 try
                 {
-                    nasClient = await SynologyClient.ConnectAsync(creds, allowInvalid, PromptOtp, ct, m => log.Info(m));
+                    nasClient = await SynologyClient.ConnectAsync(creds, allowInvalid, _ => Task.FromResult(PromptOtp()), ct, m => log.Info(m));
                     break;
                 }
                 catch (UntrustedCertificateException ex)
@@ -193,7 +194,7 @@ try
             }
             else
             {
-                var drive = await stores.DriveAsync(ct);
+                var drive = await stores.DriveAsync(null, ct);
                 if (create) await drive.EnsureFolderAsync(pair.RemotePath, ct);
                 else await drive.ResolveFolderAsync(pair.RemotePath, ct);
             }
@@ -238,7 +239,7 @@ try
                 var failed = 0;
                 foreach (var p in config.Pairs)
                 {
-                    try { var s = await new SyncEngine(await stores.CreateAsync(p, ct), p, log).RunCycleAsync(ct); failed += s.Errors; }
+                    try { var s = await new SyncEngine(await stores.CreateAsync(p, ct), p, log, config.Pairs).RunCycleAsync(ct); failed += s.Errors; }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception ex) { log.Error($"[{p.Name}] cycle failed: {ex.Message}"); failed++; }
                 }
@@ -341,7 +342,7 @@ static void Usage()
 {
     Console.WriteLine("usage:");
     Console.WriteLine("  UnisonoCli auth");
-    Console.WriteLine("  UnisonoCli nas login <server> <user> [--insecure]   |   UnisonoCli nas logout <server>");
+    Console.WriteLine("  UnisonoCli nas login <server> <user> [--insecure]   |   UnisonoCli nas logout <server> [user]");
     Console.WriteLine("  UnisonoCli init <remote/path> <localDir> [--create] [--nas <server> <user>] [--insecure]");
     Console.WriteLine("  UnisonoCli sync [-v]   |   UnisonoCli run [-v]   |   UnisonoCli config   |   UnisonoCli version");
     Console.WriteLine("  UnisonoCli ls [drive/path]   |   UnisonoCli pull <drive/path> <localDir>   |   UnisonoCli changes <token>");

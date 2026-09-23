@@ -15,6 +15,6 @@ static class Program
         }
         AppPaths.EnsureDataDir();
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm(startHidden: args.Contains("--tray", StringComparer.OrdinalIgnoreCase), show));
+        Application.Run(new HostForm(startHidden: args.Contains("--tray", StringComparer.OrdinalIgnoreCase), show));
     }
 }

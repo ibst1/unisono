@@ -25,13 +25,23 @@ public sealed class SynologyCredentials
 
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("Unisono.Synology.v1");
 
-    private static string PathFor(string server) =>
+    private static string Slug(string s) => string.Concat(s.Where(char.IsLetterOrDigit)).ToLowerInvariant();
+
+    /// <summary>One file per server and user, so several DSM accounts (on one NAS or several) can be stored.</summary>
+    private static string PathFor(string server, string user) =>
+        Path.Combine(AppPaths.AuthDir, $"synology-{Slug(new Uri(server).Authority)}-{Slug(user)}.bin");
+
+    /// <summary>Before multi-account support there was one file per server.</summary>
+    private static string LegacyPathFor(string server) =>
         Path.Combine(AppPaths.AuthDir, "synology-" + string.Concat(new Uri(server).Authority.Where(char.IsLetterOrDigit)) + ".bin");
 
-    public static SynologyCredentials? Load(string server)
+    public static SynologyCredentials? Load(string server, string? user)
     {
-        var path = PathFor(server);
-        return File.Exists(path) ? LoadFile(path) : null;
+        if (user != null && File.Exists(PathFor(server, user))) return LoadFile(PathFor(server, user));
+        if (File.Exists(LegacyPathFor(server)) && LoadFile(LegacyPathFor(server)) is { } legacy
+            && (user == null || legacy.User.Equals(user, StringComparison.OrdinalIgnoreCase)))
+            return legacy;
+        return user == null ? ListAll().FirstOrDefault(c => c.Server.Equals(server, StringComparison.OrdinalIgnoreCase)) : null;
     }
 
     private static SynologyCredentials? LoadFile(string path)
@@ -39,7 +49,6 @@ public sealed class SynologyCredentials
         var plain = ProtectedData.Unprotect(File.ReadAllBytes(path), Entropy, DataProtectionScope.CurrentUser);
         return JsonSerializer.Deserialize<SynologyCredentials>(plain);
     }
-
     /// <summary>All stored NAS logins (password included; do not display it).</summary>
     public static List<SynologyCredentials> ListAll()
     {
@@ -47,7 +56,11 @@ public sealed class SynologyCredentials
         if (!Directory.Exists(AppPaths.AuthDir)) return list;
         foreach (var f in Directory.EnumerateFiles(AppPaths.AuthDir, "synology-*.bin"))
         {
-            try { if (LoadFile(f) is { } c) list.Add(c); }
+            try
+            {
+                if (LoadFile(f) is { } c && !list.Any(x => x.Server.Equals(c.Server, StringComparison.OrdinalIgnoreCase) && x.User.Equals(c.User, StringComparison.OrdinalIgnoreCase)))
+                    list.Add(c);
+            }
             catch { /* written by another Windows user or corrupt: not ours to show */ }
         }
         return list.OrderBy(c => c.Server, StringComparer.OrdinalIgnoreCase).ToList();
@@ -57,12 +70,19 @@ public sealed class SynologyCredentials
     {
         AppPaths.EnsureDataDir();
         var plain = JsonSerializer.SerializeToUtf8Bytes(this);
-        File.WriteAllBytes(PathFor(Server), ProtectedData.Protect(plain, Entropy, DataProtectionScope.CurrentUser));
+        File.WriteAllBytes(PathFor(Server, User), ProtectedData.Protect(plain, Entropy, DataProtectionScope.CurrentUser));
+        // Migrate: the per-server file of the same login is replaced by the per-user one.
+        try
+        {
+            var legacy = LegacyPathFor(Server);
+            if (File.Exists(legacy) && LoadFile(legacy)?.User.Equals(User, StringComparison.OrdinalIgnoreCase) == true) File.Delete(legacy);
+        }
+        catch { }
     }
 
-    public static void Delete(string server)
+    public static void Delete(string server, string user)
     {
-        var path = PathFor(server);
-        if (File.Exists(path)) File.Delete(path);
-    }
-}
+        if (File.Exists(PathFor(server, user))) File.Delete(PathFor(server, user));
+        var legacy = LegacyPathFor(server);
+        if (File.Exists(legacy) && LoadFile(legacy)?.User.Equals(user, StringComparison.OrdinalIgnoreCase) == true) File.Delete(legacy);
+    }}

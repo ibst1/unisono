@@ -26,4 +26,13 @@
     <ProjectReference Include="..\Unisono.Core\Unisono.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The whole UI: one HTML page with inline CSS and JS, loaded with NavigateToString. -->
+    <EmbeddedResource Include="ui\index.html" LogicalName="Unisono.ui.index.html" />
+  </ItemGroup>
+
 </Project>
