@@ -25,6 +25,8 @@
 
   <ItemGroup>
     <PackageReference Include="Google.Apis.Drive.v3" Version="1.76.0.4261" />
+    <!-- DPAPI for the NAS password (per Windows user; no admin, no key management). -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
 
 </Project>

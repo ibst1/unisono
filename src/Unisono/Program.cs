@@ -3,12 +3,13 @@ using Unisono;
 using File = Google.Apis.Drive.v3.Data.File;
 
 // Commands:
-//   unisono auth                          sign in (opens the browser once) and print the account
-//   unisono ls [drive/path]               list a Drive folder
-//   unisono pull <drive/path> <localDir>  one-way mirror Drive -> local (adds and updates only, never deletes)
-//   unisono init <drive/path> <localDir>  add a sync pair to config.json
-//   unisono sync [-v]                     run one sync cycle for every pair
-//   unisono run [-v]                      keep syncing: watch the local folders, poll Drive for changes
+//   unisono auth                                    Google: sign in (opens the browser once) and print the account
+//   unisono nas login <server> <user>               Synology: store DSM credentials (DPAPI) after a test login
+//   unisono nas logout <server>                     Synology: forget stored credentials
+//   unisono init <remote/path> <localDir> [--create] [--nas <server> <user>]
+//   unisono sync [-v]                               run one sync cycle for every pair
+//   unisono run [-v]                                keep syncing: watch the local folders, poll the remote side
+//   unisono ls [drive/path] | pull <drive/path> <localDir> | changes <token>   Drive helpers
 //   unisono config | version
 
 var asm = Assembly.GetExecutingAssembly();
@@ -20,6 +21,7 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 var ct = cts.Token;
 var log = new Log { Verbose = args.Contains("-v") };
 args = args.Where(a => a != "-v").ToArray();
+var stores = new StoreFactory(log);
 
 try
 {
@@ -36,8 +38,8 @@ try
             var config = Config.Load();
             Console.WriteLine(Config.FilePath);
             foreach (var p in config.Pairs)
-                Console.WriteLine($"  {p.Name}  <->  {p.LocalPath}   docs={p.GoogleDocs} cloudOnly>={p.CloudOnlyMinMB}MB folders=[{string.Join(", ", p.CloudOnlyFolders)}] poll={p.PollSeconds}s");
-            if (config.Pairs.Count == 0) Console.WriteLine("  (no pairs; use: unisono init <drive/path> <localDir>)");
+                Console.WriteLine($"  [{p.Kind}] {p.Name}  <->  {p.LocalPath}   {(p.Server != null ? $"server={p.Server} user={p.User} " : "")}docs={p.GoogleDocs} cloudOnly>={p.CloudOnlyMinMB}MB folders=[{string.Join(", ", p.CloudOnlyFolders)}] poll={p.PollSeconds}s");
+            if (config.Pairs.Count == 0) Console.WriteLine("  (no pairs; use: unisono init <remote/path> <localDir>)");
             return 0;
         }
 
@@ -49,6 +51,31 @@ try
             Console.WriteLine($"Storage: {Gb(usage)} of {(limit > 0 ? Gb(limit) : "unlimited")} used");
             Console.WriteLine($"Changes start token: {token}");
             Console.WriteLine($"Tokens stored in {AppPaths.TokenDir}");
+            return 0;
+        }
+
+        case "nas":
+        {
+            if (args.Length < 3) { Usage(); return 2; }
+            var server = NormalizeServer(args[2]);
+            if (args[1].Equals("logout", StringComparison.OrdinalIgnoreCase))
+            {
+                SynologyCredentials.Delete(server);
+                Console.WriteLine($"Forgot credentials for {server}");
+                return 0;
+            }
+            if (!args[1].Equals("login", StringComparison.OrdinalIgnoreCase) || args.Length < 4) { Usage(); return 2; }
+            var allowInvalid = args.Contains("--insecure");
+            var creds = new SynologyCredentials { Server = server, User = args[3] };
+            Console.Write($"DSM password for {creds.User}@{server}: ");
+            creds.Password = ReadSecret();
+            if (creds.Password.Length == 0) { Console.Error.WriteLine("error: no password given"); return 1; }
+            using var nas = await SynologyClient.ConnectAsync(creds, allowInvalid, PromptOtp, ct);
+            creds.Save();
+            Console.WriteLine($"Signed in to {nas.BaseUrl} as {creds.User}{(creds.DeviceId != null ? " (device token stored; no more 2FA prompts)" : "")}");
+            var shares = await nas.ListAsync("/", ct);
+            Console.WriteLine("Shared folders: " + string.Join(", ", shares.Where(s => s.IsDir).Select(s => s.Path)));
+            await nas.LogoutAsync(ct);
             return 0;
         }
 
@@ -91,24 +118,54 @@ try
 
         case "init":
         {
-            if (args.Length < 3) { Usage(); return 2; }
             var create = args.Contains("--create");
-            args = args.Where(a => a != "--create").ToArray();
-            var drivePath = args[1].Trim('/', '\\');
+            var insecure = args.Contains("--insecure");
+            var nasIdx = Array.IndexOf(args, "--nas");
+            string? server = null, user = null;
+            if (nasIdx >= 0)
+            {
+                if (args.Length < nasIdx + 3) { Usage(); return 2; }
+                server = NormalizeServer(args[nasIdx + 1]);
+                user = args[nasIdx + 2];
+                args = args.Where((_, i) => i < nasIdx || i > nasIdx + 2).ToArray();
+            }
+            args = args.Where(a => a is not ("--create" or "--insecure")).ToArray();
+            if (args.Length < 3) { Usage(); return 2; }
             var localPath = Path.GetFullPath(args[2]);
-            var drive = await DriveClient.ConnectAsync(ct, quiet: true);
-            if (create) await drive.EnsureFolderAsync(drivePath, ct);
-            else await drive.ResolveFolderAsync(drivePath, ct); // must exist on Drive (or pass --create)
+            var pair = new SyncPair
+            {
+                Kind = server != null ? RemoteKind.Synology : RemoteKind.Drive,
+                RemotePath = server != null ? "/" + args[1].Replace('\\', '/').Trim('/') : args[1].Trim('/', '\\'),
+                LocalPath = localPath,
+                Server = server,
+                User = user,
+                AllowInvalidCertificate = insecure,
+            };
+            if (pair.Kind == RemoteKind.Synology) pair.PollSeconds = 60;
+
             var config = Config.Load();
             if (config.Pairs.Any(p => p.LocalPath.Equals(localPath, StringComparison.OrdinalIgnoreCase)))
             {
                 Console.Error.WriteLine($"error: {localPath} is already part of a pair (see: unisono config)");
                 return 1;
             }
+            // Verify the remote folder (or create it) before touching the config.
+            if (pair.Kind == RemoteKind.Synology)
+            {
+                var store = (SynologyStore)await stores.CreateAsync(pair, ct);
+                if (create) await store.EnsureRootAsync(ct);
+                await store.GetTreeAsync(log, ct);
+            }
+            else
+            {
+                var drive = await stores.DriveAsync(ct);
+                if (create) await drive.EnsureFolderAsync(pair.RemotePath, ct);
+                else await drive.ResolveFolderAsync(pair.RemotePath, ct);
+            }
             Directory.CreateDirectory(localPath);
-            config.Pairs.Add(new SyncPair { DrivePath = drivePath, LocalPath = localPath });
+            config.Pairs.Add(pair);
             config.Save();
-            Console.WriteLine($"Added pair: {(drivePath.Length == 0 ? "My Drive" : drivePath)}  <->  {localPath}");
+            Console.WriteLine($"Added pair: {pair.Name}  <->  {localPath}");
             Console.WriteLine($"Settings (Google Docs export, cloud-only rules, poll interval) live in {Config.FilePath}");
             Console.WriteLine("Run 'unisono sync' for one cycle or 'unisono run' to keep syncing.");
             return 0;
@@ -120,25 +177,33 @@ try
             var config = Config.Load();
             if (config.Pairs.Count == 0)
             {
-                Console.Error.WriteLine("error: no sync pairs configured; use: unisono init <drive/path> <localDir>");
+                Console.Error.WriteLine("error: no sync pairs configured; use: unisono init <remote/path> <localDir>");
                 return 1;
             }
-            var drive = await DriveClient.ConnectAsync(ct, quiet: true);
-            var engines = config.Pairs.Select(p => new SyncEngine(drive, p, log)).ToList();
+            var engines = new List<SyncEngine>();
+            foreach (var p in config.Pairs)
+                engines.Add(new SyncEngine(await stores.CreateAsync(p, ct), p, log));
             log.Info($"Unisono {version} starting, {engines.Count} pair(s)");
-            if (args[0] == "sync")
+            try
             {
-                var failed = 0;
-                foreach (var e in engines)
+                if (args[0] == "sync")
                 {
-                    try { var s = await e.RunCycleAsync(ct); failed += s.Errors; }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception ex) { log.Error($"[{e.Pair.Name}] cycle failed: {ex.Message}"); failed++; }
+                    var failed = 0;
+                    foreach (var e in engines)
+                    {
+                        try { var s = await e.RunCycleAsync(ct); failed += s.Errors; }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception ex) { log.Error($"[{e.Pair.Name}] cycle failed: {ex.Message}"); failed++; }
+                    }
+                    return failed == 0 ? 0 : 1;
                 }
-                return failed == 0 ? 0 : 1;
+                await RunForeverAsync(engines, log, ct);
+                return 0;
             }
-            await RunForeverAsync(engines, log, ct);
-            return 0;
+            finally
+            {
+                await stores.DisposeAsync();
+            }
         }
 
         default:
@@ -181,7 +246,7 @@ static async Task RunForeverAsync(List<SyncEngine> engines, Log log, Cancellatio
         watchers.Add(w);
     }
     var poll = TimeSpan.FromSeconds(Math.Max(5, engines.Min(e => e.Pair.PollSeconds)));
-    log.Info($"watching {watchers.Count} folder(s), polling Drive every {poll.TotalSeconds:0}s. Ctrl+C to stop.");
+    log.Info($"watching {watchers.Count} folder(s), polling every {poll.TotalSeconds:0}s. Ctrl+C to stop.");
 
     var backoff = TimeSpan.Zero;
     while (!ct.IsCancellationRequested)
@@ -259,14 +324,89 @@ static string SafeName(string name)
     return new string(chars).TrimEnd(' ', '.');
 }
 
+static string NormalizeServer(string s)
+{
+    s = s.Trim().TrimEnd('/');
+    return s.Contains("://") ? s : "https://" + s;
+}
+
+static string? PromptOtp()
+{
+    Console.Write("Two-factor code: ");
+    return Console.ReadLine();
+}
+
+/// <summary>Reads a line without echoing it.</summary>
+static string ReadSecret()
+{
+    if (Console.IsInputRedirected) return Console.ReadLine() ?? "";
+    var sb = new System.Text.StringBuilder();
+    while (true)
+    {
+        var key = Console.ReadKey(intercept: true);
+        if (key.Key == ConsoleKey.Enter) { Console.WriteLine(); return sb.ToString(); }
+        if (key.Key == ConsoleKey.Backspace) { if (sb.Length > 0) sb.Length--; continue; }
+        if (!char.IsControl(key.KeyChar)) sb.Append(key.KeyChar);
+    }
+}
+
 static string Gb(long bytes) => $"{bytes / 1024.0 / 1024 / 1024:F1} GB";
 
 static void Usage()
 {
-    Console.WriteLine("usage: unisono auth | ls [drive/path] | pull <drive/path> <localDir> | init <drive/path> <localDir> [--create] | sync [-v] | run [-v] | config | version");
+    Console.WriteLine("usage:");
+    Console.WriteLine("  unisono auth");
+    Console.WriteLine("  unisono nas login <server> <user> [--insecure]   |   unisono nas logout <server>");
+    Console.WriteLine("  unisono init <remote/path> <localDir> [--create] [--nas <server> <user>] [--insecure]");
+    Console.WriteLine("  unisono sync [-v]   |   unisono run [-v]   |   unisono config   |   unisono version");
+    Console.WriteLine("  unisono ls [drive/path]   |   unisono pull <drive/path> <localDir>   |   unisono changes <token>");
 }
 
 sealed class PullStats
 {
     public int Downloaded, Skipped, GoogleNative, Failed;
+}
+
+/// <summary>One Drive sign-in and one NAS session per server, shared by all pairs that use them.</summary>
+sealed class StoreFactory : IAsyncDisposable
+{
+    private readonly Log _log;
+    private DriveClient? _drive;
+    private readonly Dictionary<string, SynologyClient> _nas = new(StringComparer.OrdinalIgnoreCase);
+
+    public StoreFactory(Log log) => _log = log;
+
+    public async Task<DriveClient> DriveAsync(CancellationToken ct) =>
+        _drive ??= await DriveClient.ConnectAsync(ct, quiet: true);
+
+    public async Task<IRemoteStore> CreateAsync(SyncPair pair, CancellationToken ct)
+    {
+        if (pair.Kind == RemoteKind.Drive)
+            return new DriveStore(await DriveAsync(ct), pair);
+
+        if (string.IsNullOrEmpty(pair.Server) || string.IsNullOrEmpty(pair.User))
+            throw new InvalidOperationException($"pair {pair.Name}: Server and User are required for a Synology pair");
+        if (!_nas.TryGetValue(pair.Server, out var client))
+        {
+            var creds = SynologyCredentials.Load(pair.Server)
+                        ?? throw new InvalidOperationException($"no stored credentials for {pair.Server}; run: unisono nas login {pair.Server} {pair.User}");
+            if (!creds.User.Equals(pair.User, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"stored credentials for {pair.Server} are for '{creds.User}', pair wants '{pair.User}'; run 'unisono nas login' again");
+            client = await SynologyClient.ConnectAsync(creds, pair.AllowInvalidCertificate, otpPrompt: null, ct);
+            if (creds.DeviceId != null) creds.Save(); // resolved base / device token may have been refreshed
+            _log.Debug($"NAS session on {client.BaseUrl} as {creds.User}");
+            _nas[pair.Server] = client;
+        }
+        return new SynologyStore(client, pair);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        foreach (var c in _nas.Values)
+        {
+            await c.LogoutAsync(CancellationToken.None);
+            c.Dispose();
+        }
+        _nas.Clear();
+    }
 }

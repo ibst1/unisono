@@ -121,6 +121,22 @@ public sealed class DriveClient
         return current;
     }
 
+    /// <summary>Current metadata for one file; null when it no longer exists or is trashed.</summary>
+    public async Task<File?> GetFileAsync(string fileId, CancellationToken ct)
+    {
+        try
+        {
+            var req = _service.Files.Get(fileId);
+            req.Fields = FileFields;
+            var f = await req.ExecuteAsync(ct);
+            return f.Trashed == true ? null : f;
+        }
+        catch (Google.GoogleApiException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
     public async Task<List<File>> ListChildrenAsync(string folderId, CancellationToken ct)
     {
         var all = new List<File>();
@@ -261,16 +277,9 @@ public sealed class DriveClient
         return string.Equals(Md5Of(localPath), f.Md5Checksum, StringComparison.OrdinalIgnoreCase);
     }
 
-    public static string Md5Of(string localPath)
-    {
-        using var md5 = MD5.Create();
-        using var fs = OpenShared(localPath);
-        return Convert.ToHexString(md5.ComputeHash(fs)).ToLowerInvariant();
-    }
+    public static string Md5Of(string localPath) => PathUtil.Md5Of(localPath);
 
-    /// <summary>Read even while another program has the file open for writing (Office keeps its documents open).</summary>
-    private static FileStream OpenShared(string path) =>
-        new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+    private static FileStream OpenShared(string path) => PathUtil.OpenShared(path);
 
     private static string Escape(string name) => name.Replace("\\", "\\\\").Replace("'", "\\'");
 }

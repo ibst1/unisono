@@ -46,11 +46,43 @@ id and your own account, so the warning is expected. The refresh token is then s
 `%LOCALAPPDATA%\Unisono\tokens` and sign-in is silent from then on. `auth` prints which
 client id and project it is using, so a wrong JSON is obvious before the browser opens.
 
+## Synology NAS instead of Google
+
+A pair can also point at a folder on a Synology NAS, through the File Station API on DSM's
+HTTPS port (5001 by default). Nothing is installed on the PC and nothing but HTTPS is
+used. The NAS must be reachable from where the PC is: a DDNS name with port 5001
+forwarded, or a QuickConnect address (`https://myid.quickconnect.to`), which Unisono
+resolves by following its redirect.
+
+```
+unisono nas login https://nas.example.com:5001 myuser
+unisono init /home/Sync C:\Users\me\Sync --nas https://nas.example.com:5001 myuser --create
+```
+
+`nas login` asks for the DSM password in its own prompt, tries a login, asks for a
+two-factor code if the account has one, and stores the password and the resulting device
+token encrypted with DPAPI for the current Windows user in `%LOCALAPPDATA%\Unisono`.
+Later logins need no code. `nas logout <server>` forgets the credentials. Add `--insecure`
+to both commands for a self-signed DSM certificate.
+
+Remote paths start with the shared folder as DSM shows it, e.g. `/home/Sync` or
+`/photo/2026`. Differences from a Drive pair:
+
+* No change feed: the folder is re-listed every poll (one request per subfolder), so the
+  default poll is 60 s for NAS pairs. Keep the tree moderate or the poll long.
+* No checksums: files are identified by size and modified time, which Unisono sets on
+  upload. Content is compared by hashing after download when it has to be.
+* Deletes go to the shared folder's recycle bin only if **Recycle Bin** is enabled for that
+  shared folder in DSM (Control Panel > Shared Folder > Edit). Enable it.
+* Google Docs settings and cloud-only links do not apply.
+
 ## Usage
 
 ```
 unisono auth                                  sign in and show account, quota and the changes token
-unisono init <Drive/Path> <localDir> [--create]  add a sync pair (--create makes the Drive folder)
+unisono nas login <server> <user>             store DSM credentials after a test login
+unisono init <Remote/Path> <localDir> [--create] [--nas <server> <user>]
+                                              add a sync pair (--create makes the remote folder)
 unisono sync [-v]                             one sync cycle for every pair
 unisono run [-v]                              keep syncing: watch local folders, poll Drive
 unisono config                                show config path and pairs
@@ -66,17 +98,31 @@ Settings live in `%LOCALAPPDATA%\Unisono\config.json`, one object per pair:
 {
   "Pairs": [
     {
-      "DrivePath": "Projects",
+      "Kind": "Drive",
+      "RemotePath": "Projects",
       "LocalPath": "C:\\Users\\me\\Projects",
       "GoogleDocs": "Export",
       "CloudOnlyMinMB": 0,
       "CloudOnlyFolders": ["Archive"],
       "PollSeconds": 30,
       "FullRescanMinutes": 15
+    },
+    {
+      "Kind": "Synology",
+      "RemotePath": "/home/Sync",
+      "LocalPath": "C:\\Users\\me\\Sync",
+      "Server": "https://nas.example.com:5001",
+      "User": "myuser",
+      "AllowInvalidCertificate": false,
+      "PollSeconds": 60
     }
   ]
 }
 ```
+
+Before overwriting or deleting anything remotely, Unisono re-reads that item's metadata
+directly (the Drive change feed can lag by minutes); a newer remote version then becomes
+a conflict instead of being overwritten.
 
 * **GoogleDocs**: `Export` writes Docs/Sheets/Slides/Drawings as docx/xlsx/pptx/png,
   `Link` writes a `.url` shortcut that opens the document on Drive, `Skip` ignores them.
