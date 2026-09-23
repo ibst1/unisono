@@ -8,20 +8,33 @@ public sealed record SynologyEntry(string Name, string Path, bool IsDir, long Si
 public sealed class SynologyApiException : Exception
 {
     public int Code { get; }
-    public SynologyApiException(string api, int code) : base($"{api} failed: {Describe(code)} (code {code})") => Code = code;
+    public SynologyApiException(string api, int code) : base($"{api} failed: {Describe(api, code)} (code {code})") => Code = code;
 
-    private static string Describe(int code) => code switch
+    // DSM reuses the 400s: the same number means different things for the login API and for File Station.
+    private static string Describe(string api, int code) => code switch
     {
         100 => "unknown error", 101 => "invalid parameter", 102 => "API does not exist", 103 => "method does not exist",
         104 => "version not supported", 105 => "insufficient user privilege", 106 => "session timeout", 107 => "session interrupted",
         119 => "session id not found",
-        400 => "invalid file operation / wrong account or password", 401 => "account disabled", 402 => "permission denied",
-        403 => "two-factor code required", 404 => "two-factor code failed", 406 => "two-factor enforced", 407 => "IP blocked",
-        408 => "file does not exist", 414 => "file already exists", 418 => "path already exists / not a folder", 900 => "failed to delete",
-        _ => "error",
+        _ when api.StartsWith("SYNO.API.Auth", StringComparison.Ordinal) => code switch
+        {
+            400 => "wrong account or password", 401 => "account disabled", 402 => "permission denied",
+            403 => "two-factor code required", 404 => "two-factor code failed", 406 => "two-factor enforced",
+            407 => "IP address blocked (DSM auto block after failed logins)", 408 => "password expired", 409 => "password expired",
+            410 => "password must be changed", _ => "login error",
+        },
+        _ => code switch
+        {
+            400 => "invalid parameter", 401 => "unknown file operation error", 402 => "NAS too busy",
+            403 => "this user may not do that", 404 => "this group may not do that", 407 => "operation not permitted",
+            408 => "no such file or folder", 409 => "file system not supported", 411 => "read-only file system",
+            412 or 413 => "name too long", 414 => "already exists", 415 => "disk quota exceeded", 416 => "no space left on the NAS",
+            417 => "I/O error", 418 => "illegal name or path", 419 => "illegal file name", 421 => "file busy",
+            900 => "delete failed", 1100 or 1101 => "could not create the folder",
+            1800 or 1801 or 1802 or 1803 or 1804 or 1805 => "upload failed", _ => "file operation error",
+        },
     };
 }
-
 /// <summary>
 /// Minimal Synology File Station client over DSM's HTTPS port (5001): login with optional two-factor + device
 /// token, list, getinfo, download, upload with mtime, create folder, delete. Works on DSM 6 and 7; versions are
@@ -223,8 +236,10 @@ public sealed class SynologyClient : IDisposable
 
     // ------------------------------------------------------------ operations
 
+    /// <summary>Children of a folder. "/" lists the shared folders the user can see (File Station has a separate method for that).</summary>
     public async Task<List<SynologyEntry>> ListAsync(string folderPath, CancellationToken ct)
     {
+        if (folderPath.Trim('/').Length == 0) return await ListSharesAsync(ct);
         var all = new List<SynologyEntry>();
         var offset = 0;
         while (true)
@@ -240,6 +255,27 @@ public sealed class SynologyClient : IDisposable
             var total = data.TryGetProperty("total", out var t) ? t.GetInt32() : all.Count;
             offset += files.GetArrayLength();
             if (offset >= total || files.GetArrayLength() == 0) break;
+        }
+        return all;
+    }
+
+    private async Task<List<SynologyEntry>> ListSharesAsync(CancellationToken ct)
+    {
+        var all = new List<SynologyEntry>();
+        var offset = 0;
+        while (true)
+        {
+            var doc = await CallAsync(_fsPath, new Dictionary<string, string>
+            {
+                ["api"] = "SYNO.FileStation.List", ["version"] = _listVersion.ToString(), ["method"] = "list_share",
+                ["additional"] = "[\"time\"]", ["limit"] = "1000", ["offset"] = offset.ToString(),
+            }, ct);
+            var data = doc.RootElement.GetProperty("data");
+            var shares = data.GetProperty("shares");
+            foreach (var f in shares.EnumerateArray()) all.Add(ToEntry(f));
+            var total = data.TryGetProperty("total", out var t) ? t.GetInt32() : all.Count;
+            offset += shares.GetArrayLength();
+            if (offset >= total || shares.GetArrayLength() == 0) break;
         }
         return all;
     }
@@ -337,7 +373,7 @@ public sealed class SynologyClient : IDisposable
         return new SynologyEntry(
             f.GetProperty("name").GetString()!,
             f.GetProperty("path").GetString()!,
-            f.GetProperty("isdir").GetBoolean(),
+            f.TryGetProperty("isdir", out var isdir) ? isdir.GetBoolean() : true, // share entries may omit it
             size,
             DateTimeOffset.FromUnixTimeSeconds(mtime).UtcDateTime);
     }
