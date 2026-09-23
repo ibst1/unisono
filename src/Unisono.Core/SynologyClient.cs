@@ -399,6 +399,65 @@ public sealed class SynologyClient : IDisposable
         return doc;
     }
 
+    public string User => _creds.User;
+
+    /// <summary>The address as the user entered it (a QuickConnect address works in any browser, wherever it is).</summary>
+    public string Server => _creds.Server;
+
+    /// <summary>
+    /// Exports a Synology Office document (.odoc/.osheet/.oslides) to docx/xlsx/pptx via SYNO.Office.Export. It takes
+    /// Synology Drive's path ("/mydrive/..."), not the File Station path; the format follows the document type.
+    /// </summary>
+    public async Task ExportOfficeAsync(string drivePath, string localPath, DateTime mtimeUtc, CancellationToken ct)
+    {
+        var form = new Dictionary<string, string>
+        {
+            ["api"] = "SYNO.Office.Export", ["version"] = "1", ["method"] = "download", ["path"] = drivePath, ["_sid"] = _sid,
+        };
+        var tmp = localPath + LocalScanner.PartSuffix;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"{_base}/webapi/entry.cgi") { Content = new FormUrlEncodedContent(form) };
+            using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            res.EnsureSuccessStatusCode();
+            if (res.Content.Headers.ContentType?.MediaType == "application/json")
+            {
+                using var doc = ParseApi(await res.Content.ReadAsStringAsync(ct), "SYNO.Office.Export");
+                ThrowIfError("SYNO.Office.Export", doc);
+                throw new IOException("Synology Office returned no document");
+            }
+            await using (var fs = File.Create(tmp))
+            await using (var s = await res.Content.ReadAsStreamAsync(ct))
+                await s.CopyToAsync(fs, ct);
+            if (File.Exists(localPath)) File.SetAttributes(localPath, FileAttributes.Normal);
+            File.Move(tmp, localPath, overwrite: true);
+            File.SetLastWriteTimeUtc(localPath, mtimeUtc);
+        }
+        finally
+        {
+            if (File.Exists(tmp)) File.Delete(tmp);
+        }
+    }
+
+    /// <summary>Synology Drive's permanent link id for a file (the stable part of https://nas/d/f/&lt;id&gt;).</summary>
+    public async Task<string> DrivePermanentLinkAsync(string drivePath, CancellationToken ct)
+    {
+        var doc = await CallAsync(_fsPath, new Dictionary<string, string>
+        {
+            ["api"] = "SYNO.SynologyDrive.Files", ["version"] = "2", ["method"] = "get", ["path"] = drivePath,
+        }, ct);
+        return doc.RootElement.GetProperty("data").GetProperty("permanent_link").GetString()
+               ?? throw new IOException($"Synology Drive has no link for {drivePath}");
+    }
+
+    /// <summary>Diagnostics: any API call with the session attached, raw answer returned (no error handling).</summary>
+    public async Task<(string ContentType, byte[] Body)> RawAsync(string cgi, Dictionary<string, string> form, CancellationToken ct)
+    {
+        form["_sid"] = _sid;
+        using var res = await _http.PostAsync($"{_base}/webapi/{cgi}", new FormUrlEncodedContent(form), ct);
+        return (res.Content.Headers.ContentType?.ToString() ?? "", await res.Content.ReadAsByteArrayAsync(ct));
+    }
+
     /// <summary>DSM answers JSON; a web page here means a proxy, portal or login page stood in between.</summary>
     private JsonDocument ParseApi(string text, string what)
     {

@@ -58,7 +58,7 @@ public sealed class SynologyStore : IRemoteStore
         Id = e.Path,
         Name = e.Name,
         ParentId = parentPath,
-        MimeType = e.IsDir ? DriveClient.FolderMime : "application/octet-stream",
+        MimeType = e.IsDir ? DriveClient.FolderMime : MimeFor(e.Name),
         Size = e.Size,
         Md5 = null,
         ModifiedUtc = e.MtimeUtc,
@@ -101,11 +101,36 @@ public sealed class SynologyStore : IRemoteStore
 
     public Task DeleteAsync(RemoteNode node, CancellationToken ct) => _nas.DeleteAsync(node.Id, ct);
 
-    /// <summary>DSM has no stable per-file browser URL worth linking to, so cloud-only links are not offered.</summary>
-    public string? LinkUrl(RemoteNode node) => null;
+    private static string MimeFor(string name) => Path.GetExtension(name).ToLowerInvariant() switch
+    {
+        ".odoc" => RemoteNode.SynologyDocument,
+        ".osheet" => RemoteNode.SynologySpreadsheet,
+        ".oslides" => RemoteNode.SynologyPresentation,
+        _ => "application/octet-stream",
+    };
+
+    /// <summary>
+    /// Synology Office and Drive address files by Drive path: the user's home is /mydrive, a shared folder enabled as a
+    /// Drive team folder is /team-folders/&lt;name&gt;. File Station paths are /home/..., /homes/&lt;user&gt;/... or /&lt;share&gt;/....
+    /// </summary>
+    private string DrivePath(RemoteNode node)
+    {
+        var parts = node.Id.Trim('/').Split('/');
+        if (parts[0].Equals("home", StringComparison.OrdinalIgnoreCase))
+            return "/mydrive/" + string.Join('/', parts.Skip(1));
+        if (parts[0].Equals("homes", StringComparison.OrdinalIgnoreCase) && parts.Length > 1 && parts[1].Equals(_nas.User, StringComparison.OrdinalIgnoreCase))
+            return "/mydrive/" + string.Join('/', parts.Skip(2));
+        return "/team-folders/" + string.Join('/', parts);
+    }
+
+    /// <summary>Only Synology Office documents get links; ordinary files have no browser view worth pointing to.</summary>
+    public bool CanLink(RemoteNode node) => node.IsSynologyOffice;
+
+    public async Task<string> LinkUrlAsync(RemoteNode node, CancellationToken ct) =>
+        $"{_nas.Server}/d/f/{await _nas.DrivePermanentLinkAsync(DrivePath(node), ct)}";
 
     public Task ExportAsync(RemoteNode node, string exportMime, string localPath, CancellationToken ct) =>
-        throw new NotSupportedException("A NAS holds no Google-native documents.");
+        _nas.ExportOfficeAsync(DrivePath(node), localPath, node.ModifiedUtc, ct);
 
     /// <summary>Creates the root folder chain (init --create).</summary>
     public async Task EnsureRootAsync(CancellationToken ct)

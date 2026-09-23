@@ -122,7 +122,9 @@ public sealed class DriveStore : IRemoteStore
         if (node.IsFolder) _index!.RemoveSubtree(node.Id); else _index!.Remove(node.Id);
     }
 
-    public string? LinkUrl(RemoteNode node) => $"https://drive.google.com/open?id={node.Id}";
+    public bool CanLink(RemoteNode node) => true;
+
+    public Task<string> LinkUrlAsync(RemoteNode node, CancellationToken ct) => Task.FromResult($"https://drive.google.com/open?id={node.Id}");
 
     public Task ExportAsync(RemoteNode node, string exportMime, string localPath, CancellationToken ct) =>
         _drive.ExportAsync(node.Id, node.Name, exportMime, localPath, node.ModifiedUtc, ct);

@@ -393,7 +393,7 @@ public sealed class SyncEngine
             var editedLocally = l.Size != s.LocalSize || l.MtimeTicks != s.LocalMtimeTicks;
             if (editedLocally && kind == EntryKind.Export)
             {
-                _log.Warn($"[{_pair.Name}] '{derivedRel}' was edited locally; exports are one-way and the edit will not reach Drive{(upToDate ? "" : " (and Drive has a newer version)")}");
+                _log.Warn($"[{_pair.Name}] '{derivedRel}' was edited locally; exports are one-way and the edit will not reach the original{(upToDate ? "" : " (and the original has changed since)")}");
                 s.LocalSize = l.Size; s.LocalMtimeTicks = l.MtimeTicks; // warn once per edit
                 if (upToDate) return;
             }
@@ -405,12 +405,21 @@ public sealed class SyncEngine
             RecycleBin.Delete(old.FullPath); // representation changed, e.g. export -> link
             local.Remove(s.LocalName);
         }
+        if (s is { Kind: EntryKind.File } && local.TryGetValue(rel, out var pointer) && !pointer.IsDir && LocalUnchanged(pointer, s))
+        {
+            // Until now the document was synced as its raw pointer file (a NAS .odoc before exports existed). The export or
+            // link replaces that local copy; the document on the remote side is not touched.
+            var where = RecycleBin.Delete(pointer.FullPath);
+            local.Remove(rel);
+            derived.Add(rel);
+            _log.Info($"[{_pair.Name}] local pointer file replaced by {kind.ToString().ToLowerInvariant()} (old copy to {where}): {rel}");
+        }
 
         await Try(rel, stats, async () =>
         {
             if (kind == EntryKind.Link)
             {
-                WriteLink(path, _store.LinkUrl(node)!, node.ModifiedUtc);
+                WriteLink(path, await _store.LinkUrlAsync(node, ct), node.ModifiedUtc);
                 stats.Linked++;
                 _log.Debug($"[{_pair.Name}] link: {derivedRel}");
             }
@@ -444,8 +453,8 @@ public sealed class SyncEngine
     private EntryKind Classify(RemoteNode node, Dictionary<string, LocalItem> local)
     {
         if (node.IsFolder) return EntryKind.Folder;
-        var canLink = _store.LinkUrl(node) != null;
-        if (node.IsGoogleNative)
+        var canLink = _store.CanLink(node);
+        if (node.IsNativeDocument)
             return _pair.GoogleDocs switch
             {
                 GoogleDocsMode.Skip => EntryKind.Folder, // caller treats Folder from a file as "skip"
@@ -467,24 +476,25 @@ public sealed class SyncEngine
     private static string? DerivedName(RemoteNode node, EntryKind kind) => kind switch
     {
         EntryKind.Link => node.RelPath + ".url",
-        EntryKind.Export => node.RelPath + ExportExt(node.MimeType),
+        // Google Docs have no extension ("Plan" -> "Plan.docx"); Synology Office files do ("Plan.odoc" -> "Plan.docx").
+        EntryKind.Export => (node.IsSynologyOffice ? node.RelPath[..^Path.GetExtension(node.RelPath).Length] : node.RelPath) + ExportExt(node.MimeType),
         _ => null,
     };
 
     private static string? ExportMime(string mime) => mime switch
     {
-        "application/vnd.google-apps.document" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.google-apps.spreadsheet" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.google-apps.presentation" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.google-apps.document" or RemoteNode.SynologyDocument => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.google-apps.spreadsheet" or RemoteNode.SynologySpreadsheet => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.google-apps.presentation" or RemoteNode.SynologyPresentation => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "application/vnd.google-apps.drawing" => "image/png",
         _ => null,
     };
 
     private static string? ExportExt(string mime) => mime switch
     {
-        "application/vnd.google-apps.document" => ".docx",
-        "application/vnd.google-apps.spreadsheet" => ".xlsx",
-        "application/vnd.google-apps.presentation" => ".pptx",
+        "application/vnd.google-apps.document" or RemoteNode.SynologyDocument => ".docx",
+        "application/vnd.google-apps.spreadsheet" or RemoteNode.SynologySpreadsheet => ".xlsx",
+        "application/vnd.google-apps.presentation" or RemoteNode.SynologyPresentation => ".pptx",
         "application/vnd.google-apps.drawing" => ".png",
         _ => null,
     };

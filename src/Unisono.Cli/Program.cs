@@ -64,6 +64,22 @@ try
                 Console.WriteLine($"Forgot credentials for {server}");
                 return 0;
             }
+            if (args[1].Equals("api", StringComparison.OrdinalIgnoreCase))
+            {
+                // Diagnostic: UnisonoCli nas api <server> <cgi> key=value ... [--out file]   (uses the stored login)
+                var stored = SynologyCredentials.Load(server) ?? throw new InvalidOperationException($"no stored login for {server}");
+                using var diag = await SynologyClient.ConnectAsync(stored, stored.AllowInvalidCertificate, null, ct, m => log.Debug(m));
+                var outIdx = Array.IndexOf(args, "--out");
+                var outFile = outIdx > 0 && outIdx + 1 < args.Length ? args[outIdx + 1] : null;
+                var form = args.Skip(4).Where((a, i) => a.Contains('=') && (outIdx < 0 || i + 4 < outIdx))
+                    .ToDictionary(a => a[..a.IndexOf('=')], a => a[(a.IndexOf('=') + 1)..]);
+                var (type, body) = await diag.RawAsync(args[3], form, ct);
+                Console.WriteLine($"content-type: {type}, {body.Length} bytes");
+                if (outFile != null) { await System.IO.File.WriteAllBytesAsync(outFile, body, ct); Console.WriteLine($"saved to {outFile}"); }
+                else if (type.Contains("json") || (body.Length > 0 && body[0] == (byte)'{')) Console.WriteLine(System.Text.Encoding.UTF8.GetString(body));
+                await diag.LogoutAsync(ct);
+                return 0;
+            }
             if (!args[1].Equals("login", StringComparison.OrdinalIgnoreCase) || args.Length < 4) { Usage(); return 2; }
             var allowInvalid = args.Contains("--insecure");
             var creds = new SynologyCredentials { Server = server, User = args[3], AllowInvalidCertificate = allowInvalid };

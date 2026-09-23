@@ -23,6 +23,7 @@ sealed class PairForm : Form
     private readonly Label _hint = new() { AutoSize = true, MaximumSize = new Size(520, 0), ForeColor = SystemColors.GrayText };
     private readonly Button _ok = new() { Text = "OK", AutoSize = true };
     private readonly List<Control> _driveOnly = new();
+    private Label _docsLabel = null!;
     private readonly List<Control> _nasOnly = new();
     private List<SynologyCredentials> _logins = new();
 
@@ -49,7 +50,7 @@ sealed class PairForm : Form
 
         var grid = new TableLayoutPanel { AutoSize = true, ColumnCount = 3 };
         var row = 0;
-        void Add(string label, Control field, Control? extra = null, List<Control>? group = null)
+        Label Add(string label, Control field, Control? extra = null, List<Control>? group = null)
         {
             var l = Ui.Label(label);
             grid.Controls.Add(l, 0, row);
@@ -57,6 +58,7 @@ sealed class PairForm : Form
             if (extra != null) grid.Controls.Add(extra, 2, row);
             group?.AddRange(extra == null ? new[] { l, field } : new[] { l, field, extra });
             row++;
+            return l;
         }
         var addLogin = Ui.Button("New login...", (_, _) => NewLogin());
         Add("Remote", _kind);
@@ -64,7 +66,7 @@ sealed class PairForm : Form
         Add("Remote folder", _remote, Ui.Button("Browse...", async (_, _) => await BrowseRemoteAsync()));
         grid.Controls.Add(_create, 1, row++);
         Add("Local folder", _local, Ui.Button("Browse...", (_, _) => BrowseLocal()));
-        Add("Google Docs", _docs, group: _driveOnly);
+        _docsLabel = Add("Google Docs", _docs);
         var mbRow = Ui.Row(_cloudMb, Ui.Label("MB and larger (0 = off)"));
         Add("Cloud-only files", mbRow, group: _driveOnly);
         Add("Cloud-only folders", _cloudFolders, group: _driveOnly);
@@ -98,9 +100,10 @@ sealed class PairForm : Form
     {
         foreach (var c in _driveOnly) c.Enabled = !IsNas;
         foreach (var c in _nasOnly) c.Enabled = IsNas;
+        _docsLabel.Text = IsNas ? "Synology Office" : "Google Docs";
         if (userChange && _existing == null) _poll.Value = IsNas ? 60 : 30;
         _hint.Text = IsNas
-            ? "NAS paths start with the shared folder, e.g. /home/Sync. Turn on the Recycle Bin for that shared folder in DSM so deletions can be undone."
+            ? "NAS paths start with the shared folder, e.g. /home/Sync. Turn on the Recycle Bin for that shared folder in DSM so deletions can be undone. Synology Office documents (.odoc/.osheet/.oslides) are exported or linked like Google Docs."
             : "Drive paths are folders under My Drive, e.g. Projects/2026. Deletions go to the Drive trash.";
     }
 
@@ -184,11 +187,11 @@ sealed class PairForm : Form
             p.Server = null;
             p.User = null;
             p.AllowInvalidCertificate = false;
-            p.GoogleDocs = (GoogleDocsMode)_docs.SelectedIndex;
             p.CloudOnlyMinMB = (int)_cloudMb.Value;
             p.CloudOnlyFolders = _cloudFolders.Text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(s => s.Replace('\\', '/').Trim('/')).Where(s => s.Length > 0).ToList();
         }
+        p.GoogleDocs = (GoogleDocsMode)_docs.SelectedIndex;
         p.PollSeconds = (int)_poll.Value;
         return p;
     }
@@ -219,6 +222,8 @@ sealed class PairForm : Form
             if (Environment.GetEnvironmentVariable(v) is { Length: > 0 } root
                 && WithSep(path).StartsWith(WithSep(root), StringComparison.OrdinalIgnoreCase))
                 return root;
+        var workFolders = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Work Folders");
+        if (WithSep(path).StartsWith(WithSep(workFolders), StringComparison.OrdinalIgnoreCase)) return workFolders;
         return null;
     }
 
@@ -278,8 +283,8 @@ sealed class PairForm : Form
                         "Nothing is deleted. Continue?"))
                     return;
                 if (OneDriveRoot(p.LocalPath) is { } od && !Ui.Confirm(this,
-                        $"The local folder is inside OneDrive ({od}).\n\nEverything Unisono downloads there is also uploaded to OneDrive " +
-                        "and ends up in two clouds. Usually you want a folder outside OneDrive. Continue anyway?"))
+                        $"The local folder is inside {od}, which Windows itself syncs to another server (OneDrive or your organisation's Work Folders).\n\n" +
+                        "Everything Unisono downloads there is uploaded there as well and ends up in two places. Usually you want a folder outside it. Continue anyway?"))
                     return;
 
                 if (!exists) await createRemote();

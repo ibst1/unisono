@@ -37,8 +37,11 @@ public interface IRemoteStore
     Task DeleteAsync(RemoteNode node, CancellationToken ct);
 
     /// <summary>A browser URL for the item, used for cloud-only links; null when the backend has no useful one.</summary>
-    string? LinkUrl(RemoteNode node);
+    bool CanLink(RemoteNode node);
 
-    /// <summary>Export a Google-native document; only Drive implements this.</summary>
+    /// <summary>A browser URL for the item, used for links (cloud-only files, native documents). Only called when <see cref="CanLink"/>.</summary>
+    Task<string> LinkUrlAsync(RemoteNode node, CancellationToken ct);
+
+    /// <summary>Export a native document (Google Docs, Synology Office) to an Office file.</summary>
     Task ExportAsync(RemoteNode node, string exportMime, string localPath, CancellationToken ct);
 }

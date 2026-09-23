@@ -17,6 +17,15 @@ public sealed class RemoteNode
 
     [JsonIgnore] public bool IsFolder => MimeType == DriveClient.FolderMime;
     [JsonIgnore] public bool IsGoogleNative => MimeType.StartsWith("application/vnd.google-apps.", StringComparison.Ordinal) && !IsFolder;
+
+    // Synology Office files (.odoc/.osheet/.oslides) are small pointers into Synology Office's database, like Google Docs.
+    public const string SynologyDocument = "application/x-synology-office-document";
+    public const string SynologySpreadsheet = "application/x-synology-office-spreadsheet";
+    public const string SynologyPresentation = "application/x-synology-office-presentation";
+    [JsonIgnore] public bool IsSynologyOffice => MimeType is SynologyDocument or SynologySpreadsheet or SynologyPresentation;
+
+    /// <summary>A document that only exists inside an online editor: exported or linked, never synced as bytes.</summary>
+    [JsonIgnore] public bool IsNativeDocument => IsGoogleNative || IsSynologyOffice;
     /// <summary>Set by <see cref="RemoteIndex.BuildTree"/>.</summary>
     [JsonIgnore] public string RelPath { get; set; } = "";
 
