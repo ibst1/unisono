@@ -8,6 +8,7 @@ namespace Unisono.App;
 ///   files and folders in a Drive pair:          "Open in Google Drive"
 ///   the same in a NAS pair:                      "Open in Synology Drive"
 ///   .docx/.xlsx/.pptx in a Drive pair:           "Open in Google Docs / Sheets / Slides"
+///   files and folders in a Drive / NAS pair:     "Share on Google Drive..." / "Share via Synology..."
 ///   the background of any folder, Shift only:    "Open this folder online (Unisono)"
 /// Explorer ignores AppliesTo for background entries (tested: with a condition they never show), so that one cannot be
 /// limited to synced folders; it is an extended verb (Shift+right-click) and says so when the folder is not synced.
@@ -21,6 +22,8 @@ static class ExplorerMenu
     private const string NasVerb = "Unisono.OpenSynologyDrive";
     private const string DocsVerb = "Unisono.OpenGoogleDocs";
     private const string BackgroundVerb = "Unisono.OpenFolderOnline";
+    private const string DriveShareVerb = "Unisono.ShareGoogleDrive";
+    private const string NasShareVerb = "Unisono.ShareSynology";
     private const string BackgroundKey = @"Directory\Background\shell";
 
     private static readonly (string Ext, string Label)[] OfficeTypes =
@@ -46,6 +49,8 @@ static class ExplorerMenu
             {
                 if (drive != null) Add($@"{key}\{DriveVerb}", "Open in Google Drive", drive, $"\"{exe}\" --open drive \"%1\"", exe);
                 if (nas != null) Add($@"{key}\{NasVerb}", "Open in Synology Drive", nas, $"\"{exe}\" --open nas \"%1\"", exe);
+                if (drive != null) Add($@"{key}\{DriveShareVerb}", "Share on Google Drive...", drive, $"\"{exe}\" --share drive \"%1\"", exe);
+                if (nas != null) Add($@"{key}\{NasShareVerb}", "Share via Synology...", nas, $"\"{exe}\" --share nas \"%1\"", exe);
             }
             if (drive != null || nas != null)
             {
@@ -92,7 +97,7 @@ static class ExplorerMenu
     public static void Remove()
     {
         foreach (var key in Targets.Append(BackgroundKey))
-            foreach (var verb in new[] { DriveVerb, NasVerb, BackgroundVerb })
+            foreach (var verb in new[] { DriveVerb, NasVerb, BackgroundVerb, DriveShareVerb, NasShareVerb })
                 Registry.CurrentUser.DeleteSubKeyTree($@"{Classes}\{key}\{verb}", throwOnMissingSubKey: false);
         foreach (var (ext, _) in OfficeTypes)
             Registry.CurrentUser.DeleteSubKeyTree($@"{Classes}\SystemFileAssociations\{ext}\shell\{DocsVerb}", throwOnMissingSubKey: false);

@@ -12,6 +12,11 @@ static class Program
             ApplicationConfiguration.Initialize();
             return OpenOnline.Run(args[1], args[2]);
         }
+        if (args.Length >= 3 && args[0] == "--share")
+        {
+            ApplicationConfiguration.Initialize();
+            return ShareForm.Run(args[1], args[2]);
+        }
         // One tray app per data dir. A second start just asks the running one to show its window.
         using var show = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\Unisono.Show." + SyncLock.Suffix, out var created);
         if (!created)

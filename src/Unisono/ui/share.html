@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Share</title>
+<style>
+:root {
+  --bg: #f6f6f4; --panel: #ffffff; --panel2: #f0f0ed; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dd;
+  --accent: #2f6fbd; --accent-text: #ffffff; --green: #2e8b57; --amber: #c98300; --red: #c83232;
+  --mono: "Cascadia Mono", Consolas, monospace; color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1b1b1a; --panel: #252524; --panel2: #2e2e2c; --text: #ececea; --muted: #9d9d97; --line: #383836;
+          --accent: #5b9be6; --accent-text: #0e1a2a; --green: #4fbf83; --amber: #e6a632; --red: #ec6a6a; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; padding: 18px 20px; }
+button, input, select, textarea { font: inherit; color: inherit; }
+h1 { font-size: 17px; margin: 0 0 2px; word-break: break-word; }
+.sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 18px 0 8px; font-weight: 600; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.row { display: flex; align-items: center; gap: 10px; }
+.row + .row { margin-top: 8px; }
+.grow { flex: 1; min-width: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 12.5px; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn { border: 1px solid var(--line); background: var(--panel2); border-radius: 7px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+.btn:disabled { opacity: .5; cursor: default; }
+input[type=text], input[type=password], input[type=date], select, textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; min-width: 0; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.person { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.person:last-child { border-bottom: 0; }
+.avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: var(--accent-text); display: grid; place-items: center; font-weight: 700; flex: none; }
+.link { font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+.note { background: var(--panel2); border-radius: 8px; padding: 9px 12px; font-size: 13px; color: var(--muted); margin: 8px 0; }
+.note.err { color: var(--red); } .note.warn { color: var(--amber); }
+.check { display: flex; align-items: center; gap: 6px; }
+.footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+#loading { color: var(--muted); padding: 40px 0; text-align: center; }
+</style>
+</head>
+<body>
+<div id="loading">Loading sharing settings...</div>
+<div id="app" hidden></div>
+<script>
+"use strict";
+const pending = new Map(); let seq = 0;
+function call(method, params) {
+  return new Promise((resolve, reject) => {
+    const id = String(++seq); pending.set(id, { resolve, reject });
+    window.chrome.webview.postMessage({ id, method, params: params || {} });
+  });
+}
+window.chrome.webview.addEventListener("message", e => {
+  const m = e.data, p = pending.get(m.id); if (!p) return; pending.delete(m.id);
+  m.ok ? p.resolve(m.result) : p.reject(new Error(m.error));
+});
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const ROLE = { owner: "Owner", writer: "Editor", commenter: "Commenter", reader: "Viewer", organizer: "Manager", fileOrganizer: "Content manager" };
+let I = null, msg = "";
+
+function roleSelect(id, value, withRemove) {
+  return `<select id="${id}">${["reader", "commenter", "writer"].map(r => `<option value="${r}" ${r === value ? "selected" : ""}>${ROLE[r]}</option>`).join("")}
+    ${withRemove ? `<option value="remove">Remove access</option>` : ""}</select>`;
+}
+
+async function act(method, params, doneText) {
+  msg = "";
+  document.querySelectorAll("button, select, input").forEach(el => el.disabled = true);
+  try { I = await call(method, params); if (doneText) msg = `<div class="note">${esc(doneText)}</div>`; }
+  catch (e) { msg = `<div class="note err">${esc(e.message)}</div>`; }
+  render();
+}
+
+function render() {
+  $("#loading").hidden = true; $("#app").hidden = false;
+  if (I.kind === "drive") renderDrive(); else renderNas();
+}
+
+function renderDrive() {
+  const what = I.isFolder ? "folder" : "file";
+  const g = I.general;
+  $("#app").innerHTML = `
+    <h1>Share "${esc(I.name)}"</h1>
+    <div class="sub">Google Drive &middot; ${esc(I.account || "")}${I.isDerived ? " &middot; the Google document behind this exported copy" : ""}</div>
+    ${I.canShare ? "" : `<div class="note warn">This account may not change who has access to this ${what}.</div>`}
+    <div id="msg">${msg}</div>
+
+    <h2>Add people</h2>
+    <div class="card">
+      <div class="row"><input type="text" id="emails" class="grow" placeholder="e-mail addresses, comma-separated">${roleSelect("addRole", "reader")}</div>
+      <div class="row"><label class="check small"><input type="checkbox" id="notify" checked> Notify by e-mail</label></div>
+      <div class="row"><textarea id="message" class="grow" rows="2" placeholder="Message (optional)"></textarea></div>
+      <div class="row" style="justify-content:flex-end"><button class="btn primary" id="add">Share</button></div>
+    </div>
+
+    <h2>People with access</h2>
+    <div class="card">${I.people.map(p => `
+      <div class="person"><div class="avatar">${esc((p.name || p.email || "?")[0].toUpperCase())}</div>
+        <div class="grow"><div class="ellipsis">${esc(p.name || p.email)}${p.isMe ? " <span class='muted'>(you)</span>" : ""}</div>
+          <div class="small muted ellipsis">${esc(p.email || (p.type === "group" ? "group" : ""))}</div></div>
+        ${p.role === "owner" || p.isMe ? `<span class="small muted">${ROLE[p.role] || p.role}</span>` : roleSelect("role-" + p.id, p.role, true).replace("<select", `<select data-perm="${esc(p.id)}"`)}
+      </div>`).join("") || `<div class="muted small">Only you.</div>`}</div>
+
+    <h2>General access</h2>
+    <div class="card">
+      <div class="row">
+        <select id="genMode" class="grow">
+          <option value="restricted" ${g.mode === "restricted" ? "selected" : ""}>Restricted: only people added above</option>
+          <option value="anyone" ${g.mode === "anyone" ? "selected" : ""}>Anyone with the link</option>
+          ${I.domain ? `<option value="domain" ${g.mode === "domain" ? "selected" : ""}>Anyone at ${esc(I.domain)} with the link</option>` : ""}
+        </select>
+        <span id="genRoleWrap" ${g.mode === "restricted" ? "hidden" : ""}>${roleSelect("genRole", g.role)}</span>
+      </div>
+    </div>
+
+    <h2>Link</h2>
+    <div class="card"><div class="row"><div class="grow link">${esc(I.link)}</div><button class="btn" id="copy">Copy link</button></div></div>
+
+    <div class="footer"><button class="btn" id="openWeb">Open in Google Drive</button><button class="btn primary" id="done">Done</button></div>`;
+
+  $("#add").onclick = () => act("drive.add", { emails: $("#emails").value, role: $("#addRole").value, notify: $("#notify").checked, message: $("#message").value }, "Shared.");
+  document.querySelectorAll("[data-perm]").forEach(s => s.onchange = () =>
+    act("drive.role", { permissionId: s.dataset.perm, role: s.value }, s.value === "remove" ? "Access removed." : "Access changed."));
+  const setGeneral = () => act("drive.general", { mode: $("#genMode").value, role: $("#genRole").value }, "General access changed.");
+  $("#genMode").onchange = () => { $("#genRoleWrap").hidden = $("#genMode").value === "restricted"; setGeneral(); };
+  $("#genRole").onchange = setGeneral;
+  $("#copy").onclick = async () => { await call("copy", { text: I.link }); $("#copy").textContent = "Copied"; setTimeout(() => $("#copy").textContent = "Copy link", 1500); };
+  $("#openWeb").onclick = () => call("open", { url: I.link });
+  $("#done").onclick = () => call("close");
+  if (!I.canShare) document.querySelectorAll("#add, #genMode, #genRole, [data-perm]").forEach(el => el.disabled = true);
+}
+
+function renderNas() {
+
+  $("#app").innerHTML = `
+    <h1>Share "${esc(I.name)}"</h1>
+    <div class="sub">Synology NAS &middot; <span class="link">${esc(I.path)}</span></div>
+    <div id="msg">${msg}</div>
+
+    <h2>Sharing links</h2>
+    <div class="card">${I.links.length ? I.links.map(l => `
+      <div class="row"><div class="grow"><div class="link">${esc(l.url)}</div>
+          <div class="small muted">${l.maxOpens ? "at most " + l.maxOpens + " opens" : "no limit on opens"}${l.hasPassword ? " &middot; password protected" : ""}</div></div>
+        <button class="btn" data-copy="${esc(l.url)}">Copy</button><button class="btn" data-del="${esc(l.id)}">Delete</button></div>`).join("")
+      : `<div class="muted small">No link yet. Anyone who has a link can open the ${I.isFolder ? "folder" : "file"}; a password and a limit on the number of opens restrict that.</div>`}</div>
+
+    <h2>New link</h2>
+    <div class="card">
+      <div class="row"><label class="small muted" style="width:110px">Password</label><input type="password" id="pw" class="grow" placeholder="optional" autocomplete="new-password"></div>
+      <div class="row"><label class="small muted" style="width:110px">Max opens</label><input type="text" id="maxOpens" inputmode="numeric" style="width:90px" placeholder="no limit"><span class="small muted">optional</span></div>
+      <div class="row" style="justify-content:flex-end"><button class="btn primary" id="create">Create link</button></div>
+    </div>
+
+    <div class="footer"><button class="btn primary" id="done">Done</button></div>`;
+
+  document.querySelectorAll("[data-copy]").forEach(b => b.onclick = async () => { await call("copy", { text: b.dataset.copy }); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1500); });
+  document.querySelectorAll("[data-del]").forEach(b => b.onclick = () => act("nas.delete", { id: b.dataset.del }, "Link deleted; it no longer works."));
+  $("#create").onclick = async () => {
+    const before = new Set(I.links.map(l => l.id));
+    await act("nas.create", { password: $("#pw").value, maxOpens: parseInt($("#maxOpens").value || "0", 10) || 0 }, "Link created and copied.");
+    const fresh = I.links.find(l => !before.has(l.id));
+    if (fresh) call("copy", { text: fresh.url });
+  };
+  $("#done").onclick = () => call("close");
+}
+
+document.addEventListener("keydown", e => { if (e.key === "Escape") call("close"); });
+(async () => {
+  try { I = await call("info"); render(); }
+  catch (e) { $("#loading").innerHTML = `<div class="note err">${esc(e.message)}</div>`; }
+})();
+</script>
+</body>
+</html>

@@ -439,6 +439,47 @@ public sealed class SynologyClient : IDisposable
         }
     }
 
+    /// <summary>A File Station sharing link (https://gofile.me/...).</summary>
+    public sealed record ShareLink(string Id, string Url, string Path, int MaxOpens, bool HasPassword);
+
+    private static ShareLink ToLink(JsonElement l) => new(
+        l.GetProperty("id").GetString()!, l.GetProperty("url").GetString()!, l.GetProperty("path").GetString()!,
+        l.TryGetProperty("expire_times", out var t) && t.TryGetInt32(out var times) ? times : 0,
+        l.TryGetProperty("has_password", out var hp) && hp.GetBoolean());
+
+    /// <summary>Existing sharing links for exactly this File Station path.</summary>
+    public async Task<List<ShareLink>> SharingLinksAsync(string path, CancellationToken ct)
+    {
+        var doc = await CallAsync(_fsPath, new Dictionary<string, string>
+        {
+            ["api"] = "SYNO.FileStation.Sharing", ["version"] = "3", ["method"] = "list", ["offset"] = "0", ["limit"] = "1000",
+        }, ct);
+        return doc.RootElement.GetProperty("data").GetProperty("links").EnumerateArray().Select(ToLink)
+            .Where(l => l.Path.Equals(path, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    /// <summary>
+    /// Creates a link, optionally with a password and a maximum number of opens. The path goes as plain text (a JSON
+    /// array is refused). DSM 7 accepts but ignores date_expired here (tested with create and edit), so no expiry date.
+    /// </summary>
+    public async Task<ShareLink> CreateSharingLinkAsync(string path, string? password, int maxOpens, CancellationToken ct)
+    {
+        var form = new Dictionary<string, string>
+        {
+            ["api"] = "SYNO.FileStation.Sharing", ["version"] = "3", ["method"] = "create", ["path"] = path,
+        };
+        if (!string.IsNullOrEmpty(password)) form["password"] = password;
+        if (maxOpens > 0) form["expire_times"] = maxOpens.ToString();
+        var doc = await CallAsync(_fsPath, form, ct);
+        return ToLink(doc.RootElement.GetProperty("data").GetProperty("links")[0]);
+    }
+
+    public async Task DeleteSharingLinkAsync(string id, CancellationToken ct) =>
+        await CallAsync(_fsPath, new Dictionary<string, string>
+        {
+            ["api"] = "SYNO.FileStation.Sharing", ["version"] = "3", ["method"] = "delete", ["id"] = id,
+        }, ct);
+
     /// <summary>Synology Drive's permanent link id for a file (the stable part of https://nas/d/f/&lt;id&gt;).</summary>
     public async Task<string> DrivePermanentLinkAsync(string drivePath, CancellationToken ct)
     {

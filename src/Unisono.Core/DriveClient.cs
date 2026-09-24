@@ -297,6 +297,45 @@ public sealed class DriveClient
         await req.ExecuteAsync(ct);
     }
 
+    // ------------------------------------------------------------------ sharing
+
+    /// <summary>Name, type, web link and whether this account may change sharing.</summary>
+    public async Task<File> GetShareInfoAsync(string fileId, CancellationToken ct)
+    {
+        var req = _service.Files.Get(fileId);
+        req.Fields = "id, name, mimeType, webViewLink, capabilities(canShare), owners(emailAddress, displayName)";
+        return await req.ExecuteAsync(ct);
+    }
+
+    public async Task<IList<Google.Apis.Drive.v3.Data.Permission>> ListPermissionsAsync(string fileId, CancellationToken ct)
+    {
+        var req = _service.Permissions.List(fileId);
+        req.Fields = "permissions(id, type, role, emailAddress, domain, displayName, deleted)";
+        return (await req.ExecuteAsync(ct)).Permissions;
+    }
+
+    /// <summary>type: user, group, domain or anyone; role: reader, commenter or writer.</summary>
+    public async Task CreatePermissionAsync(string fileId, string type, string role, string? email, string? domain,
+        bool notify, string? message, CancellationToken ct)
+    {
+        var req = _service.Permissions.Create(new Google.Apis.Drive.v3.Data.Permission
+        {
+            Type = type, Role = role, EmailAddress = email, Domain = domain,
+        }, fileId);
+        if (type is "user" or "group")
+        {
+            req.SendNotificationEmail = notify;
+            if (notify && !string.IsNullOrWhiteSpace(message)) req.EmailMessage = message;
+        }
+        await req.ExecuteAsync(ct);
+    }
+
+    public async Task UpdatePermissionAsync(string fileId, string permissionId, string role, CancellationToken ct) =>
+        await _service.Permissions.Update(new Google.Apis.Drive.v3.Data.Permission { Role = role }, fileId, permissionId).ExecuteAsync(ct);
+
+    public async Task DeletePermissionAsync(string fileId, string permissionId, CancellationToken ct) =>
+        await _service.Permissions.Delete(fileId, permissionId).ExecuteAsync(ct);
+
     public static bool IsFolder(File f) => f.MimeType == FolderMime;
 
     /// <summary>Docs, Sheets, Slides, Forms, ... : exist on Drive but have no byte representation.</summary>

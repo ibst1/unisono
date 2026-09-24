@@ -66,6 +66,12 @@ Inside synced folders, right-click (in Windows 11: *Show more options*):
 * a .docx/.xlsx/.pptx in a Drive pair: **Open in Google Docs / Sheets / Slides** (Office-compatibility
   editing); an exported Google Doc opens the original document
 * **Shift+right-click** on the empty background of a folder: **Open this folder online (Unisono)**
+* **Share on Google Drive...**: who has access (viewer, commenter, editor; change or remove),
+  add people with an optional e-mail notification, general access (restricted, anyone with the
+  link, your Google Workspace domain), copy the link. An exported Google Doc shares the original.
+* **Share via Synology...**: File Station sharing links (gofile.me) with an optional password
+  and a limit on the number of opens; copy or delete them. (DSM 7 ignores expiry dates for these
+  links through its API, so none are offered.)
 
 The entries are registered per user (no admin) and limited to synced folders with a path
 condition. Explorer ignores such conditions on folder backgrounds, hence the Shift-only entry

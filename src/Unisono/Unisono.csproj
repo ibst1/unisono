@@ -34,6 +34,7 @@
   <ItemGroup>
     <!-- The whole UI: one HTML page with inline CSS and JS, loaded with NavigateToString. -->
     <EmbeddedResource Include="ui\index.html" LogicalName="Unisono.ui.index.html" />
+    <EmbeddedResource Include="ui\share.html" LogicalName="Unisono.ui.share.html" />
   </ItemGroup>
 
 </Project>
