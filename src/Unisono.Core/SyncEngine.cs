@@ -5,6 +5,8 @@ namespace Unisono;
 public sealed class CycleStats
 {
     public int Downloaded, Uploaded, Exported, Linked, Trashed, Recycled, Conflicts, Errors, Moved, Online;
+    /// <summary>Things the user should hear about right away (the tray shows them), beyond the log.</summary>
+    public List<string> Notices { get; } = new();
     public bool Any => Downloaded + Uploaded + Exported + Linked + Trashed + Recycled + Conflicts + Errors + Moved + Online > 0;
     public override string ToString() =>
         $"{Downloaded} down, {Uploaded} up, {Moved} moved,{(Online > 0 ? $" {Online} online-only," : "")} {Exported} exported, {Linked} linked, {Trashed} deleted remotely, {Recycled} recycled locally, {Conflicts} conflicts, {Errors} errors";
@@ -546,6 +548,12 @@ public sealed partial class SyncEngine
     private async Task DownloadAsync(RemoteNode node, string path, CycleStats stats, string why, CancellationToken ct, bool keep = false)
     {
         if (!keep && !KeepLocal(path)) { Placeholder(node, path, stats, why); return; }
+        if (OpenElsewhere(path))
+        {
+            // Replacing a file that Word or Excel has open would let its next save undo the new version.
+            WarnOnce("open:" + node.RelPath, $"'{node.RelPath}' is open in another program; the new version comes once it is closed");
+            return;
+        }
         _doneThisCycle.Add(node.RelPath);
         var pin = OnDemand && (keep || ParentPinned(path) || (File.Exists(path) && CloudFiles.IsPinned(File.GetAttributes(path))));
         stats.Downloaded++;
@@ -571,6 +579,7 @@ public sealed partial class SyncEngine
         var stem = name[..^ext.Length];
         var conflictName = $"{stem} (conflict {Environment.MachineName} {DateTime.Now:yyyy-MM-dd HHmm}){ext}";
         var conflictRel = PathUtil.Join(PathUtil.ParentOf(rel), conflictName);
+        if (OpenElsewhere(path)) { WarnOnce("open:" + rel, $"'{rel}' is open in another program; the conflict is sorted out once it is closed"); return; }
         stats.Conflicts++;
         if (Planned("keep both (conflict)", rel, $"{why}; local copy becomes '{conflictName}'")) return;
         var conflictPath = Local(conflictRel);
@@ -611,22 +620,38 @@ public sealed partial class SyncEngine
             if (editedLocally && writeBack && Up)
             {
                 if (Settling(l)) return; // still being saved
+                if (OpenElsewhere(path)) { WarnOnce("open:" + derivedRel, $"'{derivedRel}' is open in another program; it is synced once it is closed"); return; }
+                string? why = null;
                 if (upToDate)
                 {
-                    await Try(rel, stats, () => WriteBackAsync(node, rel, derivedRel, path, remote, stats, ct));
-                    return;
+                    // Only a round trip that loses nothing (no tabs, no open comments) goes back into the document.
+                    try { why = DryRun ? null : await _store.WhyNotImportAsync(node, ct); }
+                    catch (Exception ex) { why = $"it could not be checked ({ex.Message})"; }
+                    if (why == null)
+                    {
+                        await Try(rel, stats, () => WriteBackAsync(node, rel, derivedRel, path, remote, stats, ct));
+                        return;
+                    }
                 }
-                // Edited here and changed in Google since: keep the edit as its own file (uploaded as an ordinary file on
-                // the next cycle) and let the export below bring the document's current version.
-                stats.Conflicts++;
-                if (!Planned("keep local edit of export as conflict copy", derivedRel))
+                // The edit is kept as its own file (uploaded as an ordinary file on the next cycle) and the export below
+                // brings back the document's own version: edited here and changed in Google too, or not safe to write back.
+                if (upToDate) stats.Uploaded++; else stats.Conflicts++;
+                if (!Planned(upToDate ? "keep local edit of export as its own file" : "keep local edit of export as conflict copy", derivedRel, why))
                 {
                     var ext = Path.GetExtension(derivedRel);
-                    var conflictRel = derivedRel[..^ext.Length] + $" (conflict {Environment.MachineName} {DateTime.Now:yyyy-MM-dd HHmm}){ext}";
+                    var asideRel = derivedRel[..^ext.Length] + $" ({(upToDate ? "edited" : "conflict")} {Environment.MachineName} {DateTime.Now:yyyy-MM-dd HHmm}){ext}";
+                    // An ordinary file again (a files-on-demand placeholder would still carry the document's identity).
+                    if (OnDemand && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) CloudFiles.Revert(path);
                     File.SetAttributes(path, File.GetAttributes(path) & ~FileAttributes.ReadOnly);
-                    File.Move(path, Local(conflictRel));
+                    File.Move(path, Local(asideRel));
                     local.Remove(derivedRel);
-                    _log.Warn($"[{_pair.Name}] conflict (edited here, changed in Google too): '{derivedRel}' kept as '{PathUtil.NameOf(conflictRel)}'");
+                    var name = PathUtil.NameOf(asideRel);
+                    if (upToDate)
+                    {
+                        _log.Warn($"[{_pair.Name}] '{derivedRel}' not written back into the Google document, because {why}; your edit is kept as '{name}'");
+                        stats.Notices.Add($"Your edit of {PathUtil.NameOf(derivedRel)} was saved as \"{name}\" and uploaded next to it: the Google document was not changed, because {why}.");
+                    }
+                    else _log.Warn($"[{_pair.Name}] conflict (edited here, changed in Google too): '{derivedRel}' kept as '{name}'");
                 }
             }
             else if (editedLocally && kind == EntryKind.Export)
@@ -662,6 +687,11 @@ public sealed partial class SyncEngine
             derived.Add(rel);
         }
 
+        if (File.Exists(path) && OpenElsewhere(path))
+        {
+            WarnOnce("open:" + derivedRel, $"'{derivedRel}' is open in another program; the new version comes once it is closed");
+            return;
+        }
         await Try(rel, stats, async () =>
         {
             if (kind == EntryKind.Link)
@@ -862,6 +892,26 @@ public sealed partial class SyncEngine
     }
 
     /// <summary>Runs a transfer so the tray can show it (arrows, the file in the tooltip).</summary>
+    /// <summary>
+    /// Open in another program (Word, Excel...): an exclusive open fails, or Office's owner file "~$..." sits next to it.
+    /// An online-only placeholder is never "open": it has no content here to protect.
+    /// </summary>
+    private static bool OpenElsewhere(string path)
+    {
+        try
+        {
+            if (!File.Exists(path) || CloudFiles.IsDehydrated(File.GetAttributes(path))) return false;
+            var dir = Path.GetDirectoryName(path)!;
+            var name = Path.GetFileName(path);
+            if (File.Exists(Path.Combine(dir, "~$" + name)) || (name.Length > 2 && File.Exists(Path.Combine(dir, "~$" + name[2..])))
+                || (name.Length > 1 && File.Exists(Path.Combine(dir, "~$" + name[1..])))) return true;
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+            return false;
+        }
+        catch (IOException) { return true; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
+
     private async Task<T> Tracked<T>(SyncActivity.Direction dir, string rel, long size, Func<Task<T>> op)
     {
         using var t = SyncActivity.Begin(dir, _pair.Name, rel, size);

@@ -274,7 +274,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="field"><label>Computers</label><input type="text" id="pairMachines" placeholder="empty = every computer">
     <div class="help" id="pairMachinesHelp"></div></div>
   <div class="field" id="pairDocsRow"><label id="pairDocsLabel">Google Docs</label>
-    <select id="pairDocs"><option value="Export">Export to docx / xlsx / pptx; your edits go back into the document</option>
+    <select id="pairDocs"><option value="Export">Export to docx / xlsx / pptx; your edits go back into the document (Docs: needs the Google Docs API, see Accounts)</option>
       <option value="Link">Link that opens the document in the browser</option><option value="Skip">Skip</option></select></div>
   <div class="field drive-only"><label>Cloud-only files</label>
     <div class="inline"><input type="number" id="pairMb" min="0" style="width:110px"> <span class="muted small">MB and larger stay online as links (0 = off)</span></div></div>
@@ -401,11 +401,18 @@ function renderAccounts() {
     ? `<div class="note">OAuth client: project <b>${esc(o.project || "?")}</b>${o.desktop ? "" : " <span class='chip err plain'>not a Desktop app client</span>"}.
         With an <i>Internal</i> consent screen only accounts of that project's Google Workspace organisation can sign in;
         for other accounts (e.g. private Gmail) set it to <i>External</i> and publish it.
-        <button class="btn link" id="btnClient">Change...</button></div>`
+        <button class="btn link" id="btnClient">Change...</button>
+        ${!S.docsApi ? "" : S.docsApi.enabled
+          ? `<div class="small muted" style="margin-top:6px">Google Docs API: enabled. Edits of exported Google documents go back into the document when nothing would be lost.</div>`
+          : `<div class="note warn" style="margin-top:8px"><b>Google Docs API is not enabled</b> for this project. Unisono needs it to check that a Google document
+              has no tabs before writing your Word edits back into it; until then such edits are kept as a separate file next to the document.
+              <button class="btn link" id="btnDocsApi">Enable it in Google Cloud Console...</button> <button class="btn link" id="btnDocsRecheck">Check again</button></div>`}</div>`
     : `<div class="note warn">No OAuth client yet. Create one in Google Cloud Console (see README: one-time setup) and choose its JSON here.
         <button class="btn link" id="btnClient">Choose OAuth client JSON...</button></div>`;
   $("#btnClient").onclick = async () => { try { const s = await call("google.setClient"); if (s) { S = s; render(); } } catch (e) { toast(e.message, true); } };
   $("#btnAddGoogle").disabled = !o;
+  if ($("#btnDocsApi")) $("#btnDocsApi").onclick = () => call("open", { what: "url", url: S.docsApi.url || "https://console.cloud.google.com/apis/library/docs.googleapis.com" });
+  if ($("#btnDocsRecheck")) $("#btnDocsRecheck").onclick = () => { call("google.refresh"); toast("Checking the Google Docs API..."); };
 
   $("#googleList").innerHTML = S.google.length ? S.google.map(a => {
     const used = a.limit > 0 ? Math.min(100, a.usage / a.limit * 100) : 0;

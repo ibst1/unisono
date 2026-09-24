@@ -110,6 +110,7 @@ public sealed class FolderStore : IRemoteStore
     public bool CanLink(RemoteNode node) => false;
     public bool CanImport(RemoteNode node) => false;
     public Task<RemoteNode> ImportAsync(RemoteNode node, string localPath, string mime, CancellationToken ct) => throw new NotSupportedException();
+    public Task<string?> WhyNotImportAsync(RemoteNode node, CancellationToken ct) => Task.FromResult<string?>("not a document");
     public Task<string> LinkUrlAsync(RemoteNode node, CancellationToken ct) => throw new NotSupportedException();
     public Task ExportAsync(RemoteNode node, string exportMime, string localPath, CancellationToken ct) => throw new NotSupportedException();
 

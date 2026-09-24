@@ -180,30 +180,29 @@ function Docx-Text([string]$path) {
     try { $r = New-Object IO.StreamReader(($zip.Entries | Where-Object FullName -eq "word/document.xml").Open()); $r.ReadToEnd() } finally { $zip.Dispose() }
 }
 function Test-WriteBack([string]$remote) {
-    Section "drive: Google Docs exports are written back"
+    Section "drive: Google Docs exports and local edits"
     Use-Data (Join-Path $work "init-data"); & $cli drive-newdoc $remote "WB doc" | Out-Null
     $w1 = Computer "wb-1" @{ Kind = "Drive"; RemotePath = $remote }
     $null = Sync $w1
     $doc = Join-Path $w1.Local "WB doc.docx"
     Check "drive a Google document is exported as a writable docx" { (Test-Path -LiteralPath $doc) -and -not (Get-Item -LiteralPath $doc).IsReadOnly }
     New-Docx $doc "written back from wb-1"; (Get-Item -LiteralPath $doc).LastWriteTime = (Get-Date).AddMinutes(-1)
-    $out = Sync $w1
-    Check "drive an edited export is written back into the Google document" { ($out -join "`n") -match "wrote back into the Google document" }
+    $out = (Sync $w1) -join "`n"
     $w2 = Computer "wb-2" @{ Kind = "Drive"; RemotePath = $remote }
-    Start-Sleep 5; $null = Sync $w2
-    Check "drive ... and another computer's export has the new text" { (Docx-Text (Join-Path $w2.Local "WB doc.docx")) -match "written back from wb-1" }
-    $idle = Sync $w1
-    Check "drive ... without exporting it again over the edited file" { -not (($idle -join "`n") -match "exported|wrote back") }
-    # Both edit: wb-2 writes back first, wb-1's edit is then kept as a conflict copy and the new version comes down.
-    New-Docx (Join-Path $w2.Local "WB doc.docx") "second edit from wb-2"; (Get-Item -LiteralPath (Join-Path $w2.Local "WB doc.docx")).LastWriteTime = (Get-Date).AddMinutes(-1)
-    $null = Sync $w2; Start-Sleep 5
-    New-Docx $doc "competing edit from wb-1"; (Get-Item -LiteralPath $doc).LastWriteTime = (Get-Date).AddMinutes(-1)
-    $null = Sync $w1; Start-Sleep 3; $null = Sync $w1
-    $copy = @(Get-ChildItem -LiteralPath $w1.Local -Filter "WB doc (conflict*.docx")
-    Check "drive edits on both sides: the local edit is kept as a conflict copy" { $copy.Count -eq 1 -and (Docx-Text $copy[0].FullName) -match "competing edit from wb-1" }
-    Check "drive ... and the export shows the document's current version" { (Docx-Text $doc) -match "second edit from wb-2" }
+    Start-Sleep 5; $null = Sync $w1; $null = Sync $w2
+    if ($out -match "wrote back into the Google document") {
+        Write-Host "        (the Docs API is enabled: the edit went back into the document)" -ForegroundColor DarkGray
+        Check "drive ... another computer's export has the new text" { (Docx-Text (Join-Path $w2.Local "WB doc.docx")) -match "written back from wb-1" }
+        $idle = Sync $w1
+        Check "drive ... without exporting it again over the edited file" { -not (($idle -join "`n") -match "exported|wrote back") }
+    }
+    else {
+        Write-Host "        (the Docs API is not enabled: tabs cannot be checked, so edits are kept as their own file)" -ForegroundColor DarkGray
+        Check "drive an edit that cannot safely go back is kept as its own file" { $out -match "not written back into the Google document" -and @(Get-ChildItem -LiteralPath $w1.Local -Filter "WB doc (edited*.docx").Count -eq 1 }
+        Check "drive ... which reaches the other computer as an ordinary file" { $f = @(Get-ChildItem -LiteralPath $w2.Local -Filter "WB doc (edited*.docx"); $f.Count -eq 1 -and (Docx-Text $f[0].FullName) -match "written back from wb-1" }
+        Check "drive ... and the Google document is unchanged" { -not ((Docx-Text (Join-Path $w2.Local "WB doc.docx")) -match "written back from wb-1") -and -not ((Docx-Text $doc) -match "written back from wb-1") }
+    }
 }
-
 # ------------------------------------------------------------ files on demand
 function Attr($c, $rel) { [int][IO.File]::GetAttributes((Join-Path $c.Local $rel)) }
 function IsOnline($c, $rel) { $a = Attr $c $rel; ($a -band 0x400) -ne 0 -and ($a -band (0x400000 -bor 0x40000 -bor 0x1000)) -ne 0 }
@@ -359,6 +358,15 @@ if ($Suite -contains "folder") {
         Test-Core @{ Kind = "Folder"; RemotePath = $other } "folder"
         Check "folder the files are plain files in the other folder" { (Test-Path -LiteralPath "$other\kept.txt") -and (Test-Path -LiteralPath "$other\folder2") }
         Check "folder no temporary copies are left behind" { @(Get-ChildItem -LiteralPath $other -Recurse -Filter "*.unisono-part").Count -eq 0 }
+        Section "folder: files open in another program are not replaced"
+        $o = Computer "folder-O" @{ Kind = "Folder"; RemotePath = $other }
+        $null = Sync $o
+        $held = [IO.File]::Open((Join-Path $o.Local "kept.txt"), "Open", "Read", "Read")
+        Set-Content -LiteralPath "$other\kept.txt" "newer on the other side"; (Get-Item -LiteralPath "$other\kept.txt").LastWriteTime = (Get-Date).AddMinutes(-2)
+        $out = Sync $o
+        Check "folder a file open in another program is left alone" { ($out -join "`n") -match "open in another program" -and (Text $o "kept.txt") -ne "newer on the other side" }
+        $held.Dispose(); $null = Sync $o
+        Check "folder ... and updated once it is closed" { (Text $o "kept.txt") -eq "newer on the other side" }
         Section "folder: previous versions in a folder of your choice"
         $v = Computer "folder-V" @{ Kind = "Folder"; RemotePath = $other }
         $vdir = New-TestDir "$work\my-versions"

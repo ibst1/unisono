@@ -61,7 +61,9 @@ sealed class HostForm : Form
         _host.PairChanged += _ => OnUi(QueueState);
         _host.CycleCompleted += (ps, stats) =>
         {
-            if (stats.Conflicts > 0)
+            if (stats.Notices.Count > 0)
+                OnUi(() => _tray.ShowBalloonTip(10000, "Unisono", string.Join("\n", stats.Notices.Take(2)), ToolTipIcon.Info));
+            else if (stats.Conflicts > 0)
                 OnUi(() => _tray.ShowBalloonTip(8000, "Unisono: conflict",
                     $"{stats.Conflicts} file(s) in {ps.Pair.Name} changed on both sides. Both versions were kept (look for 'conflict' in the name).",
                     ToolTipIcon.Warning));

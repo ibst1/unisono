@@ -115,7 +115,15 @@ Unisono has no built-in client id. Create one in your Google account (free, no a
 takes a few minutes) and drop the JSON in `%LOCALAPPDATA%\Unisono\client_secret.json`.
 
 1. Open <https://console.cloud.google.com/> and create a project, e.g. "Unisono".
-2. Enable **Google Drive API** (search for it at the top, then *Enable*).
+2. Enable the APIs Unisono uses (search for each at the top, then *Enable*):
+   * **Google Drive API**: required, for everything.
+   * **Google Docs API**: needed to write edits of exported documents (docx) back into the Google
+     document. Unisono uses it only to check that a document has no tabs, which a Word file cannot
+     hold; without it, such edits are kept as a separate file next to the document instead. The
+     Accounts tab shows whether it is enabled, with a link to do it.
+
+   Nothing else: Sheets and Slides need no API of their own (their sheets and slides survive the
+   round trip; open comments are checked through the Drive API).
 3. **Google Auth Platform > Branding**: app name "Unisono", your email as support and
    developer contact.
 4. **Google Auth Platform > Audience**: if the project is in a Google Workspace
@@ -216,9 +224,11 @@ a conflict instead of being overwritten.
 * **GoogleDocs**: `Export` writes Docs/Sheets/Slides/Drawings as docx/xlsx/pptx/png,
   `Link` writes a `.url` shortcut that opens the document on Drive, `Skip` ignores them.
   Exports are ordinary, writable files: save an edit in Word, Excel or PowerPoint and it is
-  written back into the Google document (Drive converts it; the previous content stays in the
-  document's version history; comments and some Google-only formatting may not survive the
-  round trip). When the document also changed in Google since, the local edit is kept as
+  written back into the Google document, when nothing would be lost: the document has no tabs
+  (checked with the Google Docs API, see the one-time setup) and no open comments. Otherwise the
+  edit is kept as `Name (edited MACHINE time).docx` next to it, uploaded as an ordinary file, and
+  the tray says why. A write-back is converted by Drive; the previous content stays in the
+  document's version history, and some Google-only formatting may shift in the round trip. When the document also changed in Google since, the local edit is kept as
   `Name (conflict MACHINE time).docx` next to it and the export shows the current version.
   The export is re-written when the document changes on Drive. Drive caps exports at 10 MB.
   Synology Office exports stay read-only: DSM offers no way to write them back.

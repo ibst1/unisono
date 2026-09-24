@@ -84,6 +84,16 @@ public sealed class DriveStore : IRemoteStore
     public bool CanImport(RemoteNode node) => node.MimeType is "application/vnd.google-apps.document"
         or "application/vnd.google-apps.spreadsheet" or "application/vnd.google-apps.presentation";
 
+    public async Task<string?> WhyNotImportAsync(RemoteNode node, CancellationToken ct)
+    {
+        var risk = await _drive.RoundTripRiskAsync(node.Id, node.MimeType == "application/vnd.google-apps.document", ct);
+        if (risk == null)
+            return "Unisono cannot check it for tabs: the Google Docs API is not enabled for Unisono's Google project";
+        if (risk.Value.Tabs > 1) return $"it has {risk.Value.Tabs} tabs, which a Word file cannot hold (they would be merged into one)";
+        if (risk.Value.Comments > 0) return $"it has {risk.Value.Comments} open comment(s), which would lose their place";
+        return null;
+    }
+
     public async Task<RemoteNode> ImportAsync(RemoteNode node, string localPath, string mime, CancellationToken ct)
     {
         var updated = await _drive.ImportIntoAsync(localPath, node.Id, mime, ct);

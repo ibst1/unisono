@@ -137,7 +137,7 @@ try
             foreach (var f in children)
             {
                 var kind = DriveClient.IsFolder(f) ? "<dir>" : DriveClient.IsGoogleNative(f) ? "<gdoc>" : (f.Size?.ToString() ?? "?");
-                Console.WriteLine($"{f.ModifiedTimeDateTimeOffset:yyyy-MM-dd HH:mm}  {kind,10}  {f.Name}");
+                Console.WriteLine($"{f.ModifiedTimeDateTimeOffset:yyyy-MM-dd HH:mm:ss.fff}  {kind,10}  {f.Name}  v{f.Version}");
             }
             Console.WriteLine($"{children.Count} item(s)");
             return 0;
@@ -165,7 +165,15 @@ try
             Console.WriteLine($"moved {args[1]} to the Drive trash");
             return 0;
         }
-        case "drive-newdoc":
+        case "drive-docrisk":
+        {
+            // Diagnostic: what a docx round trip would lose in a Google document (tabs, open comments).
+            if (args.Length < 2) { Usage(); return 2; }
+            var drive = await DriveClient.ConnectAsync(ct, quiet: true);
+            var r = await drive.RoundTripRiskAsync(args[1], isDocument: true, ct);
+            Console.WriteLine(r == null ? "Docs API not reachable (not enabled for this OAuth project?)" : $"tabs={r.Value.Tabs} openComments={r.Value.Comments}");
+            return 0;
+        }        case "drive-newdoc":
         {
             // Tests: an empty Google document (Docs) in a Drive folder.
             if (args.Length < 3) { Usage(); return 2; }

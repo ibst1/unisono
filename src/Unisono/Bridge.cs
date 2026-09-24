@@ -32,6 +32,9 @@ sealed class Bridge : IAsyncDisposable
 
     private sealed record GoogleInfo(string? Email, long Usage, long Limit, string? Error);
 
+    /// <summary>Google Docs API for the OAuth client's project: null = not checked yet / unknown.</summary>
+    private (bool Enabled, string? Url)? _docsApi;
+
     public Bridge(Form owner, Log log, SyncHost host, AppSettings settings, Func<Task> restartHost, Action pushState)
     {
         _owner = owner;
@@ -236,6 +239,7 @@ sealed class Bridge : IAsyncDisposable
         machine = Environment.MachineName,
         dataDir = AppPaths.DataDir,
         oauthClient = OAuthInfo(),
+        docsApi = _docsApi == null ? null : new { enabled = _docsApi.Value.Enabled, url = _docsApi.Value.Url },
         google = GoogleAccounts.Load().Select(a => new
         {
             id = a.Id,
@@ -365,6 +369,7 @@ sealed class Bridge : IAsyncDisposable
                 var (email, usage, limit, _) = await drive.WhoAmIAsync(cts.Token);
                 if (a.Email == null) GoogleAccounts.Upsert(a.Id, email);
                 _google[a.Id] = new GoogleInfo(email, usage, limit, null);
+                if (force || _docsApi is not { Enabled: true }) _docsApi = await drive.DocsApiStatusAsync(cts.Token) ?? _docsApi;
             }
             catch (Exception ex)
             {

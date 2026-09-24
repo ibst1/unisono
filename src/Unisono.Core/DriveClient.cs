@@ -17,7 +17,7 @@ namespace Unisono;
 public sealed class DriveClient
 {
     public const string FolderMime = "application/vnd.google-apps.folder";
-    public const string FileFields = "id, name, mimeType, size, modifiedTime, md5Checksum, parents, trashed";
+    public const string FileFields = "id, name, mimeType, size, modifiedTime, md5Checksum, parents, trashed, version";
     private const string OctetStream = "application/octet-stream";
 
     private readonly DriveService _service;
@@ -318,6 +318,49 @@ public sealed class DriveClient
         if (progress.Status != UploadStatus.Completed)
             throw new IOException($"Writing '{Path.GetFileName(localPath)}' back into the Google document failed: {progress.Exception?.Message ?? progress.Status.ToString()}");
         return up.ResponseBody;
+    }
+
+    /// <summary>
+    /// What a docx round trip would lose in a Google document: its tabs (Docs API) and open comments (Drive API).
+    /// Null when the Docs API cannot be reached (not enabled for the OAuth project): then nothing is known.
+    /// </summary>
+    public async Task<(int Tabs, int Comments)?> RoundTripRiskAsync(string fileId, bool isDocument, CancellationToken ct)
+    {
+        var tabs = 1;
+        if (isDocument)
+        {
+            using var res = await _service.HttpClient.GetAsync(
+                $"https://docs.googleapis.com/v1/documents/{fileId}?includeTabsContent=true&fields=tabs(tabProperties(tabId),childTabs(tabProperties(tabId)))", ct);
+            if (!res.IsSuccessStatusCode) return null;
+            using var doc = System.Text.Json.JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+            static int Count(System.Text.Json.JsonElement list) => list.EnumerateArray().Sum(x => 1 + (x.TryGetProperty("childTabs", out var c) ? Count(c) : 0));
+            tabs = doc.RootElement.TryGetProperty("tabs", out var t) ? Count(t) : 1;
+        }
+        var comments = _service.Comments.List(fileId);
+        comments.Fields = "comments(id, resolved)";
+        comments.PageSize = 100;
+        var list = await comments.ExecuteAsync(ct);
+        return (tabs, list.Comments?.Count(x => x.Resolved != true) ?? 0);
+    }
+    /// <summary>
+    /// Whether the Google Docs API is enabled for the OAuth client's project (enablement is per project, not per account):
+    /// a request for a document that does not exist answers 404 when it is, 403 SERVICE_DISABLED with a link when not.
+    /// Null when it cannot be told (offline, other errors).
+    /// </summary>
+    public async Task<(bool Enabled, string? ActivationUrl)?> DocsApiStatusAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var res = await _service.HttpClient.GetAsync("https://docs.googleapis.com/v1/documents/unisono-api-check?fields=documentId", ct);
+            var body = await res.Content.ReadAsStringAsync(ct);
+            if (body.Contains("SERVICE_DISABLED", StringComparison.Ordinal))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(body, "\"activationUrl\"\\s*:\\s*\"([^\"]+)\"");
+                return (false, m.Success ? m.Groups[1].Value : null);
+            }
+            return (int)res.StatusCode is 404 or 400 or 200 ? (true, null) : null;
+        }
+        catch (Exception) when (!ct.IsCancellationRequested) { return null; }
     }
 
     /// <summary>An empty Google document (tests).</summary>
