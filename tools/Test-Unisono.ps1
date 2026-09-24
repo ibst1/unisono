@@ -227,10 +227,13 @@ function Test-OnDemand([hashtable]$pair) {
         $outB = Sync $b; Start-Sleep 2; $null = Sync $a
         Check "ondemand renaming an online-only file is a remote move" { (($outB -join "`n") -match "moved remotely") -and (Has $a "sub\renamed.txt") -and -not (Has $a "sub\note.txt") }
         Check "ondemand ... without downloading it" { IsOnline $b "sub\renamed.txt" }
-        Put $b "fromB.txt" "new on B"; $null = Sync $b; Start-Sleep 2; $null = Sync $a
+        Put $b "fromB.txt" "new on B"; Put $b "readonly.txt" "read-only"
+        (Get-Item -LiteralPath (Join-Path $b.Local "fromB.txt")).LastWriteTime = (Get-Date).AddMinutes(-1); (Get-Item -LiteralPath (Join-Path $b.Local "readonly.txt")).LastWriteTime = (Get-Date).AddMinutes(-1); Set-ItemProperty -LiteralPath (Join-Path $b.Local "readonly.txt") -Name IsReadOnly -Value $true
+        $null = Sync $b; Start-Sleep 2; $null = Sync $a
         Check "ondemand a new local file is uploaded" { (Text $a "fromB.txt") -eq "new on B" }
         $idle = Sync $b
         Check "ondemand an idle cycle changes nothing" { -not (($idle -join "`n") -match "(uploaded|downloaded|moved|deleted|recycled|online-only)") }
+        Check "ondemand every file and folder is in sync (Explorer shows no pending arrows)" { @(Get-ChildItem -LiteralPath $b.Local -Recurse -Force | Where-Object { (InSync $_.FullName) -ne 1 }).Count -eq 0 }
 
         Section "ondemand: turning it off"
         Use-Data $b.Data; & $cli ondemand-off 2>&1 | Out-Null

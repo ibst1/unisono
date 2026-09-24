@@ -651,6 +651,7 @@ public sealed partial class SyncEngine
                 File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly);
                 _log.Info($"[{_pair.Name}] exported: {derivedRel}");
             }
+            Adopt(path, node.Id, pin: true); // files on demand: shown as in sync, always kept (they are made here)
             var info = new FileInfo(path);
             _state.Entries[rel] = new StateEntry
             {

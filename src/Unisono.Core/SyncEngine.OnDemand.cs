@@ -102,10 +102,14 @@ public sealed partial class SyncEngine
     private async Task ApplyOnDemandAsync(Dictionary<string, RemoteNode> remote, Dictionary<string, LocalItem> local, CycleStats stats, CancellationToken ct)
     {
         if (!OnDemand || DryRun) return;
+        // Exports and links are kept in the state under the remote path ("Plan"), on disk they are "Plan.docx".
+        var derived = _state.Entries.Values.Where(e => e.LocalName != null).GroupBy(e => e.LocalName!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         foreach (var l in local.Values.OrderBy(i => PathUtil.Depth(i.RelPath)).ToList())
         {
             ct.ThrowIfCancellationRequested();
-            if (_doneThisCycle.Contains(l.RelPath) || !_state.Entries.TryGetValue(l.RelPath, out var s)) continue; // not synced (yet)
+            if (_doneThisCycle.Contains(l.RelPath)) continue;
+            if (!derived.TryGetValue(l.RelPath, out var s) && !_state.Entries.TryGetValue(l.RelPath, out s)) continue; // not synced (yet)
             var path = l.FullPath;
             if (!File.Exists(path) && !Directory.Exists(path)) continue;   // gone during the cycle
             try

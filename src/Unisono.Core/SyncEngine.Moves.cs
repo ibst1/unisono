@@ -52,6 +52,7 @@ public sealed partial class SyncEngine
                         : await _store.MoveAsync(oldNode, target, parent, ct);
                     RekeyRemote(remote, from, target, oldNode.Id, moved);
                     RekeyState(from, target, oldNode.Id, moved.Id);
+                    MovedInSync(target);
                     newFolders.RemoveAll(n => n.RelPath.Equals(target, StringComparison.OrdinalIgnoreCase));
                     stats.Moved++;
                     if (!DryRun) _log.Info($"[{_pair.Name}] moved folder remotely (moved locally): {from} -> {target}");
@@ -81,6 +82,7 @@ public sealed partial class SyncEngine
                         Directory.Move(Local(from), Local(node.RelPath));
                     RekeyLocal(local, from, node.RelPath);
                     RekeyState(from, node.RelPath, fromId, node.Id); // NAS: the old path becomes the new one below it
+                    MovedInSync(node.RelPath);
                     stats.Moved++;
                     if (!DryRun) _log.Info($"[{_pair.Name}] moved folder locally (moved remotely): {from} -> {node.RelPath}");
                     return Task.CompletedTask;
@@ -121,6 +123,7 @@ public sealed partial class SyncEngine
                     remote.Remove(from);
                     remote[f.RelPath] = moved;
                     MoveEntry(from, f.RelPath, moved);
+                    MovedInSync(f.RelPath);
                     fresh.Remove(f);
                     stats.Moved++;
                     if (!DryRun) _log.Info($"[{_pair.Name}] moved remotely (moved locally): {from} -> {f.RelPath}");
@@ -157,6 +160,7 @@ public sealed partial class SyncEngine
                     local.Remove(old.Path);
                     local[node.RelPath] = new LocalItem { RelPath = node.RelPath, FullPath = Local(node.RelPath), Size = l.Size, MtimeTicks = l.MtimeTicks, Attributes = l.Attributes };
                     MoveEntry(old.Path, node.RelPath, node);
+                    MovedInSync(node.RelPath);
                     fresh.Remove(node);
                     stats.Moved++;
                     if (!DryRun) _log.Info($"[{_pair.Name}] moved locally (moved remotely): {from} -> {node.RelPath}");
@@ -183,6 +187,14 @@ public sealed partial class SyncEngine
             .OrderByDescending(x => x.Hits).ToList();
         if (scored.Count == 0 || (scored.Count > 1 && scored[1].Hits == scored[0].Hits)) return null;
         return scored[0].Old;
+    }
+
+    /// <summary>Files on demand: Windows marks a renamed or moved placeholder out of sync; carried over, it is in sync again.</summary>
+    private void MovedInSync(string rel)
+    {
+        if (!OnDemand || DryRun) return;
+        try { CloudFiles.MarkInSync(Local(rel)); }
+        catch (Exception ex) { _log.Debug($"[{_pair.Name}] {rel}: {ex.Message}"); }
     }
 
     /// <summary>The state entry of a moved file: new key and remote identity, same content and local stamps.</summary>

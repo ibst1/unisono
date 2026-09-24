@@ -266,10 +266,21 @@ public static class CloudFiles
 
     private static void WithHandle(string path, bool write, Func<IntPtr, int> op)
     {
-        // A protected handle with an oplock: opening this way never downloads a placeholder's content.
-        Check(CfOpenFileWithOplock(path, write ? 0x2 /* WRITE_ACCESS */ : 0, out var ph), path);
-        try { Check(op(CfGetWin32HandleFromProtectedHandle(ph)), path); }
-        finally { CfCloseHandle(ph); }
+        // Write access is refused on a read-only file (Google Docs exports are kept read-only): lift it meanwhile.
+        var attrs = File.GetAttributes(path);
+        var readOnly = write && (attrs & FileAttributes.ReadOnly) != 0 && (attrs & FileAttributes.Directory) == 0;
+        if (readOnly) File.SetAttributes(path, attrs & ~FileAttributes.ReadOnly);
+        try
+        {
+            // A protected handle with an oplock: opening this way never downloads a placeholder's content.
+            Check(CfOpenFileWithOplock(path, write ? 0x2 /* WRITE_ACCESS */ : 0, out var ph), path);
+            try { Check(op(CfGetWin32HandleFromProtectedHandle(ph)), path); }
+            finally { CfCloseHandle(ph); }
+        }
+        finally
+        {
+            if (readOnly) File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly);
+        }
     }
 
     private static void Check(int hr, string path)
