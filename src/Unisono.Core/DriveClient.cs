@@ -375,6 +375,28 @@ public sealed class DriveClient
         return doc.RootElement.TryGetProperty("revisionId", out var r) ? r.GetString() : null;
     }
 
+    /// <summary>A Google document's tabs in document order with their nesting depth (Docs API); null when unreachable.</summary>
+    public async Task<List<(string Title, int Depth)>?> DocsTabsAsync(string fileId, CancellationToken ct)
+    {
+        const string props = "tabProperties(title)";
+        using var res = await _service.HttpClient.GetAsync(
+            $"https://docs.googleapis.com/v1/documents/{fileId}?includeTabsContent=true&fields=tabs({props},childTabs({props},childTabs({props},childTabs({props}))))", ct);
+        if (!res.IsSuccessStatusCode) return null;
+        using var doc = System.Text.Json.JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+        var list = new List<(string, int)>();
+        void Walk(System.Text.Json.JsonElement tabs, int depth)
+        {
+            foreach (var t in tabs.EnumerateArray())
+            {
+                var title = t.TryGetProperty("tabProperties", out var p) && p.TryGetProperty("title", out var ti) ? ti.GetString() ?? "" : "";
+                list.Add((title, depth));
+                if (t.TryGetProperty("childTabs", out var c)) Walk(c, depth + 1);
+            }
+        }
+        if (doc.RootElement.TryGetProperty("tabs", out var top)) Walk(top, 0);
+        return list;
+    }
+
     /// <summary>Inserts text at the start of a Google Docs document, as an edit in the browser would (tests).</summary>
     public async Task DocsInsertAsync(string fileId, string text, CancellationToken ct)
     {

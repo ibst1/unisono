@@ -172,8 +172,10 @@ public sealed class DriveStore : IRemoteStore
     {
         await _drive.ExportAsync(node.Id, node.Name, exportMime, localPath, node.ModifiedUtc, ct);
         if (!exportMime.EndsWith("wordprocessingml.document", StringComparison.Ordinal)) return;
-        // Google's docx has sizes Word rejects (tab names lose their Title style): repair, keep the document's time.
-        DocxFix.Apply(localPath);
+        // Google's docx has sizes Word rejects, and tab names Word's navigation pane does not show: repair, keep the time.
+        List<(string, int)>? tabs = null;
+        try { tabs = await _drive.DocsTabsAsync(node.Id, ct); } catch (Exception) when (!ct.IsCancellationRequested) { }
+        DocxFix.Apply(localPath, tabs);
         File.SetLastWriteTimeUtc(localPath, node.ModifiedUtc);
     }
 }

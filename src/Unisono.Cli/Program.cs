@@ -169,7 +169,9 @@ try
         {
             // Diagnostic: repair a docx the way exports are repaired (fractional sizes Word rejects).
             if (args.Length < 2) { Usage(); return 2; }
-            DocxFix.Apply(args[1]);
+            List<(string, int)>? tabs = null;
+            if (args.Length > 2) { var drive = await DriveClient.ConnectAsync(ct, quiet: true); tabs = await drive.DocsTabsAsync(args[2], ct); Console.WriteLine("tabs: " + string.Join(", ", tabs?.Select(t => $"{t.Item1} ({t.Item2})") ?? Array.Empty<string>())); }
+            DocxFix.Apply(args[1], tabs);
             Console.WriteLine($"repaired {args[1]}");
             return 0;
         }
