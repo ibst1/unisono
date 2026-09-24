@@ -250,6 +250,25 @@ Drive allows two siblings with the same name or names differing only in case, Wi
 does not, so the first one wins and the rest are reported; Docs exports have no md5, so
 change detection for them uses Drive's modified time.
 
+## Renames and moves
+
+A file or folder renamed or moved on one side is renamed or moved on the other, instead of
+being deleted and transferred again (which would also cost it its Drive history, sharing and
+links). Locally, a moved file is recognised by size, modified time and checksum, a moved folder
+by its contents; on Drive by the item's id; on a NAS (whose ids are paths) by size and time,
+folders by their contents. Anything ambiguous falls back to delete plus copy.
+
+## Tests
+
+`tools\Test-Unisono.ps1` runs end-to-end tests against the signed-in Google account and, with
+`-Suite nas`, a NAS: two simulated computers per remote, in throwaway folders under `%TEMP%`
+(the script refuses to run against the real settings folder), and a temporary remote folder
+that is removed afterwards.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1                  # drive + ui
+powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite nas -NasServer myid -NasUser me -NasFolder "/home/tests"
+```
 ## Building
 
 `build.ps1` publishes a self-contained single-file exe to `%USERPROFILE%\Program\Unisono`
