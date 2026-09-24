@@ -215,9 +215,13 @@ a conflict instead of being overwritten.
 
 * **GoogleDocs**: `Export` writes Docs/Sheets/Slides/Drawings as docx/xlsx/pptx/png,
   `Link` writes a `.url` shortcut that opens the document on Drive, `Skip` ignores them.
-  Exports are one-way and marked read-only: a local edit is reported in the log and never
-  uploaded, and the file is re-exported when the document changes on Drive. Drive caps
-  exports at 10 MB.
+  Exports are ordinary, writable files: save an edit in Word, Excel or PowerPoint and it is
+  written back into the Google document (Drive converts it; the previous content stays in the
+  document's version history; comments and some Google-only formatting may not survive the
+  round trip). When the document also changed in Google since, the local edit is kept as
+  `Name (conflict MACHINE time).docx` next to it and the export shows the current version.
+  The export is re-written when the document changes on Drive. Drive caps exports at 10 MB.
+  Synology Office exports stay read-only: DSM offers no way to write them back.
 * **CloudOnlyMinMB** / **CloudOnlyFolders**: matching files stay on Drive and appear
   locally as `Name.ext.url`, which Explorer shows as "Name.ext" with a link icon; double
   click opens the file on Drive. Put a real file with that name in the folder and it

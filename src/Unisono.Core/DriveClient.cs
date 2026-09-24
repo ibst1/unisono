@@ -305,6 +305,29 @@ public sealed class DriveClient
         return up.ResponseBody;
     }
 
+    /// <summary>
+    /// Writes an Office file into an existing Google document: uploading docx/xlsx/pptx content to a Docs/Sheets/Slides
+    /// file makes Drive convert it. The previous content stays in the document's version history.
+    /// </summary>
+    public async Task<File> ImportIntoAsync(string localPath, string fileId, string sourceMime, CancellationToken ct)
+    {
+        await using var fs = OpenShared(localPath);
+        var up = _service.Files.Update(new File(), fileId, fs, sourceMime);
+        up.Fields = FileFields;
+        var progress = await up.UploadAsync(ct);
+        if (progress.Status != UploadStatus.Completed)
+            throw new IOException($"Writing '{Path.GetFileName(localPath)}' back into the Google document failed: {progress.Exception?.Message ?? progress.Status.ToString()}");
+        return up.ResponseBody;
+    }
+
+    /// <summary>An empty Google document (tests).</summary>
+    public async Task<File> CreateNativeAsync(string name, string mime, string parentId, CancellationToken ct)
+    {
+        var req = _service.Files.Create(new File { Name = name, MimeType = mime, Parents = new[] { parentId } });
+        req.Fields = FileFields;
+        return await req.ExecuteAsync(ct);
+    }
+
     public async Task<File> CreateFolderAsync(string name, string parentId, CancellationToken ct)
     {
         var req = _service.Files.Create(new File { Name = name, MimeType = FolderMime, Parents = new[] { parentId } });

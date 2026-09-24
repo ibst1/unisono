@@ -108,6 +108,8 @@ public sealed class FolderStore : IRemoteStore
         id.StartsWith(oldFolderId + "\\", StringComparison.OrdinalIgnoreCase) ? newFolderId + id[oldFolderId.Length..] : id;
 
     public bool CanLink(RemoteNode node) => false;
+    public bool CanImport(RemoteNode node) => false;
+    public Task<RemoteNode> ImportAsync(RemoteNode node, string localPath, string mime, CancellationToken ct) => throw new NotSupportedException();
     public Task<string> LinkUrlAsync(RemoteNode node, CancellationToken ct) => throw new NotSupportedException();
     public Task ExportAsync(RemoteNode node, string exportMime, string localPath, CancellationToken ct) => throw new NotSupportedException();
 

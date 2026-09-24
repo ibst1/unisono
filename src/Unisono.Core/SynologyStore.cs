@@ -71,6 +71,10 @@ public sealed class SynologyStore : IRemoteStore
         return info == null ? null : ToNode(info, node.ParentId, node.RelPath);
     }
 
+    /// <summary>Synology Office has no import API that File Station reaches: its exports stay read-only.</summary>
+    public bool CanImport(RemoteNode node) => false;
+    public Task<RemoteNode> ImportAsync(RemoteNode node, string localPath, string mime, CancellationToken ct) => throw new NotSupportedException();
+
     public RemoteNode HydrationNode(string rel, string identity, long size) =>
         new() { Id = FullPath(rel), Name = PathUtil.NameOf(rel), RelPath = rel, Size = size, ModifiedUtc = DateTime.UtcNow };
 

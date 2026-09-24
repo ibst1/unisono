@@ -9,6 +9,7 @@
   (Drive: moved to the trash; NAS: deleted, i.e. into the shared folder's recycle bin if that is on).
 
   Suites:
+    writeback  Google Docs exports edited locally go back into the document (also part of "drive")
     drive   sync both ways, conflicts, deletions, renames and moves, ignore rules, versions, dry run, selective sync,
             download-only
     nas     the same core on a NAS folder (needs -NasServer, -NasUser and a stored login for them)
@@ -161,6 +162,48 @@ function Test-Core([hashtable]$pair, [string]$label) {
     Check "$label an idle cycle changes nothing" { -not (($idle -join "`n") -match "(uploaded|downloaded|moved|deleted|recycled)") }
 }
 
+# ------------------------------------------------------------ Google Docs write-back
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+function New-Docx([string]$path, [string]$text) {
+    if (Test-Path -LiteralPath $path) { Set-ItemProperty -LiteralPath $path -Name IsReadOnly -Value $false; [IO.File]::Delete($path) }
+    $zip = [IO.Compression.ZipFile]::Open($path, "Create")
+    $parts = [ordered]@{
+        "[Content_Types].xml" = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'
+        "_rels/.rels" = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'
+        "word/document.xml" = "<?xml version=`"1.0`" encoding=`"UTF-8`" standalone=`"yes`"?><w:document xmlns:w=`"http://schemas.openxmlformats.org/wordprocessingml/2006/main`"><w:body><w:p><w:r><w:t>$text</w:t></w:r></w:p></w:body></w:document>"
+    }
+    foreach ($k in $parts.Keys) { $e = $zip.CreateEntry($k); $w = New-Object IO.StreamWriter($e.Open()); $w.Write($parts[$k]); $w.Dispose() }
+    $zip.Dispose()
+}
+function Docx-Text([string]$path) {
+    $zip = [IO.Compression.ZipFile]::OpenRead($path)
+    try { $r = New-Object IO.StreamReader(($zip.Entries | Where-Object FullName -eq "word/document.xml").Open()); $r.ReadToEnd() } finally { $zip.Dispose() }
+}
+function Test-WriteBack([string]$remote) {
+    Section "drive: Google Docs exports are written back"
+    Use-Data (Join-Path $work "init-data"); & $cli drive-newdoc $remote "WB doc" | Out-Null
+    $w1 = Computer "wb-1" @{ Kind = "Drive"; RemotePath = $remote }
+    $null = Sync $w1
+    $doc = Join-Path $w1.Local "WB doc.docx"
+    Check "drive a Google document is exported as a writable docx" { (Test-Path -LiteralPath $doc) -and -not (Get-Item -LiteralPath $doc).IsReadOnly }
+    New-Docx $doc "written back from wb-1"; (Get-Item -LiteralPath $doc).LastWriteTime = (Get-Date).AddMinutes(-1)
+    $out = Sync $w1
+    Check "drive an edited export is written back into the Google document" { ($out -join "`n") -match "wrote back into the Google document" }
+    $w2 = Computer "wb-2" @{ Kind = "Drive"; RemotePath = $remote }
+    Start-Sleep 5; $null = Sync $w2
+    Check "drive ... and another computer's export has the new text" { (Docx-Text (Join-Path $w2.Local "WB doc.docx")) -match "written back from wb-1" }
+    $idle = Sync $w1
+    Check "drive ... without exporting it again over the edited file" { -not (($idle -join "`n") -match "exported|wrote back") }
+    # Both edit: wb-2 writes back first, wb-1's edit is then kept as a conflict copy and the new version comes down.
+    New-Docx (Join-Path $w2.Local "WB doc.docx") "second edit from wb-2"; (Get-Item -LiteralPath (Join-Path $w2.Local "WB doc.docx")).LastWriteTime = (Get-Date).AddMinutes(-1)
+    $null = Sync $w2; Start-Sleep 5
+    New-Docx $doc "competing edit from wb-1"; (Get-Item -LiteralPath $doc).LastWriteTime = (Get-Date).AddMinutes(-1)
+    $null = Sync $w1; Start-Sleep 3; $null = Sync $w1
+    $copy = @(Get-ChildItem -LiteralPath $w1.Local -Filter "WB doc (conflict*.docx")
+    Check "drive edits on both sides: the local edit is kept as a conflict copy" { $copy.Count -eq 1 -and (Docx-Text $copy[0].FullName) -match "competing edit from wb-1" }
+    Check "drive ... and the export shows the document's current version" { (Docx-Text $doc) -match "second edit from wb-2" }
+}
+
 # ------------------------------------------------------------ files on demand
 function Attr($c, $rel) { [int][IO.File]::GetAttributes((Join-Path $c.Local $rel)) }
 function IsOnline($c, $rel) { $a = Attr $c $rel; ($a -band 0x400) -ne 0 -and ($a -band (0x400000 -bor 0x40000 -bor 0x1000)) -ne 0 }
@@ -289,8 +332,15 @@ if ($Suite -contains "drive") {
     $remote = "Unisono-tests-$stamp"
     Use-Data (New-TestDir "$work\init-data")
     & $cli init $remote (New-TestDir "$work\init") --create | Out-Null
-    try { Test-Core @{ Kind = "Drive"; RemotePath = $remote } "drive" }
+    try { Test-Core @{ Kind = "Drive"; RemotePath = $remote } "drive"; Test-WriteBack $remote }
     finally { if (-not $KeepFiles) { & $cli drive-trash $remote | Out-Null } }
+}
+if ($Suite -contains "writeback" -and $Suite -notcontains "drive") {
+    $remote = "Unisono-tests-$stamp-wb"
+    Use-Data (New-TestDir "$work\init-data")
+    & $cli init $remote (New-TestDir "$work\init") --create | Out-Null
+    try { Test-WriteBack $remote }
+    finally { if (-not $KeepFiles) { Use-Data "$work\init-data"; & $cli drive-trash $remote | Out-Null } }
 }
 if ($Suite -contains "nas") {
     if (-not $NasServer -or -not $NasUser -or -not $NasFolder) { throw "the nas suite needs -NasServer, -NasUser and -NasFolder (a folder inside a shared folder)" }

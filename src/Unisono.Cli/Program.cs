@@ -165,6 +165,16 @@ try
             Console.WriteLine($"moved {args[1]} to the Drive trash");
             return 0;
         }
+        case "drive-newdoc":
+        {
+            // Tests: an empty Google document (Docs) in a Drive folder.
+            if (args.Length < 3) { Usage(); return 2; }
+            var drive = await DriveClient.ConnectAsync(ct, quiet: true);
+            var folder = await drive.ResolveFolderAsync(args[1], ct);
+            await drive.CreateNativeAsync(args[2], "application/vnd.google-apps.document", folder.Id, ct);
+            Console.WriteLine($"created Google document {args[1]}/{args[2]}");
+            return 0;
+        }
         case "pull":
         {
             if (args.Length < 3) { Usage(); return 2; }

@@ -81,6 +81,18 @@ public sealed class DriveStore : IRemoteStore
         return fresh;
     }
 
+    public bool CanImport(RemoteNode node) => node.MimeType is "application/vnd.google-apps.document"
+        or "application/vnd.google-apps.spreadsheet" or "application/vnd.google-apps.presentation";
+
+    public async Task<RemoteNode> ImportAsync(RemoteNode node, string localPath, string mime, CancellationToken ct)
+    {
+        var updated = await _drive.ImportIntoAsync(localPath, node.Id, mime, ct);
+        var fresh = RemoteNode.From(updated, node.ParentId);
+        fresh.RelPath = node.RelPath;
+        _index!.Add(fresh);
+        return fresh;
+    }
+
     public RemoteNode HydrationNode(string rel, string identity, long size) =>
         new() { Id = identity, Name = PathUtil.NameOf(rel), RelPath = rel, Size = size, ModifiedUtc = DateTime.UtcNow };
 

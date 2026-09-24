@@ -57,6 +57,12 @@ public interface IRemoteStore
     /// </summary>
     RemoteNode HydrationNode(string rel, string identity, long size);
 
+    /// <summary>True when an edited export can be written back into the native document (Google Docs; not Synology Office).</summary>
+    bool CanImport(RemoteNode node);
+
+    /// <summary>Replaces a native document's content with an Office file (<paramref name="mime"/>), converted by the server.</summary>
+    Task<RemoteNode> ImportAsync(RemoteNode node, string localPath, string mime, CancellationToken ct);
+
     /// <summary>Export a native document (Google Docs, Synology Office) to an Office file.</summary>
     Task ExportAsync(RemoteNode node, string exportMime, string localPath, CancellationToken ct);
 }

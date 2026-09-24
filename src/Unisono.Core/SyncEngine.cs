@@ -603,17 +603,45 @@ public sealed partial class SyncEngine
         _state.Entries.TryGetValue(rel, out var s);
         local.TryGetValue(derivedRel, out var l);
 
+        var writeBack = kind == EntryKind.Export && _store.CanImport(node);
         if (s != null && s.Kind == kind && s.DriveId == node.Id && s.LocalName == derivedRel && l is { IsDir: false })
         {
             var upToDate = s.DriveModifiedUtc == node.ModifiedUtc;
             var editedLocally = l.Size != s.LocalSize || l.MtimeTicks != s.LocalMtimeTicks;
-            if (editedLocally && kind == EntryKind.Export)
+            if (editedLocally && writeBack && Up)
+            {
+                if (Settling(l)) return; // still being saved
+                if (upToDate)
+                {
+                    await Try(rel, stats, () => WriteBackAsync(node, rel, derivedRel, path, remote, stats, ct));
+                    return;
+                }
+                // Edited here and changed in Google since: keep the edit as its own file (uploaded as an ordinary file on
+                // the next cycle) and let the export below bring the document's current version.
+                stats.Conflicts++;
+                if (!Planned("keep local edit of export as conflict copy", derivedRel))
+                {
+                    var ext = Path.GetExtension(derivedRel);
+                    var conflictRel = derivedRel[..^ext.Length] + $" (conflict {Environment.MachineName} {DateTime.Now:yyyy-MM-dd HHmm}){ext}";
+                    File.SetAttributes(path, File.GetAttributes(path) & ~FileAttributes.ReadOnly);
+                    File.Move(path, Local(conflictRel));
+                    local.Remove(derivedRel);
+                    _log.Warn($"[{_pair.Name}] conflict (edited here, changed in Google too): '{derivedRel}' kept as '{PathUtil.NameOf(conflictRel)}'");
+                }
+            }
+            else if (editedLocally && kind == EntryKind.Export)
             {
                 _log.Warn($"[{_pair.Name}] '{derivedRel}' was edited locally; exports are one-way and the edit will not reach the original{(upToDate ? "" : " (and the original has changed since)")}");
                 s.LocalSize = l.Size; s.LocalMtimeTicks = l.MtimeTicks; // warn once per edit
                 if (upToDate) return;
             }
-            else if (upToDate) return;
+            else if (upToDate)
+            {
+                // Exports that can be written back are ordinary, writable files (earlier versions made them read-only).
+                if (writeBack && !DryRun && (l.Attributes & FileAttributes.ReadOnly) != 0)
+                    try { File.SetAttributes(path, File.GetAttributes(path) & ~FileAttributes.ReadOnly); } catch { }
+                return;
+            }
         }
         if (s?.LocalName != null && !string.Equals(s.LocalName, derivedRel, StringComparison.OrdinalIgnoreCase)
             && local.TryGetValue(s.LocalName, out var old) && !old.IsDir)
@@ -648,7 +676,8 @@ public sealed partial class SyncEngine
                 stats.Exported++;
                 if (Planned("export", derivedRel)) return;
                 await Tracked(SyncActivity.Direction.Down, derivedRel, node.Size, () => _store.ExportAsync(node, ExportMime(node.MimeType)!, path, ct));
-                File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly);
+                // Read-only where an edit could not go back (Synology Office); otherwise edits are written back.
+                if (!writeBack) File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly);
                 _log.Info($"[{_pair.Name}] exported: {derivedRel}");
             }
             Adopt(path, node.Id, pin: true); // files on demand: shown as in sync, always kept (they are made here)
@@ -660,6 +689,26 @@ public sealed partial class SyncEngine
             };
             local[derivedRel] = new LocalItem { RelPath = derivedRel, FullPath = path, Size = info.Length, MtimeTicks = info.LastWriteTimeUtc.Ticks };
         });
+    }
+
+    /// <summary>An edited export goes back into its Google document (Drive converts it; the old content stays in its history).</summary>
+    private async Task WriteBackAsync(RemoteNode node, string rel, string derivedRel, string path, Dictionary<string, RemoteNode> remote, CycleStats stats, CancellationToken ct)
+    {
+        stats.Uploaded++;
+        if (Planned("write back into the Google document", derivedRel)) return;
+        var size = new FileInfo(path).Length;
+        var fresh = await Tracked(SyncActivity.Direction.Up, derivedRel, size, () => _store.ImportAsync(node, path, ExportMime(node.MimeType)!, ct));
+        remote[rel] = fresh;
+        Adopt(path, fresh.Id, pin: true);
+        var info = new FileInfo(path);
+        // The local file stays as it is (no re-export of the converted document right away, which would rewrite a file
+        // that is probably still open).
+        _state.Entries[rel] = new StateEntry
+        {
+            Path = rel, Kind = EntryKind.Export, DriveId = fresh.Id, Md5 = fresh.Md5, Size = fresh.Size, DriveModifiedUtc = fresh.ModifiedUtc,
+            LocalName = derivedRel, LocalSize = info.Length, LocalMtimeTicks = info.LastWriteTimeUtc.Ticks,
+        };
+        _log.Info($"[{_pair.Name}] wrote back into the Google document: {derivedRel} ({size:N0} bytes)");
     }
 
     private static void WriteLink(string path, string url, DateTime modifiedUtc)
