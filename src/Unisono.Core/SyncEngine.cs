@@ -616,7 +616,8 @@ public sealed partial class SyncEngine
         var writeBack = kind == EntryKind.Export && _store.CanImport(node);
         if (s != null && s.Kind == kind && s.DriveId == node.Id && s.LocalName == derivedRel && l is { IsDir: false })
         {
-            var upToDate = s.DriveModifiedUtc == node.ModifiedUtc;
+            var upToDate = s.DriveModifiedUtc == node.ModifiedUtc && !_staleExports.Contains(rel);
+            if (upToDate && s.Revision == null && _revisions.TryGetValue(rel, out var firstRev)) s.Revision = firstRev; // from now on
             var editedLocally = l.Size != s.LocalSize || l.MtimeTicks != s.LocalMtimeTicks;
             if (editedLocally && writeBack && Up)
             {
@@ -717,12 +718,17 @@ public sealed partial class SyncEngine
             {
                 Path = rel, Kind = kind, DriveId = node.Id, Md5 = node.Md5, Size = node.Size, DriveModifiedUtc = node.ModifiedUtc,
                 LocalName = derivedRel, LocalSize = info.Length, LocalMtimeTicks = info.LastWriteTimeUtc.Ticks,
+                Revision = _revisions.GetValueOrDefault(rel),
             };
             local[derivedRel] = new LocalItem { RelPath = derivedRel, FullPath = path, Size = info.Length, MtimeTicks = info.LastWriteTimeUtc.Ticks };
         });
     }
 
     private int _docsRotation;
+    /// <summary>This cycle's revisions of the exported Google Docs that were asked (rel -> revision).</summary>
+    private readonly Dictionary<string, string> _revisions = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Exports whose document has a newer revision than the one they were made from.</summary>
+    private readonly HashSet<string> _staleExports = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Drive's change feed reports edits of Google documents minutes late (5 minutes was measured), while asking for the
@@ -731,6 +737,8 @@ public sealed partial class SyncEngine
     /// </summary>
     private async Task FreshenExportedDocsAsync(Dictionary<string, RemoteNode> remote, CancellationToken ct)
     {
+        _revisions.Clear();
+        _staleExports.Clear();
         if (_store.Kind != "Drive" || !Down) return;
         var docs = _state.Entries.Values.Where(e => e.Kind == EntryKind.Export && remote.ContainsKey(e.Path))
             .OrderByDescending(e => e.DriveModifiedUtc).Select(e => e.Path).ToList();
@@ -748,7 +756,14 @@ public sealed partial class SyncEngine
             try
             {
                 var fresh = await _store.RefreshAsync(remote[rel], ct);
-                if (fresh != null && fresh.ModifiedUtc != remote[rel].ModifiedUtc) remote[rel] = fresh;
+                if (fresh == null) continue;
+                if (fresh.ModifiedUtc != remote[rel].ModifiedUtc) remote[rel] = fresh;
+                // Google Docs: the revision changes with the edit itself, the modified time only a minute or two later.
+                if (await _store.RevisionAsync(fresh, ct) is { } rev)
+                {
+                    _revisions[rel] = rev;
+                    if (_state.Entries.TryGetValue(rel, out var e) && e.Revision != null && e.Revision != rev) _staleExports.Add(rel);
+                }
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { _log.Debug($"[{_pair.Name}] {rel}: {ex.Message}"); }
@@ -764,13 +779,15 @@ public sealed partial class SyncEngine
         var fresh = await Tracked(SyncActivity.Direction.Up, derivedRel, size, () => _store.ImportAsync(node, path, ExportMime(node.MimeType)!, ct));
         remote[rel] = fresh;
         Adopt(path, fresh.Id, pin: true);
+        string? revision = null;
+        try { revision = await _store.RevisionAsync(fresh, ct); } catch { }
         var info = new FileInfo(path);
         // The local file stays as it is (no re-export of the converted document right away, which would rewrite a file
         // that is probably still open).
         _state.Entries[rel] = new StateEntry
         {
             Path = rel, Kind = EntryKind.Export, DriveId = fresh.Id, Md5 = fresh.Md5, Size = fresh.Size, DriveModifiedUtc = fresh.ModifiedUtc,
-            LocalName = derivedRel, LocalSize = info.Length, LocalMtimeTicks = info.LastWriteTimeUtc.Ticks,
+            LocalName = derivedRel, LocalSize = info.Length, LocalMtimeTicks = info.LastWriteTimeUtc.Ticks, Revision = revision,
         };
         _log.Info($"[{_pair.Name}] wrote back into the Google document: {derivedRel} ({size:N0} bytes)");
     }

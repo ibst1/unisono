@@ -199,6 +199,10 @@ function Test-WriteBack([string]$remote) {
         New-Docx (Join-Path $w2.Local "WB doc.docx") "changed on wb-2"; (Get-Item -LiteralPath (Join-Path $w2.Local "WB doc.docx")).LastWriteTime = (Get-Date).AddMinutes(-1)
         $null = Sync $w2; Start-Sleep 3; $null = Sync $w1
         Check "drive a document changed elsewhere is exported again at once" { (Docx-Text $doc) -match "changed on wb-2" }
+        # An edit in Google Docs itself: Drive's modified time trails it by a minute or two, the Docs revision does not.
+        Use-Data (Join-Path $work "init-data"); & $cli drive-docedit $remote "WB doc" "typed in Google Docs" | Out-Null
+        Start-Sleep 2; $null = Sync $w1
+        Check "drive an edit in Google Docs reaches the export in the next cycle" { (Docx-Text $doc) -match "typed in Google Docs" }
     }
     else {
         Write-Host "        (the Docs API is not enabled: tabs cannot be checked, so edits are kept as their own file)" -ForegroundColor DarkGray

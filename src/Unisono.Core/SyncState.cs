@@ -33,6 +33,8 @@ public sealed class StateEntry
 
     /// <summary>For Export/Link: the derived local path ("Plan.docx", "Video.mp4.url"). Null for File/Folder (same as Path).</summary>
     public string? LocalName { get; set; }
+    /// <summary>Exports of Google Docs: the document's revision (Docs API) the export was made from.</summary>
+    public string? Revision { get; set; }
 }
 
 /// <summary>Per-pair, per-machine persistent state: the remote index (with its changes token) and the sync entries.</summary>

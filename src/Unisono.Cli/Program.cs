@@ -165,6 +165,17 @@ try
             Console.WriteLine($"moved {args[1]} to the Drive trash");
             return 0;
         }
+        case "drive-docedit":
+        {
+            // Tests: edit a Google document through the Docs API, like typing in the browser.
+            if (args.Length < 4) { Usage(); return 2; }
+            var drive = await DriveClient.ConnectAsync(ct, quiet: true);
+            var folder = await drive.ResolveFolderAsync(args[1], ct);
+            var file = (await drive.ListChildrenAsync(folder.Id, ct)).FirstOrDefault(f => f.Name == args[2]) ?? throw new FileNotFoundException(args[2]);
+            await drive.DocsInsertAsync(file.Id, args[3], ct);
+            Console.WriteLine($"edited {args[1]}/{args[2]}");
+            return 0;
+        }
         case "drive-docrisk":
         {
             // Diagnostic: what a docx round trip would lose in a Google document (tabs, open comments).

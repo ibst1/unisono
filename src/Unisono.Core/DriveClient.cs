@@ -363,6 +363,27 @@ public sealed class DriveClient
         catch (Exception) when (!ct.IsCancellationRequested) { return null; }
     }
 
+    /// <summary>
+    /// The current revision of a Google Docs document (Docs API): it changes with every edit at once, while Drive's
+    /// modified time trails web edits by a minute or two. Null when the Docs API is not reachable.
+    /// </summary>
+    public async Task<string?> DocsRevisionAsync(string fileId, CancellationToken ct)
+    {
+        using var res = await _service.HttpClient.GetAsync($"https://docs.googleapis.com/v1/documents/{fileId}?fields=revisionId", ct);
+        if (!res.IsSuccessStatusCode) return null;
+        using var doc = System.Text.Json.JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+        return doc.RootElement.TryGetProperty("revisionId", out var r) ? r.GetString() : null;
+    }
+
+    /// <summary>Inserts text at the start of a Google Docs document, as an edit in the browser would (tests).</summary>
+    public async Task DocsInsertAsync(string fileId, string text, CancellationToken ct)
+    {
+        var body = System.Text.Json.JsonSerializer.Serialize(new { requests = new[] { new { insertText = new { location = new { index = 1 }, text = text + "\n" } } } });
+        using var res = await _service.HttpClient.PostAsync($"https://docs.googleapis.com/v1/documents/{fileId}:batchUpdate",
+            new StringContent(body, System.Text.Encoding.UTF8, "application/json"), ct);
+        if (!res.IsSuccessStatusCode) throw new IOException($"Docs API: {(int)res.StatusCode} {await res.Content.ReadAsStringAsync(ct)}");
+    }
+
     /// <summary>An empty Google document (tests).</summary>
     public async Task<File> CreateNativeAsync(string name, string mime, string parentId, CancellationToken ct)
     {

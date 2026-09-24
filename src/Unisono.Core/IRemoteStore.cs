@@ -60,6 +60,9 @@ public interface IRemoteStore
     /// <summary>True when an edited export can be written back into the native document (Google Docs; not Synology Office).</summary>
     bool CanImport(RemoteNode node);
 
+    /// <summary>A native document's current revision when the backend can tell one faster than its modified time (Google Docs); null otherwise.</summary>
+    Task<string?> RevisionAsync(RemoteNode node, CancellationToken ct);
+
     /// <summary>Why writing an export back would lose something in this document (tabs, comments), or null when it is safe.</summary>
     Task<string?> WhyNotImportAsync(RemoteNode node, CancellationToken ct);
 

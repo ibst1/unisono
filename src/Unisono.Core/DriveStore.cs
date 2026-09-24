@@ -84,6 +84,9 @@ public sealed class DriveStore : IRemoteStore
     public bool CanImport(RemoteNode node) => node.MimeType is "application/vnd.google-apps.document"
         or "application/vnd.google-apps.spreadsheet" or "application/vnd.google-apps.presentation";
 
+    public Task<string?> RevisionAsync(RemoteNode node, CancellationToken ct) =>
+        node.MimeType == "application/vnd.google-apps.document" ? _drive.DocsRevisionAsync(node.Id, ct) : Task.FromResult<string?>(null);
+
     public async Task<string?> WhyNotImportAsync(RemoteNode node, CancellationToken ct)
     {
         var risk = await _drive.RoundTripRiskAsync(node.Id, node.MimeType == "application/vnd.google-apps.document", ct);
