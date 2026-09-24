@@ -47,6 +47,7 @@ sealed class Bridge : IAsyncDisposable
         switch (method)
         {
             case "state": return State();
+            case "clientError": _log.Error($"window: {Str(p, "message")} [{Str(p, "stack")}]"); return null;
             case "tab": _settings.Tab = Str(p, "tab") ?? "accounts"; _settings.Save(); return null;
 
             // ---------------------------------------------------- google

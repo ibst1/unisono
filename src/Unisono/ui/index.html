@@ -393,7 +393,7 @@ function renderAccounts() {
 
   $("#googleList").innerHTML = S.google.length ? S.google.map(a => {
     const used = a.limit > 0 ? Math.min(100, a.usage / a.limit * 100) : 0;
-    return `<div class="card" style="${p.activeHere ? "" : "opacity:.6"}"><div class="row">
+    return `<div class="card"><div class="row">
       <div class="grow"><div><b>${esc(a.email || "(checking account...)")}</b> ${a.isDefault ? '<span class="chip plain">default</span>' : ""}
         ${a.signedIn ? "" : '<span class="chip err">needs sign-in</span>'}</div>
         ${a.error ? `<div class="small" style="color:var(--red)">${esc(a.error)}</div>` : a.limit ? `<div class="small muted">${gb(a.usage)} of ${gb(a.limit)} used</div><div class="bar"><i style="width:${used}%"></i></div>` : ""}
@@ -870,7 +870,19 @@ $("#logSearch").oninput = () => document.querySelectorAll("#log div").forEach(ap
 $("#logClear").onclick = () => $("#log").innerHTML = "";
 
 // -------------------------------------------------------------------- start
-function render() { if (!S) return; renderHeader(); renderAccounts(); renderPairs(); renderSettings(); }
+// Each part is drawn on its own: a bug in one must never blank the others (it once hid every account and pair).
+function render() {
+  if (!S) return;
+  for (const part of [renderHeader, renderAccounts, renderPairs, renderSettings]) {
+    try { part(); } catch (e) { reportError(part.name + ": " + e.message, e.stack); }
+  }
+}
+function reportError(message, stack) {
+  try { call("clientError", { message, stack: String(stack || "").split("\n").slice(0, 3).join(" | ") }); } catch {}
+  toast("Display error: " + message, true);
+}
+window.addEventListener("error", e => reportError(e.message, e.error && e.error.stack));
+window.addEventListener("unhandledrejection", e => reportError(String(e.reason && e.reason.message || e.reason), e.reason && e.reason.stack));
 document.addEventListener("keydown", e => { if (e.key === "Escape") document.querySelectorAll(".modal.open").forEach(m => m.classList.remove("open")); });
 (async () => {
   const hello = await call("hello");
