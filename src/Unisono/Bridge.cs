@@ -94,6 +94,32 @@ sealed class Bridge : IAsyncDisposable
                 return d.ShowDialog(_owner) == DialogResult.OK ? d.SelectedPath : null;
             }
             case "pair.save": return await SavePairAsync(p);
+            case "versions.list":
+            {
+                var pair = FindPair(Str(p, "id"));
+                return VersionStore.List(pair).Select(f => new
+                {
+                    rel = f.Rel,
+                    exists = File.Exists(Path.Combine(pair.LocalFullPath, f.Rel.Replace('/', '\\'))),
+                    versions = f.Versions.Select(v => new { path = v.CopyPath, taken = VersionLabel(v), size = v.Size }),
+                });
+            }
+            case "versions.restore":
+            {
+                var pair = FindPair(Str(p, "id"));
+                VersionStore.Restore(pair, Str(p, "rel")!, Str(p, "path")!, Config.Options);
+                _log.Info($"[{pair.Name}] restored an earlier version: {Str(p, "rel")}");
+                _host.SyncNow();
+                return null;
+            }
+            case "versions.open":
+            {
+                var path = Str(p, "path")!;
+                if (!Path.GetFullPath(path).StartsWith(Path.GetFullPath(VersionStore.Root), StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Not a kept version.");
+                Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+                return null;
+            }
             case "pair.preview":
             {
                 // A dry run: every decision of a real cycle, none of its effects (the state file is not written either).
@@ -604,6 +630,11 @@ sealed class Bridge : IAsyncDisposable
         else key.DeleteValue(RunValue, throwOnMissingValue: false);
         _log.Info(on ? "will start with Windows (in the tray)" : "will not start with Windows");
     }
+
+    /// <summary>A copy is named after the file's own modified time ("2026-09-24 064301.txt"); that is the version's time.</summary>
+    private static string VersionLabel(VersionStore.Version v) =>
+        DateTime.TryParseExact(Path.GetFileNameWithoutExtension(v.CopyPath), "yyyy-MM-dd HHmmss", null, System.Globalization.DateTimeStyles.None, out var t)
+            ? t.ToString("yyyy-MM-dd HH:mm:ss") : v.Taken.ToString("yyyy-MM-dd HH:mm");
 
     private static List<string> Lines(string? text) =>
         (text ?? "").Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l.Trim().Length > 0).ToList();

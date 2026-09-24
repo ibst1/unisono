@@ -301,6 +301,14 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="plan" id="planList"></div>
   <div class="actions"><button class="btn" data-close>Close</button><button class="btn primary" id="planRun">Sync now</button></div>
 </div></div>
+<div class="modal" id="dlgVersions"><div class="dialog" style="width:min(860px,100%)">
+  <h3 id="verTitle">Previous versions</h3>
+  <div class="row" style="margin-bottom:10px"><input type="text" id="verSearch" class="grow" placeholder="Filter by name..."><button class="btn" id="verFolder">Open folder</button></div>
+  <div class="plan" id="verList"></div>
+  <div class="small muted" style="margin-top:8px">Restoring puts the copy back in place and keeps the file it replaces as a version, so a restore can be undone the same way. The next sync uploads it.</div>
+  <div class="actions"><button class="btn" data-close>Close</button></div>
+</div></div>
+
 <div class="modal" id="dlgConfirm"><div class="dialog">
   <h3 id="confirmTitle">Please confirm</h3>
   <div id="confirmBody"></div>
@@ -506,13 +514,40 @@ function renderPairs() {
   }).join("") : `<div class="empty">No sync pairs yet. Add an account first, then a pair.</div>`;
   document.querySelectorAll("[data-openpair]").forEach(a => a.onclick = () => call("open", { what: "pair", id: a.dataset.openpair }));
   document.querySelectorAll("[data-editpair]").forEach(b => b.onclick = () => pairDialog(S.pairs.find(p => p.id === b.dataset.editpair)));
-  document.querySelectorAll("[data-versions]").forEach(b => b.onclick = () => call("open", { what: "versions", id: b.dataset.versions }));
+  document.querySelectorAll("[data-versions]").forEach(b => b.onclick = () => versionsDialog(S.pairs.find(p => p.id === b.dataset.versions)));
   document.querySelectorAll("[data-preview]").forEach(b => b.onclick = () => preview(S.pairs.find(p => p.id === b.dataset.preview), b));
   document.querySelectorAll("[data-rmpair]").forEach(b => b.onclick = async () => {
     const p = S.pairs.find(x => x.id === b.dataset.rmpair);
     if (!await confirmBox("Remove sync pair", [`Stop syncing ${remoteLabel(p).path} with ${p.localPath}? No files are deleted on either side.`])) return;
     call("pair.remove", { id: p.id }).catch(e => toast(e.message, true));
   });
+}
+
+async function versionsDialog(p) {
+  $("#verTitle").textContent = "Previous versions: " + remoteLabel(p).path;
+  $("#verSearch").value = "";
+  $("#verFolder").onclick = () => call("open", { what: "versions", id: p.id });
+  const draw = files => {
+    const q = $("#verSearch").value.trim().toLowerCase();
+    const shown = files.filter(f => !q || f.rel.toLowerCase().includes(q));
+    $("#verList").innerHTML = shown.length ? shown.map(f => `
+      <div><div class="row"><span class="mono grow ellipsis" title="${esc(f.rel)}">${esc(f.rel)}</span>${f.exists ? "" : `<span class="chip plain">no longer here</span>`}</div>
+        ${f.versions.map(v => `<div class="row small" style="padding:3px 0 0 14px"><span class="grow muted">${esc(v.taken)} &middot; ${v.size.toLocaleString()} bytes</span>
+          <button class="btn" data-vopen="${esc(v.path)}">Open</button>
+          <button class="btn" data-vrestore="${esc(v.path)}" data-vrel="${esc(f.rel)}" data-vwhen="${esc(v.taken)}">Restore</button></div>`).join("")}</div>`).join("")
+      : `<div class="muted">${files.length ? "Nothing matches." : "No earlier versions yet. A copy is kept whenever Unisono replaces a file on this computer with a newer one."}</div>`;
+    document.querySelectorAll("[data-vopen]").forEach(b => b.onclick = () => call("versions.open", { path: b.dataset.vopen }).catch(e => toast(e.message, true)));
+    document.querySelectorAll("[data-vrestore]").forEach(b => b.onclick = async () => {
+      if (!await confirmBox("Restore a version", [`Put the copy from ${b.dataset.vwhen} back as ${b.dataset.vrel}? The current file is kept as a version first.`])) return;
+      try { await call("versions.restore", { id: p.id, rel: b.dataset.vrel, path: b.dataset.vrestore }); toast("Restored; syncing now"); draw(await call("versions.list", { id: p.id })); }
+      catch (e) { toast(e.message, true); }
+    });
+  };
+  try {
+    const files = await call("versions.list", { id: p.id });
+    $("#verSearch").oninput = () => draw(files);
+    draw(files); openModal("#dlgVersions");
+  } catch (e) { toast(e.message, true); }
 }
 
 async function preview(p, btn) {
