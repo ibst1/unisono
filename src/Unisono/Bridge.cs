@@ -94,6 +94,13 @@ sealed class Bridge : IAsyncDisposable
                 return d.ShowDialog(_owner) == DialogResult.OK ? d.SelectedPath : null;
             }
             case "pair.save": return await SavePairAsync(p);
+            case "ondemand.check":
+            {
+                var raw = Str(p, "path") ?? "";
+                var full = Path.GetFullPath(Environment.ExpandEnvironmentVariables(raw));
+                var self = Str(p, "id") is { } sid ? Config.Pairs.FirstOrDefault(x => x.Id == sid) : null;
+                return new { why = CloudFiles.WhyNot(full, self is { OnDemand: true } ? self : null) };
+            }
             case "versions.list":
             {
                 var pair = FindPair(Str(p, "id"));

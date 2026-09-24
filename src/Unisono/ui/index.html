@@ -256,6 +256,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     <label class="check help" id="pairRootRow" style="margin-top:4px"><input type="checkbox" id="pairRoot"> Whole My Drive (the root folder)</label>
     <div class="help" id="pairRemoteHelp"></div>
     <label class="check help"><input type="checkbox" id="pairCreate" checked> Create it if missing</label></div>
+  <div class="field"><label>Local copies</label>
+    <div><div class="seg" id="pairCopies"><button data-c="demand">Files on demand</button><button data-c="all">Everything downloaded</button></div>
+      <input type="checkbox" id="pairOnDemand" hidden>
+      <div class="help" id="pairCopiesHelp"></div><div id="pairCopiesWhy" style="margin-top:6px"></div></div></div>
   <div class="field"><label>Folders</label>
     <div class="inline"><span id="pairScopeText" class="grow">Everything in the remote folder</span><button class="btn" id="pairScopeBtn">Choose folders...</button></div>
     <div class="help">Sync only some subfolders, e.g. 14 of 15. What is left out is never touched on either side.</div></div>
@@ -267,12 +271,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     <div class="inline"><input type="text" id="pairLocal"><button class="btn" id="pairPickLocal">Browse...</button></div>
     <div class="help">May lie inside another pair's folder (e.g. a Drive folder inside a NAS folder); the outer pair then leaves it alone.
       Folders under your profile are stored as <span class="mono">%USERPROFILE%</span> / <span class="mono">%APPDATA%</span>, so the pair also fits your other computers.</div></div>
-  <div class="field"><label>Files on demand</label>
-    <label class="check"><input type="checkbox" id="pairOnDemand"> Show everything, download only what is opened or kept</label>
-    <div class="help">Like OneDrive: all files and folders appear in Explorer but take no space until opened. Right-click in Explorer:
-      <i>Always keep on this device</i> downloads a file or folder and keeps it up to date (new files in it too); <i>Free up space</i> makes it online-only again.
-      Explorer shows the status: cloud = online-only, green outline = on this computer, filled green = always kept.
-      Needs a folder outside OneDrive and Work Folders, e.g. <span class="mono">%USERPROFILE%\Unisono\...</span>, and Unisono running to open online-only files.</div></div>
   <div class="field"><label>Computers</label><input type="text" id="pairMachines" placeholder="empty = every computer">
     <div class="help" id="pairMachinesHelp"></div></div>
   <div class="field" id="pairDocsRow"><label id="pairDocsLabel">Google Docs</label>
@@ -608,9 +606,28 @@ function setKind(k) {
 // Cloud-only rules (links for big files) are what files on demand does properly: hide them while it is on.
 function syncOnDemand() {
   const on = $("#pairOnDemand").checked;
+  document.querySelectorAll("#pairCopies button").forEach(b => b.classList.toggle("on", (b.dataset.c === "demand") === on));
+  $("#pairCopiesHelp").innerHTML = on
+    ? "Everything shows up in Explorer but takes no space until opened. Right-click a file or folder: <i>Always keep on this device</i> downloads it and keeps it up to date, <i>Free up space</i> makes it online-only again. Explorer shows the status icons."
+    : "Every file is downloaded to this computer and kept up to date.";
   document.querySelectorAll("#dlgPair .drive-only").forEach(e => e.hidden = pairKind !== "Drive" || on);
 }
-$("#pairOnDemand").onchange = syncOnDemand;
+// Files on demand needs a folder outside OneDrive and Work Folders: say so as soon as the folder is chosen.
+let copiesCheck = 0;
+async function checkOnDemandPlace() {
+  const n = ++copiesCheck, path = $("#pairLocal").value.trim();
+  const btn = document.querySelector("#pairCopies button[data-c=demand]");
+  if (!path) { btn.disabled = false; $("#pairCopiesWhy").innerHTML = ""; return; }
+  try {
+    const r = await call("ondemand.check", { path, id: editing ? editing.id : null });
+    if (n !== copiesCheck) return;
+    btn.disabled = !!r.why;
+    $("#pairCopiesWhy").innerHTML = r.why ? `<div class="note warn">Files on demand is not possible here: ${esc(r.why)}</div>` : "";
+    if (r.why && $("#pairOnDemand").checked) { $("#pairOnDemand").checked = false; syncOnDemand(); }
+  } catch { }
+}
+document.querySelectorAll("#pairCopies button").forEach(b => b.onclick = () => { if (b.disabled) return; $("#pairOnDemand").checked = b.dataset.c === "demand"; syncOnDemand(); });
+$("#pairLocal").addEventListener("change", checkOnDemandPlace);
 function syncRootBox() {
   const root = pairKind === "Drive" && $("#pairRoot").checked;
   $("#pairRemote").disabled = root; if (root) $("#pairRemote").value = "";
@@ -638,8 +655,9 @@ function pairDialog(p) {
   $("#pairFolders").value = p ? p.cloudOnlyFolders.join(", ") : "";
   $("#pairPoll").value = p ? p.pollSeconds : (pairKind === "Synology" ? 60 : 30);
   $("#pairDirection").value = p ? p.direction : "TwoWay";
-  $("#pairOnDemand").checked = !!p && p.onDemand;
+  $("#pairOnDemand").checked = p ? p.onDemand : true; // new pairs: files on demand, where the folder allows it
   syncOnDemand();
+  checkOnDemandPlace();
   $("#pairMachines").value = p ? p.machines : "";
   $("#pairMachinesHelp").innerHTML = `Names of the computers that sync this pair, comma-separated. This computer is <b>${esc(S.machine)}</b>. Useful with a shared pair list (Settings).`;
   $("#pairIgnore").value = p ? p.ignorePatterns : "";
@@ -649,7 +667,7 @@ function pairDialog(p) {
   openModal("#dlgPair");
 }
 $("#btnAddPair").onclick = () => pairDialog();
-$("#pairPickLocal").onclick = async () => { const r = await call("pickLocal", { current: $("#pairLocal").value }); if (r) $("#pairLocal").value = r; };
+$("#pairPickLocal").onclick = async () => { const r = await call("pickLocal", { current: $("#pairLocal").value }); if (r) { $("#pairLocal").value = r; checkOnDemandPlace(); } };
 $("#pairBrowse").onclick = async () => {
   if (pairKind !== "Folder") return browseDialog();
   const r = await call("pickLocal", { current: $("#pairRemote").value, title: "The other folder (a network folder, another drive, ...)" });
