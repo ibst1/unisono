@@ -10,15 +10,22 @@ public sealed class CycleStats
         $"{Downloaded} down, {Uploaded} up, {Exported} exported, {Linked} linked, {Trashed} deleted remotely, {Recycled} recycled locally, {Conflicts} conflicts, {Errors} errors";
 }
 
+/// <summary>One thing a dry run found it would do.</summary>
+public sealed record PlannedAction(string Action, string Path, string? Detail);
+
 /// <summary>
 /// One sync pair. Each cycle compares three things per path: what the remote side has (from the store), what the
 /// disk has (a fresh stat walk) and what both looked like last time they agreed (the state). That third leg is what
 /// tells a deletion from a never-seen file, and a local edit from a remote one.
 ///
 /// Safety rules: deletes go to the remote trash / Recycle Bin; a folder is only deleted on the other side when
-/// nothing inside it changed since the last sync; when both sides changed, both versions are kept.
+/// nothing inside it changed since the last sync; when both sides changed, both versions are kept; a local file is
+/// copied to the version store before it is overwritten.
 /// Derived items (Google Docs exports, cloud-only links) are one-way: the remote is the source, local copies are
 /// regenerated, and deleting or editing them locally changes nothing remotely.
+///
+/// Direction: in a one-way pair only the source side's changes are applied; nothing done on the other side is
+/// propagated or undone. A dry run takes every decision but performs none, collecting them in <see cref="Plan"/>.
 /// </summary>
 public sealed class SyncEngine
 {
@@ -27,10 +34,91 @@ public sealed class SyncEngine
     private readonly Log _log;
     private readonly string _root;
     private readonly SyncState _state;
+    private readonly AppOptions _options;
+    private readonly IReadOnlyList<SyncPair> _others;
     private readonly HashSet<string> _warnedOnce = new(StringComparer.OrdinalIgnoreCase);
     private SyncScope _scope = null!;
+    private HashSet<string> _ignoredBelow = new(StringComparer.OrdinalIgnoreCase);
 
     public SyncPair Pair => _pair;
+
+    /// <summary>Decide everything, change nothing (the state file is not written either).</summary>
+    public bool DryRun { get; init; }
+    public List<PlannedAction> Plan { get; } = new();
+
+    private bool Down => _pair.Direction != SyncDirection.UploadOnly;   // may change the local side
+    private bool Up => _pair.Direction != SyncDirection.DownloadOnly;   // may change the remote side
+
+    public SyncEngine(IRemoteStore store, SyncPair pair, Log log, IReadOnlyList<SyncPair>? allPairs = null, AppOptions? options = null)
+    {
+        _others = allPairs ?? Array.Empty<SyncPair>();
+        _options = options ?? new AppOptions();
+        _store = store;
+        _pair = pair;
+        _log = log;
+        _root = Path.GetFullPath(pair.LocalPath);
+        _state = SyncState.Load(pair);
+        _store.LoadState(_state);
+    }
+
+    public async Task<CycleStats> RunCycleAsync(CancellationToken ct)
+    {
+        var stats = new CycleStats();
+        Plan.Clear();
+        if (!Directory.Exists(_root))
+        {
+            _log.Warn($"[{_pair.Name}] local folder {_root} does not exist; nothing done");
+            return stats;
+        }
+
+        // Selective sync and ignore rules: out-of-scope and ignored items are simply invisible to the rest of the
+        // cycle, so they are never touched on either side.
+        _scope = new SyncScope(_pair, _others);
+        var remoteAll = await _store.GetTreeAsync(_log, ct);
+        var localAll = LocalScanner.Scan(_root, _log);
+        var ignore = IgnoreRules.Build(_options, _pair, _root,
+            localAll.Values.Where(i => !i.IsDir && PathUtil.NameOf(i.RelPath).Equals(IgnoreRules.FileName, StringComparison.OrdinalIgnoreCase)).Select(i => i.RelPath),
+            _log);
+        _ignoredBelow = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var remote = Visible(remoteAll, n => n.IsFolder, ignore);
+        var local = Visible(localAll, i => i.IsDir, ignore);
+        try
+        {
+            await SyncFoldersAsync(remote, local, stats, ct);
+            await SyncFilesAsync(remote, local, stats, ct);
+            if (!DryRun) TidyBridgeFolders(local);
+        }
+        finally
+        {
+            if (!DryRun)
+            {
+                _store.SaveState(_state);
+                _state.Save(_pair);
+            }
+        }
+        if (stats.Any) _log.Info($"[{_pair.Name}] {stats}");
+        return stats;
+    }
+
+    /// <summary>The in-scope, not-ignored part of one side; records which folders hold ignored content.</summary>
+    private Dictionary<string, T> Visible<T>(Dictionary<string, T> all, Func<T, bool> isDir, IgnoreRules ignore)
+    {
+        var scoped = _scope.Filter(all, isDir);
+        if (ignore.IsEmpty) return scoped;
+        var result = new Dictionary<string, T>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (k, v) in scoped)
+        {
+            if (!ignore.IsIgnored(k, isDir(v))) { result[k] = v; continue; }
+            for (var p = PathUtil.ParentOf(k); p.Length > 0; p = PathUtil.ParentOf(p)) _ignoredBelow.Add(p);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// A folder that must never be deleted as a whole because it holds things the cycle cannot see: content outside
+    /// the folder selection, a nested pair, or ignored files. Its visible content is synced item by item instead.
+    /// </summary>
+    private bool IsProtected(string rel) => _scope.IsProtected(rel) || _ignoredBelow.Contains(rel);
 
     /// <summary>True when the (filtered) side has in-scope content below a folder other than bridge folders.</summary>
     private bool HasScopedContent<T>(string rel, Dictionary<string, T> side)
@@ -38,8 +126,6 @@ public sealed class SyncEngine
         var prefix = rel + "/";
         return side.Keys.Any(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && !_scope.IsBridge(k));
     }
-
-    private readonly IReadOnlyList<SyncPair> _others;
 
     /// <summary>
     /// A bridge folder (only there to reach an included folder) that ends up with nothing in scope below it is removed
@@ -62,44 +148,20 @@ public sealed class SyncEngine
         }
     }
 
-    public SyncEngine(IRemoteStore store, SyncPair pair, Log log, IReadOnlyList<SyncPair>? allPairs = null)
+    /// <summary>In a dry run: note the action and say so. Returns true when the caller must not perform it.</summary>
+    private bool Planned(string action, string rel, string? detail = null)
     {
-        _others = allPairs ?? Array.Empty<SyncPair>();
-        _store = store;
-        _pair = pair;
-        _log = log;
-        _root = Path.GetFullPath(pair.LocalPath);
-        _state = SyncState.Load(pair);
-        _store.LoadState(_state);
+        if (!DryRun) return false;
+        Plan.Add(new PlannedAction(action, rel, detail));
+        _log.Info($"[{_pair.Name}] would {action}: {rel}{(detail != null ? " (" + detail + ")" : "")}");
+        return true;
     }
 
-    public async Task<CycleStats> RunCycleAsync(CancellationToken ct)
+    private RemoteNode DryNode(string rel, RemoteNode? parent, bool folder) => new()
     {
-        var stats = new CycleStats();
-        if (!Directory.Exists(_root))
-        {
-            _log.Warn($"[{_pair.Name}] local folder {_root} does not exist; nothing done");
-            return stats;
-        }
-
-        // Selective sync: out-of-scope items are simply invisible to the rest of the cycle, so they are never touched.
-        _scope = new SyncScope(_pair, _others);
-        var remote = _scope.Filter(await _store.GetTreeAsync(_log, ct), n => n.IsFolder);
-        var local = _scope.Filter(LocalScanner.Scan(_root, _log), i => i.IsDir);
-        try
-        {
-            await SyncFoldersAsync(remote, local, stats, ct);
-            await SyncFilesAsync(remote, local, stats, ct);
-            TidyBridgeFolders(local);
-        }
-        finally
-        {
-            _store.SaveState(_state);
-            _state.Save(_pair);
-        }
-        if (stats.Any) _log.Info($"[{_pair.Name}] {stats}");
-        return stats;
-    }
+        Id = "dry:" + rel, Name = PathUtil.NameOf(rel), ParentId = parent?.Id ?? "", RelPath = rel,
+        MimeType = folder ? DriveClient.FolderMime : "application/octet-stream",
+    };
 
     // ---------------------------------------------------------------- folders
 
@@ -125,31 +187,31 @@ public sealed class SyncEngine
                 RemoveTree(remote, rel);
                 continue;
             }
-            if (_scope.IsProtected(rel))
+            if (IsProtected(rel))
             {
-                // Holds out-of-scope content remotely: never deleted as a whole. It exists locally only while something
-                // in scope lives in it; its in-scope content is synced (or deleted) item by item.
-                if (HasScopedContent(rel, remote))
-                {
-                    Directory.CreateDirectory(Local(rel));
-                    local[rel] = new LocalItem { RelPath = rel, FullPath = Local(rel), IsDir = true };
-                    UpsertFolderEntry(rel, node.Id);
-                }
+                // Holds content this cycle cannot see: never deleted as a whole. Deleted locally with nothing visible
+                // changed remotely since: stays deleted here, and the file pass removes its visible content remotely
+                // item by item. Otherwise it exists locally while something visible lives in it.
+                if (s is { Kind: EntryKind.Folder } && !RemoteTreeHasChanges(rel, remote)) continue;
+                if (Down && HasScopedContent(rel, remote)) CreateLocalFolder(rel, node, local);
                 continue;
             }
             if (s is { Kind: EntryKind.Folder } && !RemoteTreeHasChanges(rel, remote))
             {
-                // Deleted locally, unchanged remotely since we last saw it: propagate.
+                // Deleted locally, unchanged remotely since we last saw it: propagate (unless this pair only downloads,
+                // in which case the local deletion is simply left as it is).
+                if (!Up) continue;
                 await Try(rel, stats, async () =>
                 {
-                    await _store.DeleteAsync(node, ct);
+                    if (!Planned("delete folder remotely (deleted locally)", rel)) await _store.DeleteAsync(node, ct);
                     _state.RemoveUnder(rel);
                     RemoveTree(remote, rel);
                     stats.Trashed++;
-                    _log.Info($"[{_pair.Name}] deleted folder remotely (deleted locally): {rel}");
+                    if (!DryRun) _log.Info($"[{_pair.Name}] deleted folder remotely (deleted locally): {rel}");
                 });
                 continue;
             }
+            if (!Down) continue; // upload-only: remote-only folders are left alone
             if (s is { Kind: EntryKind.Folder })
             {
                 // Deleted locally but the remote has new content in it: keep the remote version, forget the old state
@@ -157,9 +219,7 @@ public sealed class SyncEngine
                 _log.Warn($"[{_pair.Name}] folder '{rel}' was deleted locally but changed remotely; restoring it");
                 _state.RemoveUnder(rel);
             }
-            Directory.CreateDirectory(Local(rel));
-            local[rel] = new LocalItem { RelPath = rel, FullPath = Local(rel), IsDir = true };
-            UpsertFolderEntry(rel, node.Id);
+            CreateLocalFolder(rel, node, local);
         }
 
         // Local folders unknown remotely, shallow first.
@@ -170,48 +230,62 @@ public sealed class SyncEngine
             if (!local.ContainsKey(rel) || remote.ContainsKey(rel)) continue;
             _state.Entries.TryGetValue(rel, out var s);
 
-            if (_scope.IsProtected(rel))
+            if (IsProtected(rel))
             {
-                // The mirror image: never recycled locally as a whole (it may hold local-only files out of scope);
-                // created remotely only while something in scope lives in it.
+                // The mirror image: never recycled locally as a whole (it may hold local-only files the cycle cannot
+                // see); created remotely only while something visible lives in it.
                 if (!HasScopedContent(rel, local)) { _state.Entries.Remove(rel); continue; }
-                if (!TryParent(rel, remote, out var bridgeParent)) continue;
-                await Try(rel, stats, async () =>
-                {
-                    var node = await _store.CreateFolderAsync(rel, bridgeParent, ct);
-                    remote[rel] = node;
-                    UpsertFolderEntry(rel, node.Id);
-                    _log.Info($"[{_pair.Name}] created folder remotely: {rel}");
-                });
+                // Deleted remotely with nothing visible changed locally since: not recreated there; the file pass
+                // recycles its visible content here item by item, and the rest of the folder stays.
+                if (s is { Kind: EntryKind.Folder } && !LocalTreeHasChanges(rel, local)) continue;
+                if (Up) await CreateRemoteFolderAsync(rel, remote, stats, ct);
                 continue;
             }
             if (s is { Kind: EntryKind.Folder })
             {
                 if (!LocalTreeHasChanges(rel, local))
                 {
+                    if (!Down) continue; // upload-only: a remote deletion is not applied here (nor undone)
                     await Try(rel, stats, () =>
                     {
-                        var where = RecycleBin.Delete(item.FullPath);
+                        if (!Planned("move folder to the Recycle Bin (deleted remotely)", rel))
+                        {
+                            var where = RecycleBin.Delete(item.FullPath);
+                            _log.Info($"[{_pair.Name}] moved folder to {where} (deleted remotely): {rel}");
+                        }
                         RemoveTree(local, rel);
                         _state.RemoveUnder(rel);
                         stats.Recycled++;
-                        _log.Info($"[{_pair.Name}] moved folder to {where} (deleted remotely): {rel}");
                         return Task.CompletedTask;
                     });
                     continue;
                 }
+                if (!Up) continue;
                 _log.Warn($"[{_pair.Name}] folder '{rel}' was deleted remotely but changed locally; re-creating it");
                 _state.RemoveUnder(rel);
             }
-            if (!TryParent(rel, remote, out var parent)) continue; // parent could not be created; reported there
-            await Try(rel, stats, async () =>
-            {
-                var node = await _store.CreateFolderAsync(rel, parent, ct);
-                remote[rel] = node;
-                UpsertFolderEntry(rel, node.Id);
-                _log.Info($"[{_pair.Name}] created folder remotely: {rel}");
-            });
+            if (!Up) continue; // download-only: local-only folders stay local
+            await CreateRemoteFolderAsync(rel, remote, stats, ct);
         }
+    }
+
+    private void CreateLocalFolder(string rel, RemoteNode node, Dictionary<string, LocalItem> local)
+    {
+        if (!Planned("create folder locally", rel)) Directory.CreateDirectory(Local(rel));
+        local[rel] = new LocalItem { RelPath = rel, FullPath = Local(rel), IsDir = true };
+        UpsertFolderEntry(rel, node.Id);
+    }
+
+    private async Task CreateRemoteFolderAsync(string rel, Dictionary<string, RemoteNode> remote, CycleStats stats, CancellationToken ct)
+    {
+        if (!TryParent(rel, remote, out var parent)) return; // parent could not be created; reported there
+        await Try(rel, stats, async () =>
+        {
+            var node = Planned("create folder remotely", rel) ? DryNode(rel, parent, folder: true) : await _store.CreateFolderAsync(rel, parent, ct);
+            remote[rel] = node;
+            UpsertFolderEntry(rel, node.Id);
+            if (!DryRun) _log.Info($"[{_pair.Name}] created folder remotely: {rel}");
+        });
     }
 
     // ------------------------------------------------------------------ files
@@ -226,7 +300,11 @@ public sealed class SyncEngine
             ct.ThrowIfCancellationRequested();
             var rel = node.RelPath;
             var parentRel = PathUtil.ParentOf(rel);
-            if (parentRel.Length > 0 && !(local.GetValueOrDefault(parentRel)?.IsDir ?? false)) continue; // parent unresolved
+            // Parent missing locally: nothing to do, unless the file was synced before and its (partly synced) folder
+            // was deleted here; then the file pass still has to remove it remotely, item by item.
+            if (parentRel.Length > 0 && !(local.GetValueOrDefault(parentRel)?.IsDir ?? false)
+                && !(_state.Entries.TryGetValue(rel, out var prev) && prev.Kind == EntryKind.File && !local.ContainsKey(rel)))
+                continue;
 
             var kind = Classify(node, local);
             if (kind == EntryKind.File) await SyncFileAsync(node, remote, local, derived, stats, ct);
@@ -243,11 +321,14 @@ public sealed class SyncEngine
             if (s.LocalName != null)
             {
                 derived.Add(s.LocalName);
-                if (local.TryGetValue(s.LocalName, out var l) && !l.IsDir)
+                if (Down && local.TryGetValue(s.LocalName, out var l) && !l.IsDir)
                 {
-                    var where = RecycleBin.Delete(l.FullPath);
+                    if (!Planned($"remove {s.Kind.ToString().ToLowerInvariant()}", s.LocalName))
+                    {
+                        var where = RecycleBin.Delete(l.FullPath);
+                        _log.Info($"[{_pair.Name}] removed {s.Kind.ToString().ToLowerInvariant()} ({where}): {s.LocalName}");
+                    }
                     local.Remove(s.LocalName);
-                    _log.Info($"[{_pair.Name}] removed {s.Kind.ToString().ToLowerInvariant()} ({where}): {s.LocalName}");
                 }
             }
             _state.Entries.Remove(s.Path);
@@ -259,33 +340,42 @@ public sealed class SyncEngine
             ct.ThrowIfCancellationRequested();
             var rel = item.RelPath;
             if (!local.ContainsKey(rel) || derived.Contains(rel) || remote.ContainsKey(rel)) continue;
-            if (!TryParent(rel, remote, out var parent)) continue;
             _state.Entries.TryGetValue(rel, out var s);
+            // Parent missing remotely: only a synced, unchanged file (its partly synced folder was deleted remotely)
+            // is handled, by the deletion below; anything else waits until the parent exists.
+            var parentKnown = TryParent(rel, remote, out var parent);
+            if (!parentKnown && !(s is { Kind: EntryKind.File } && LocalUnchanged(item, s))) continue;
 
             if (s is { Kind: EntryKind.File })
             {
                 if (LocalUnchanged(item, s))
                 {
+                    if (!Down) continue; // upload-only: the remote deletion is neither applied nor undone
                     await Try(rel, stats, () =>
                     {
-                        var where = RecycleBin.Delete(item.FullPath);
+                        if (!Planned("move to the Recycle Bin (deleted remotely)", rel))
+                        {
+                            var where = RecycleBin.Delete(item.FullPath);
+                            _log.Info($"[{_pair.Name}] moved to {where} (deleted remotely): {rel}");
+                        }
                         local.Remove(rel);
                         _state.Entries.Remove(rel);
                         stats.Recycled++;
-                        _log.Info($"[{_pair.Name}] moved to {where} (deleted remotely): {rel}");
                         return Task.CompletedTask;
                     });
                     continue;
                 }
-                _log.Warn($"[{_pair.Name}] '{rel}' was deleted remotely but changed locally; uploading it again");
+                if (Up) _log.Warn($"[{_pair.Name}] '{rel}' was deleted remotely but changed locally; uploading it again");
             }
+            if (!Up || !parentKnown) continue; // download-only: local-only files stay local
             await Try(rel, stats, async () =>
             {
-                var node = await _store.UploadNewAsync(item.FullPath, rel, parent, ct);
+                var node = Planned("upload", rel, $"{item.Size:N0} bytes") ? DryNode(rel, parent, folder: false)
+                    : await _store.UploadNewAsync(item.FullPath, rel, parent, ct);
                 remote[rel] = node;
                 RecordFile(rel, node, item.FullPath);
                 stats.Uploaded++;
-                _log.Info($"[{_pair.Name}] uploaded: {rel} ({item.Size:N0} bytes)");
+                if (!DryRun) _log.Info($"[{_pair.Name}] uploaded: {rel} ({item.Size:N0} bytes)");
             });
         }
 
@@ -313,7 +403,11 @@ public sealed class SyncEngine
             if (s.LocalName != null)
             {
                 derived.Add(s.LocalName);
-                if (local.TryGetValue(s.LocalName, out var d) && !d.IsDir) { RecycleBin.Delete(d.FullPath); local.Remove(s.LocalName); }
+                if (local.TryGetValue(s.LocalName, out var d) && !d.IsDir)
+                {
+                    if (!Planned("remove link", s.LocalName)) RecycleBin.Delete(d.FullPath);
+                    local.Remove(s.LocalName);
+                }
             }
             _state.Entries.Remove(rel);
             s = null;
@@ -325,9 +419,10 @@ public sealed class SyncEngine
             {
                 if (s == null || !RemoteUnchanged(node, s))
                 {
-                    await DownloadAsync(node, path, stats, s == null ? "new remotely" : "changed remotely after local delete", ct);
+                    if (Down) await DownloadAsync(node, path, stats, s == null ? "new remotely" : "changed remotely after local delete", ct);
                     return;
                 }
+                if (!Up) return; // download-only: a local deletion is left as it is until the remote file changes
                 // Deleted locally and, as far as the cached tree knows, untouched remotely. The cache can lag,
                 // so confirm with fresh metadata before deleting anything on the other side.
                 var fresh = await _store.RefreshAsync(node, ct);
@@ -340,22 +435,24 @@ public sealed class SyncEngine
                 if (!RemoteUnchanged(fresh, s))
                 {
                     remote[rel] = fresh;
-                    await DownloadAsync(fresh, path, stats, "changed remotely after local delete", ct);
+                    if (Down) await DownloadAsync(fresh, path, stats, "changed remotely after local delete", ct);
                     return;
                 }
-                await _store.DeleteAsync(fresh, ct);
+                if (!Planned("delete remotely (deleted locally)", rel)) await _store.DeleteAsync(fresh, ct);
                 remote.Remove(rel);
                 _state.Entries.Remove(rel);
                 stats.Trashed++;
-                _log.Info($"[{_pair.Name}] deleted remotely (deleted locally): {rel}");
+                if (!DryRun) _log.Info($"[{_pair.Name}] deleted remotely (deleted locally): {rel}");
                 return;
             }
 
             if (s == null)
             {
-                // Both sides have it and we have never synced it: content decides.
+                // Both sides have it and we have never synced it: content decides; in a one-way pair the source wins.
                 if (await SameContentAsync(node, path, ct)) { RecordFile(rel, node, path); return; }
-                await ConflictAsync(node, rel, path, remote, stats, "exists on both sides with different content", ct);
+                if (_pair.Direction == SyncDirection.DownloadOnly) await DownloadAsync(node, path, stats, "differs; download-only pair", ct);
+                else if (_pair.Direction == SyncDirection.UploadOnly) await UploadChangeAsync(node, rel, path, l, remote, stats, ct);
+                else await ConflictAsync(node, rel, path, remote, stats, "exists on both sides with different content", ct);
                 return;
             }
 
@@ -370,14 +467,17 @@ public sealed class SyncEngine
             if (remoteChanged && localChanged)
             {
                 if (await SameContentAsync(node, path, ct)) { RecordFile(rel, node, path); return; }
-                await ConflictAsync(node, rel, path, remote, stats, "changed on both sides", ct);
+                if (_pair.Direction == SyncDirection.DownloadOnly) await DownloadAsync(node, path, stats, "changed on both sides; download-only pair", ct);
+                else if (_pair.Direction == SyncDirection.UploadOnly) await UploadChangeAsync(node, rel, path, l, remote, stats, ct);
+                else await ConflictAsync(node, rel, path, remote, stats, "changed on both sides", ct);
             }
             else if (remoteChanged)
             {
-                await DownloadAsync(node, path, stats, "changed remotely", ct);
+                if (Down) await DownloadAsync(node, path, stats, "changed remotely", ct);
             }
             else if (localChanged)
             {
+                if (!Up) return; // download-only: local edits stay local until the remote file changes
                 // About to overwrite remotely: make sure the cached tree is not hiding a newer remote version.
                 var current = await _store.RefreshAsync(node, ct);
                 if (current == null)
@@ -387,27 +487,40 @@ public sealed class SyncEngine
                     _log.Warn($"[{_pair.Name}] '{rel}' vanished remotely while changed locally; it will be uploaded as new");
                     return;
                 }
-                if (!RemoteUnchanged(current, s))
+                if (!RemoteUnchanged(current, s) && _pair.Direction == SyncDirection.TwoWay)
                 {
                     remote[rel] = current;
                     if (await SameContentAsync(current, path, ct)) { RecordFile(rel, current, path); return; }
                     await ConflictAsync(current, rel, path, remote, stats, "changed on both sides", ct);
                     return;
                 }
-                var fresh = await _store.UploadUpdateAsync(path, current, ct);
-                remote[rel] = fresh;
-                RecordFile(rel, fresh, path);
-                stats.Uploaded++;
-                _log.Info($"[{_pair.Name}] uploaded change: {rel} ({l.Size:N0} bytes)");
+                await UploadChangeAsync(current, rel, path, l, remote, stats, ct);
             }
         });
     }
 
+    private async Task UploadChangeAsync(RemoteNode node, string rel, string path, LocalItem l, Dictionary<string, RemoteNode> remote, CycleStats stats, CancellationToken ct)
+    {
+        var fresh = Planned("upload change", rel, $"{l.Size:N0} bytes") ? node : await _store.UploadUpdateAsync(path, node, ct);
+        remote[rel] = fresh;
+        RecordFile(rel, fresh, path);
+        stats.Uploaded++;
+        if (!DryRun) _log.Info($"[{_pair.Name}] uploaded change: {rel} ({l.Size:N0} bytes)");
+    }
+
     private async Task DownloadAsync(RemoteNode node, string path, CycleStats stats, string why, CancellationToken ct)
     {
+        stats.Downloaded++;
+        if (Planned("download", node.RelPath, $"{why}, {node.Size:N0} bytes{(File.Exists(path) ? ", replaces the local file (a copy is kept)" : "")}")) return;
+        // The local file is about to be replaced: keep a copy first.
+        if (File.Exists(path))
+        {
+            try { VersionStore.Save(_pair, node.RelPath, path, _options); }
+            catch (Exception ex) { _log.Warn($"[{_pair.Name}] could not keep a copy of {node.RelPath} before replacing it: {ex.Message}"); }
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await _store.DownloadAsync(node, path, ct);
         RecordFile(node.RelPath, node, path);
-        stats.Downloaded++;
         _log.Info($"[{_pair.Name}] downloaded ({why}): {node.RelPath} ({node.Size:N0} bytes)");
     }
 
@@ -419,10 +532,11 @@ public sealed class SyncEngine
         var stem = name[..^ext.Length];
         var conflictName = $"{stem} (conflict {Environment.MachineName} {DateTime.Now:yyyy-MM-dd HHmm}){ext}";
         var conflictRel = PathUtil.Join(PathUtil.ParentOf(rel), conflictName);
+        stats.Conflicts++;
+        if (Planned("keep both (conflict)", rel, $"{why}; local copy becomes '{conflictName}'")) return;
         var conflictPath = Local(conflictRel);
         File.Move(path, conflictPath, overwrite: false);
         _log.Warn($"[{_pair.Name}] conflict ({why}): '{rel}' kept as '{conflictName}'");
-        stats.Conflicts++;
 
         await DownloadAsync(node, path, stats, "conflict, remote version", ct);
 
@@ -464,32 +578,37 @@ public sealed class SyncEngine
         if (s?.LocalName != null && !string.Equals(s.LocalName, derivedRel, StringComparison.OrdinalIgnoreCase)
             && local.TryGetValue(s.LocalName, out var old) && !old.IsDir)
         {
-            RecycleBin.Delete(old.FullPath); // representation changed, e.g. export -> link
+            if (!Planned("remove old representation", s.LocalName)) RecycleBin.Delete(old.FullPath); // e.g. export -> link
             local.Remove(s.LocalName);
         }
         if (s is { Kind: EntryKind.File } && local.TryGetValue(rel, out var pointer) && !pointer.IsDir && LocalUnchanged(pointer, s))
         {
             // Until now the document was synced as its raw pointer file (a NAS .odoc before exports existed). The export or
             // link replaces that local copy; the document on the remote side is not touched.
-            var where = RecycleBin.Delete(pointer.FullPath);
+            if (!Planned("replace local pointer file", rel))
+            {
+                var where = RecycleBin.Delete(pointer.FullPath);
+                _log.Info($"[{_pair.Name}] local pointer file replaced by {kind.ToString().ToLowerInvariant()} (old copy to {where}): {rel}");
+            }
             local.Remove(rel);
             derived.Add(rel);
-            _log.Info($"[{_pair.Name}] local pointer file replaced by {kind.ToString().ToLowerInvariant()} (old copy to {where}): {rel}");
         }
 
         await Try(rel, stats, async () =>
         {
             if (kind == EntryKind.Link)
             {
-                WriteLink(path, await _store.LinkUrlAsync(node, ct), node.ModifiedUtc);
                 stats.Linked++;
+                if (Planned("write link", derivedRel)) return;
+                WriteLink(path, await _store.LinkUrlAsync(node, ct), node.ModifiedUtc);
                 _log.Debug($"[{_pair.Name}] link: {derivedRel}");
             }
             else
             {
+                stats.Exported++;
+                if (Planned("export", derivedRel)) return;
                 await _store.ExportAsync(node, ExportMime(node.MimeType)!, path, ct);
                 File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly);
-                stats.Exported++;
                 _log.Info($"[{_pair.Name}] exported: {derivedRel}");
             }
             var info = new FileInfo(path);
@@ -513,6 +632,12 @@ public sealed class SyncEngine
     }
 
     private EntryKind Classify(RemoteNode node, Dictionary<string, LocalItem> local)
+    {
+        var kind = ClassifyAny(node, local);
+        return !Down && kind is EntryKind.Export or EntryKind.Link ? EntryKind.Folder : kind;
+    }
+
+    private EntryKind ClassifyAny(RemoteNode node, Dictionary<string, LocalItem> local)
     {
         if (node.IsFolder) return EntryKind.Folder;
         var canLink = _store.CanLink(node);

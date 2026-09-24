@@ -73,6 +73,12 @@ a.path:hover { color: var(--accent); border-color: var(--accent); }
 input[type=text], input[type=password], input[type=number], select { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; width: 100%; min-width: 0; }
 input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 input:disabled { opacity: .55; }
+textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; width: 100%; min-width: 0; font-family: var(--mono); font-size: 12.5px; resize: vertical; }
+textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.plan { max-height: 55vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.plan div { padding: 5px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.plan div:last-child { border-bottom: 0; }
+.plan .act { display: inline-block; min-width: 230px; color: var(--muted); }
 .inline { display: flex; gap: 8px; align-items: center; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; background: var(--panel); padding: 6px 14px; cursor: pointer; }
@@ -175,6 +181,23 @@ input:disabled { opacity: .55; }
         <div class="grow"><div>Detailed log</div><div class="small muted">Also log index runs, change-feed polls and connection attempts.</div></div></div>
     </section>
     <section class="card">
+      <div class="setting"><div class="grow"><div>Keep previous versions</div>
+        <div class="small muted">Before Unisono replaces a file on this computer with a newer one, it keeps a copy. 0 turns this off.</div></div>
+        <div class="inline"><input type="number" id="optKeep" min="0" max="1000" style="width:80px"><span class="small muted">copies, for</span>
+          <input type="number" id="optDays" min="0" max="36500" style="width:80px"><span class="small muted">days</span></div>
+        <button class="btn" data-open="versions">Open</button></div>
+      <div class="setting"><label class="switch"><input type="checkbox" id="optMetered"><span></span></label>
+        <div class="grow"><div>Pause on metered connections</div><div class="small muted" id="meteredNow">Mobile hotspots and networks marked as metered in Windows.</div></div></div>
+      <div class="setting"><label class="switch"><input type="checkbox" id="optPresenting"><span></span></label>
+        <div class="grow"><div>Pause during presentations and full-screen apps</div><div class="small muted">The same moments Windows holds back notifications.</div></div></div>
+    </section>
+    <section class="card">
+      <div class="setting" style="align-items:flex-start"><div class="grow"><div>Ignore everywhere</div>
+        <div class="small muted">gitignore-style patterns for every pair, one per line. A <span class="mono">.unisonoignore</span> file in any synced
+          folder adds patterns for that folder and below (and syncs to your other computers). Ignored items are never touched on either side.</div>
+        <textarea id="optIgnore" rows="4" style="margin-top:8px"></textarea>
+        <div style="margin-top:8px"><button class="btn" id="optIgnoreSave">Save patterns</button></div></div></div>
+    </section>    <section class="card">
       <div class="setting"><div class="grow"><div>Settings and state</div><div class="small muted mono" id="dataDir"></div></div>
         <button class="btn" data-open="data">Open folder</button></div>
       <div class="setting"><div class="grow"><div>Log files</div><div class="small muted">One file per day.</div></div>
@@ -227,7 +250,11 @@ input:disabled { opacity: .55; }
   <div class="field"><label>Folders</label>
     <div class="inline"><span id="pairScopeText" class="grow">Everything in the remote folder</span><button class="btn" id="pairScopeBtn">Choose folders...</button></div>
     <div class="help">Sync only some subfolders, e.g. 14 of 15. What is left out is never touched on either side.</div></div>
-  <div class="field"><label>Local folder</label>
+  <div class="field"><label>Direction</label>
+    <select id="pairDirection"><option value="TwoWay">Two-way: changes on either side are applied to the other</option>
+      <option value="DownloadOnly">Download only: remote changes come here; nothing here is uploaded</option>
+      <option value="UploadOnly">Upload only: changes here go up; nothing remote comes down</option></select>
+    <div class="help">One-way pairs apply the source side's changes, deletions included, and never undo anything done on the other side.</div></div>  <div class="field"><label>Local folder</label>
     <div class="inline"><input type="text" id="pairLocal"><button class="btn" id="pairPickLocal">Browse...</button></div>
     <div class="help">May lie inside another pair's folder (e.g. a Drive folder inside a NAS folder); the outer pair then leaves it alone.</div></div>
   <div class="field"><label id="pairDocsLabel">Google Docs</label>
@@ -236,7 +263,9 @@ input:disabled { opacity: .55; }
   <div class="field drive-only"><label>Cloud-only files</label>
     <div class="inline"><input type="number" id="pairMb" min="0" style="width:110px"> <span class="muted small">MB and larger stay online as links (0 = off)</span></div></div>
   <div class="field drive-only"><label>Cloud-only folders</label><input type="text" id="pairFolders" placeholder="e.g. Archive, Video/Raw"></div>
-  <div class="field"><label>Check remote every</label>
+  <div class="field"><label>Ignore</label>
+    <textarea id="pairIgnore" rows="3" placeholder="one pattern per line, gitignore style, e.g.&#10;*.log&#10;__pycache__/&#10;renv/library/"></textarea>
+    <div class="help">On top of the patterns in Settings and any <span class="mono">.unisonoignore</span> file in the folder. Ignored items are never touched on either side.</div></div>  <div class="field"><label>Check remote every</label>
     <div class="inline"><input type="number" id="pairPoll" min="10" max="3600" style="width:110px"> <span class="muted small">seconds; local changes are picked up at once</span></div></div>
   <div id="pairMsg"></div>
   <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="pairSave">Save</button></div>
@@ -258,6 +287,12 @@ input:disabled { opacity: .55; }
   <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="scopeOk">OK</button></div>
 </div></div>
 
+<div class="modal" id="dlgPlan"><div class="dialog" style="width:min(820px,100%)">
+  <h3 id="planTitle">Preview</h3>
+  <div class="small muted" id="planSub" style="margin-bottom:10px"></div>
+  <div class="plan" id="planList"></div>
+  <div class="actions"><button class="btn" data-close>Close</button><button class="btn primary" id="planRun">Sync now</button></div>
+</div></div>
 <div class="modal" id="dlgConfirm"><div class="dialog">
   <h3 id="confirmTitle">Please confirm</h3>
   <div id="confirmBody"></div>
@@ -326,6 +361,7 @@ const STATE = {
 function renderHeader() {
   let [cls, text] = STATE[S.host.state] || ["", S.host.state];
   if (S.host.paused && S.host.state !== "Syncing") [cls, text] = ["warn", "Paused"];
+  else if (S.host.pausedBecause && S.host.state !== "Syncing") [cls, text] = ["warn", "Paused: " + S.host.pausedBecause];
   if (!S.pairs.length) [cls, text] = ["", "No sync pairs yet"];
   const chip = $("#statusChip"); chip.className = "chip " + cls; chip.textContent = text;
   $("#brandDot").style.background = { ok: "var(--green)", busy: "var(--blue)", warn: "var(--amber)", err: "var(--red)" }[cls] || "var(--muted)";
@@ -451,13 +487,18 @@ function renderPairs() {
       </div>
       <div class="pairfoot">${statusChip(p)}
         <span class="small muted">${p.lastSync ? "last run " + esc(p.lastSync) : "not run yet"}</span>
+        ${p.direction !== "TwoWay" ? `<span class="chip plain">${p.direction === "DownloadOnly" ? "download only" : "upload only"}</span>` : ""}
         <span class="small grow ellipsis" style="${p.failed ? "color:var(--red)" : ""}" title="${esc(p.lastResult)}">${esc(p.lastResult)}</span>
+        <button class="btn" data-preview="${esc(p.id)}" title="Show what the next sync would do, without doing it">Preview</button>
+        <button class="btn" data-versions="${esc(p.id)}" title="Earlier versions of files this pair replaced">Versions</button>
         <button class="btn" data-editpair="${esc(p.id)}">Edit</button>
         <button class="btn danger" data-rmpair="${esc(p.id)}">Remove</button></div>
     </div>`;
   }).join("") : `<div class="empty">No sync pairs yet. Add an account first, then a pair.</div>`;
   document.querySelectorAll("[data-openpair]").forEach(a => a.onclick = () => call("open", { what: "pair", id: a.dataset.openpair }));
   document.querySelectorAll("[data-editpair]").forEach(b => b.onclick = () => pairDialog(S.pairs.find(p => p.id === b.dataset.editpair)));
+  document.querySelectorAll("[data-versions]").forEach(b => b.onclick = () => call("open", { what: "versions", id: b.dataset.versions }));
+  document.querySelectorAll("[data-preview]").forEach(b => b.onclick = () => preview(S.pairs.find(p => p.id === b.dataset.preview), b));
   document.querySelectorAll("[data-rmpair]").forEach(b => b.onclick = async () => {
     const p = S.pairs.find(x => x.id === b.dataset.rmpair);
     if (!await confirmBox("Remove sync pair", [`Stop syncing ${remoteLabel(p).path} with ${p.localPath}? No files are deleted on either side.`])) return;
@@ -465,6 +506,23 @@ function renderPairs() {
   });
 }
 
+async function preview(p, btn) {
+  busy(btn, true, "Checking...");
+  try {
+    const r = await call("pair.preview", { id: p.id });
+    $("#planTitle").textContent = "Preview: " + remoteLabel(p).path;
+    $("#planSub").textContent = r.actions.length
+      ? `The next sync would do this (${r.actions.length} action${r.actions.length === 1 ? "" : "s"}). Nothing has been changed.`
+      : "Everything is in sync; the next sync would do nothing.";
+    $("#planList").innerHTML = r.actions.length
+      ? r.actions.map(a => `<div><span class="act">${esc(a.action)}</span><span class="mono">${esc(a.path)}</span>${a.detail ? ` <span class="small muted">(${esc(a.detail)})</span>` : ""}</div>`).join("")
+      : `<div class="muted">No changes.</div>`;
+    $("#planList").style.display = "";
+    $("#planRun").onclick = () => { closeModal("#dlgPlan"); call("sync.now"); toast("Syncing all pairs now"); };
+    openModal("#dlgPlan");
+  } catch (e) { toast("Preview failed: " + e.message, true); }
+  finally { busy(btn, false); }
+}
 let editing = null, pairKind = "Drive";
 function setKind(k) {
   pairKind = k;
@@ -509,6 +567,8 @@ function pairDialog(p) {
   $("#pairMb").value = p ? p.cloudOnlyMinMB : 0;
   $("#pairFolders").value = p ? p.cloudOnlyFolders.join(", ") : "";
   $("#pairPoll").value = p ? p.pollSeconds : (pairKind === "Synology" ? 60 : 30);
+  $("#pairDirection").value = p ? p.direction : "TwoWay";
+  $("#pairIgnore").value = p ? p.ignorePatterns : "";
   scope = { include: p ? [...p.includeFolders] : [], exclude: p ? [...p.excludeFolders] : [] };
   renderScopeText();
   syncRootBox();
@@ -629,6 +689,7 @@ function pairFromForm() {
   const [server, user] = nas ? ($("#pairAcct").value || "|").split("|") : [null, null];
   return {
     includeFolders: scope.include, excludeFolders: scope.exclude,
+    direction: $("#pairDirection").value, ignorePatterns: $("#pairIgnore").value,
     kind: pairKind, account: nas ? null : $("#pairAcct").value, server, user,
     remotePath: nas ? $("#pairRemote").value : ($("#pairRoot").checked ? "" : $("#pairRemote").value),
     localPath: $("#pairLocal").value, docs: $("#pairDocs").value,
@@ -719,10 +780,23 @@ function renderSettings() {
   $("#setPaused").checked = S.host.paused;
   $("#dataDir").textContent = S.dataDir;
   $("#version").textContent = "Unisono " + S.version;
+  const o = S.options;
+  if (document.activeElement !== $("#optKeep")) $("#optKeep").value = o.keepVersions;
+  if (document.activeElement !== $("#optDays")) $("#optDays").value = o.keepVersionsDays;
+  $("#optMetered").checked = o.pauseOnMetered; $("#optPresenting").checked = o.pauseWhilePresenting;
+  $("#meteredNow").textContent = "Mobile hotspots and networks marked as metered in Windows. The current connection is " + (o.metered ? "metered." : "not metered.");
+  if (document.activeElement !== $("#optIgnore") && !$("#optIgnore").dataset.dirty) $("#optIgnore").value = o.ignorePatterns;
 }
 $("#setAutostart").onchange = e => call("settings.set", { autostart: e.target.checked }).catch(x => toast(x.message, true));
 $("#setVerbose").onchange = e => call("settings.set", { verbose: e.target.checked });
 $("#setPaused").onchange = e => call("sync.pause", { paused: e.target.checked });
+const setOpt = o => call("settings.set", o).then(s => { if (s) { S = s; render(); } }).catch(x => toast(x.message, true));
+$("#optKeep").onchange = e => setOpt({ keepVersions: parseInt(e.target.value || "0", 10) });
+$("#optDays").onchange = e => setOpt({ keepVersionsDays: parseInt(e.target.value || "0", 10) });
+$("#optMetered").onchange = e => setOpt({ pauseOnMetered: e.target.checked });
+$("#optPresenting").onchange = e => setOpt({ pauseWhilePresenting: e.target.checked });
+$("#optIgnore").oninput = () => $("#optIgnore").dataset.dirty = "1";
+$("#optIgnoreSave").onclick = async () => { await setOpt({ ignorePatterns: $("#optIgnore").value }); delete $("#optIgnore").dataset.dirty; toast("Ignore patterns saved"); };
 
 // ---------------------------------------------------------------------- log
 let logFilter = "all";
@@ -730,6 +804,7 @@ const LINE = /^(\d\d:\d\d:\d\d) (\w+)\s+(.*)$/;
 function classify(level, text) {
   if (/conflict/i.test(text)) return "conflicts";
   if (level === "warn" || level === "error") return "problems";
+  if (/^\[.+?\] would /.test(text)) return "other";
   if (/^\[.+?\] (downloaded|uploaded|exported|deleted|moved|created|trashed|linked|removed|local pointer)/.test(text)) return "changes";
   return "other";
 }

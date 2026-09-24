@@ -35,6 +35,7 @@ sealed class HostForm : Form
         _log.Verbose = _settings.VerboseLog;
         _host = new SyncHost(_log);
         _bridge = new Bridge(this, _log, _host, _settings, StartHostAsync, QueueState);
+        _host.AutoPauseReason = () => AutoPause.Reason(_bridge.Config.Options);
 
         Text = "Unisono";
         Icon = IconFor(Ui.Grey);
@@ -94,7 +95,7 @@ sealed class HostForm : Form
 
     private async Task InitWebAsync()
     {
-        var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(AppPaths.AuthDir, "WebView2"));
+        var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(AppPaths.DataDir, "WebView2"));
         await _web.EnsureCoreWebView2Async(env);
         var core = _web.CoreWebView2;
         core.Settings.AreDefaultContextMenusEnabled = Environment.GetEnvironmentVariable("UNISONO_DEVTOOLS") == "1";
@@ -203,6 +204,7 @@ sealed class HostForm : Form
             _ => ("Not syncing", Ui.Grey),
         };
         if (_host.Paused && _host.State != HostState.Syncing) (text, color) = ("Paused", Ui.Amber);
+        else if (_host.PausedBecause is { } why && _host.State != HostState.Syncing) (text, color) = ("Paused: " + why, Ui.Amber);
         _tray.Text = ("Unisono: " + text) is var t && t.Length > 63 ? t[..63] : t;
         _tray.Icon = IconFor(color);
         Icon = IconFor(color);

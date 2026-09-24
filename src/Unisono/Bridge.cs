@@ -81,6 +81,16 @@ sealed class Bridge : IAsyncDisposable
                 return d.ShowDialog(_owner) == DialogResult.OK ? d.SelectedPath : null;
             }
             case "pair.save": return await SavePairAsync(p);
+            case "pair.preview":
+            {
+                // A dry run: every decision of a real cycle, none of its effects (the state file is not written either).
+                var pair = FindPair(Str(p, "id"));
+                using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+                await using var stores = new StoreFactory(_log, interactive: false);
+                var engine = new SyncEngine(await stores.CreateAsync(pair, cts.Token), pair, _log, Config.Pairs, Config.Options) { DryRun = true };
+                await engine.RunCycleAsync(cts.Token);
+                return new { actions = engine.Plan.Select(a => new { action = a.Action, path = a.Path, detail = a.Detail }) };
+            }
             case "pair.remove":
             {
                 var pair = FindPair(Str(p, "id"));
@@ -100,6 +110,18 @@ sealed class Bridge : IAsyncDisposable
             {
                 if (p.TryGetProperty("autostart", out var a)) SetAutostart(a.GetBoolean());
                 if (p.TryGetProperty("verbose", out var v)) { _settings.VerboseLog = _log.Verbose = v.GetBoolean(); _settings.Save(); }
+                var o = Config.Options;
+                var changed = false;
+                if (p.TryGetProperty("keepVersions", out var kv) && kv.TryGetInt32(out var kvi)) { o.KeepVersions = Math.Clamp(kvi, 0, 1000); changed = true; }
+                if (p.TryGetProperty("keepVersionsDays", out var kd) && kd.TryGetInt32(out var kdi)) { o.KeepVersionsDays = Math.Clamp(kdi, 0, 36500); changed = true; }
+                if (p.TryGetProperty("pauseOnMetered", out var pm)) { o.PauseOnMetered = pm.GetBoolean(); changed = true; }
+                if (p.TryGetProperty("pauseWhilePresenting", out var pp)) { o.PauseWhilePresenting = pp.GetBoolean(); changed = true; }
+                if (Str(p, "ignorePatterns") is { } ig) { o.IgnorePatterns = Lines(ig); changed = true; }
+                if (changed)
+                {
+                    Config.Save();
+                    await _restartHost(); // engines take the options when they are created
+                }
                 return State();
             }
             case "open":
@@ -108,6 +130,12 @@ sealed class Bridge : IAsyncDisposable
                 if (what == "log") Ui.OpenFolder(_log.Directory);
                 else if (what == "data") Ui.OpenFolder(AppPaths.DataDir);
                 else if (what == "pair") Ui.OpenFolder(FindPair(Str(p, "id")).LocalPath);
+                else if (what == "versions")
+                {
+                    var dir = Str(p, "id") is { } vid ? VersionStore.DirFor(FindPair(vid)) : VersionStore.Root;
+                    Directory.CreateDirectory(dir);
+                    Ui.OpenFolder(dir);
+                }
                 else if (what == "item") RevealItem(Str(p, "pair"), Str(p, "rel"));
                 else if (what == "url" && Str(p, "url") is { } url && url.StartsWith("https://", StringComparison.Ordinal))
                     Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
@@ -139,8 +167,15 @@ sealed class Bridge : IAsyncDisposable
             server = c.Server, user = c.User, resolved = c.ResolvedBase, pinned = c.PinnedCertificates.Count,
         }),
         pairs = Config.Pairs.Select(PairDto),
-        host = new { state = _host.State.ToString(), paused = _host.Paused },
+        host = new { state = _host.State.ToString(), paused = _host.Paused, pausedBecause = _host.PausedBecause },
         settings = new { autostart = IsAutostart(), verbose = _settings.VerboseLog, tab = _settings.Tab },
+        options = new
+        {
+            keepVersions = Config.Options.KeepVersions, keepVersionsDays = Config.Options.KeepVersionsDays,
+            pauseOnMetered = Config.Options.PauseOnMetered, pauseWhilePresenting = Config.Options.PauseWhilePresenting,
+            ignorePatterns = string.Join("\n", Config.Options.IgnorePatterns), metered = AutoPause.IsMetered(),
+            versionsDir = VersionStore.Root,
+        },
     };
 
     private object PairDto(SyncPair p)
@@ -152,6 +187,7 @@ sealed class Bridge : IAsyncDisposable
             remotePath = p.RemotePath, localPath = p.LocalPath, docs = p.GoogleDocs.ToString(),
             cloudOnlyMinMB = p.CloudOnlyMinMB, cloudOnlyFolders = p.CloudOnlyFolders, pollSeconds = p.PollSeconds,
             includeFolders = p.IncludeFolders, excludeFolders = p.ExcludeFolders,
+            direction = p.Direction.ToString(), ignorePatterns = string.Join("\n", p.IgnorePatterns),
             nested = SyncScope.NestedPaths(p, Config.Pairs).ToList(),
             status = st?.Status ?? "waiting", lastSync = st?.LastSync?.ToString("HH:mm:ss"),
             lastResult = st?.LastError ?? Summary(st?.LastStats), failed = st?.LastError != null,
@@ -380,6 +416,8 @@ sealed class Bridge : IAsyncDisposable
         var local = (Str(d, "localPath") ?? "").Trim();
         pair.LocalPath = local.Length == 0 ? "" : Path.GetFullPath(local);
         pair.GoogleDocs = Enum.TryParse<GoogleDocsMode>(Str(d, "docs"), out var docs) ? docs : GoogleDocsMode.Export;
+        pair.Direction = Enum.TryParse<SyncDirection>(Str(d, "direction"), out var dir) ? dir : SyncDirection.TwoWay;
+        pair.IgnorePatterns = Lines(Str(d, "ignorePatterns"));
         pair.IncludeFolders = StrList(d, "includeFolders");
         pair.ExcludeFolders = StrList(d, "excludeFolders");
         pair.PollSeconds = Math.Clamp(d.TryGetProperty("pollSeconds", out var ps) && ps.TryGetInt32(out var pv) ? pv : 60, 10, 3600);
@@ -530,6 +568,9 @@ sealed class Bridge : IAsyncDisposable
         else key.DeleteValue(RunValue, throwOnMissingValue: false);
         _log.Info(on ? "will start with Windows (in the tray)" : "will not start with Windows");
     }
+
+    private static List<string> Lines(string? text) =>
+        (text ?? "").Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l.Trim().Length > 0).ToList();
 
     private static List<string> StrList(JsonElement e, string name) =>
         e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Array

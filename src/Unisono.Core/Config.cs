@@ -12,6 +12,16 @@ public enum RemoteKind
     Synology,
 }
 
+public enum SyncDirection
+{
+    /// <summary>Changes on either side are applied to the other.</summary>
+    TwoWay,
+    /// <summary>Remote changes (including deletions) are applied locally; nothing done locally is uploaded or undone.</summary>
+    DownloadOnly,
+    /// <summary>Local changes (including deletions) are applied remotely; nothing done remotely is downloaded or undone.</summary>
+    UploadOnly,
+}
+
 public enum GoogleDocsMode
 {
     /// <summary>Docs/Sheets/Slides are exported to docx/xlsx/pptx as read-only local mirrors.</summary>
@@ -36,6 +46,11 @@ public sealed class SyncPair
 
     public string LocalPath { get; set; } = "";
 
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public SyncDirection Direction { get; set; } = SyncDirection.TwoWay;
+
+    /// <summary>gitignore-style patterns for this pair, on top of the global ones and any .unisonoignore files.</summary>
+    public List<string> IgnorePatterns { get; set; } = new();
     /// <summary>Drive only: the Google account's e-mail address. Empty means the default (first) account.</summary>
     public string? Account { get; set; }
 
@@ -94,13 +109,29 @@ public sealed class SyncPair
         : RemotePath.Length == 0 ? "My Drive" : RemotePath;
 }
 
+/// <summary>Settings that apply to all pairs.</summary>
+public sealed class AppOptions
+{
+    /// <summary>Before Unisono overwrites a local file, this many earlier versions are kept (0 = off).</summary>
+    public int KeepVersions { get; set; } = 5;
+    /// <summary>Kept versions older than this are pruned (0 = no age limit).</summary>
+    public int KeepVersionsDays { get; set; } = 30;
+    /// <summary>No syncing while Windows says the connection is metered (mobile hotspot, a network set to metered).</summary>
+    public bool PauseOnMetered { get; set; } = true;
+    /// <summary>No syncing during presentations and full-screen apps (Windows' "do not disturb" states).</summary>
+    public bool PauseWhilePresenting { get; set; } = false;
+    /// <summary>gitignore-style patterns for every pair.</summary>
+    public List<string> IgnorePatterns { get; set; } = new() { ".DS_Store" };
+}
+
 public sealed class Config
 {
     public List<SyncPair> Pairs { get; set; } = new();
+    public AppOptions Options { get; set; } = new();
 
     public static string FilePath => Path.Combine(AppPaths.DataDir, "config.json");
 
-    private static readonly JsonSerializerOptions Options = new()
+    private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
         PropertyNameCaseInsensitive = true,
@@ -112,12 +143,12 @@ public sealed class Config
     public static Config Load()
     {
         if (!File.Exists(FilePath)) return new Config();
-        return JsonSerializer.Deserialize<Config>(File.ReadAllText(FilePath), Options) ?? new Config();
+        return JsonSerializer.Deserialize<Config>(File.ReadAllText(FilePath), JsonOptions) ?? new Config();
     }
 
     public void Save()
     {
         AppPaths.EnsureDataDir();
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(this, Options));
+        File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOptions));
     }
 }

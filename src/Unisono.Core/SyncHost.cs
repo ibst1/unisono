@@ -32,6 +32,17 @@ public sealed class SyncHost : IAsyncDisposable
     public event Action<PairStatus, CycleStats>? CycleCompleted;
 
     public HostState State { get; private set; } = HostState.Stopped;
+
+    /// <summary>
+    /// Asked before every automatic round; a non-null answer ("metered connection", "presentation") skips the round.
+    /// "Sync now" overrides it. Set by the app, which knows about networks and presentations.
+    /// </summary>
+    public Func<string?>? AutoPauseReason { get; set; }
+
+    /// <summary>Why the last automatic round was skipped, or null.</summary>
+    public string? PausedBecause { get; private set; }
+
+    private AppOptions _options = new();
     public IReadOnlyList<PairStatus> Pairs { get; private set; } = Array.Empty<PairStatus>();
 
     public SyncHost(Log log, bool interactive = false)
@@ -66,6 +77,7 @@ public sealed class SyncHost : IAsyncDisposable
         _lock ??= SyncLock.TryAcquire()
                   ?? throw new InvalidOperationException("another Unisono is already syncing (the tray app or 'UnisonoCli run'); close it first");
         Pairs = config.Pairs.Select(p => new PairStatus { Pair = p }).ToList();
+        _options = config.Options;
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
         _loop = Task.Run(() => LoopAsync(ct));
@@ -112,7 +124,19 @@ public sealed class SyncHost : IAsyncDisposable
             while (!ct.IsCancellationRequested)
             {
                 TimeSpan wait;
-                if (pairs.Count > 0 && (!_paused || _forceOnce))
+                var autoPause = _paused || _forceOnce ? null : SafeAutoPause();
+                if (autoPause != PausedBecause)
+                {
+                    PausedBecause = autoPause;
+                    _log.Info(autoPause != null ? $"pausing: {autoPause}" : "resuming (no longer paused automatically)");
+                    try { StateChanged?.Invoke(); } catch { }
+                }
+                if (autoPause != null && pairs.Count > 0)
+                {
+                    SetState(HostState.Paused);
+                    wait = TimeSpan.FromSeconds(Math.Min(60, poll.TotalSeconds)); // check again soon
+                }
+                else if (pairs.Count > 0 && (!_paused || _forceOnce))
                 {
                     _forceOnce = false;
                     SetState(HostState.Syncing);
@@ -123,7 +147,7 @@ public sealed class SyncHost : IAsyncDisposable
                         try
                         {
                             Update(ps, "syncing");
-                            engines[i] ??= new SyncEngine(await stores.CreateAsync(ps.Pair, ct), ps.Pair, _log, pairs.Select(x => x.Pair).ToList());
+                            engines[i] ??= new SyncEngine(await stores.CreateAsync(ps.Pair, ct), ps.Pair, _log, pairs.Select(x => x.Pair).ToList(), _options);
                             var stats = await engines[i]!.RunCycleAsync(ct);
                             ps.LastStats = stats;
                             ps.LastSync = DateTime.Now;
@@ -166,6 +190,11 @@ public sealed class SyncHost : IAsyncDisposable
         {
             foreach (var w in watchers) w.Dispose();
         }
+    }
+
+    private string? SafeAutoPause()
+    {
+        try { return AutoPauseReason?.Invoke(); } catch { return null; }
     }
 
     private FileSystemWatcher? TryWatch(string path)

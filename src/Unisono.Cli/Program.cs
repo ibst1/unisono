@@ -20,7 +20,8 @@ using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 var ct = cts.Token;
 var log = new Log { Verbose = args.Contains("-v") };
-args = args.Where(a => a != "-v").ToArray();
+var dryRun = args.Contains("--dry-run");
+args = args.Where(a => a is not ("-v" or "--dry-run")).ToArray();
 var stores = new StoreFactory(log, interactive: true);
 
 try
@@ -228,8 +229,9 @@ try
                 return 0;
             }
 
-            using var syncLock = SyncLock.TryAcquire();
-            if (syncLock == null)
+            // A dry run writes nothing, so it may run next to the tray app.
+            using var syncLock = dryRun ? null : SyncLock.TryAcquire();
+            if (syncLock == null && !dryRun)
             {
                 Console.Error.WriteLine("error: another Unisono is already syncing (the tray app or 'UnisonoCli run'); close it first");
                 return 1;
@@ -239,7 +241,13 @@ try
                 var failed = 0;
                 foreach (var p in config.Pairs)
                 {
-                    try { var s = await new SyncEngine(await stores.CreateAsync(p, ct), p, log, config.Pairs).RunCycleAsync(ct); failed += s.Errors; }
+                                        try
+                    {
+                        var engine = new SyncEngine(await stores.CreateAsync(p, ct), p, log, config.Pairs, config.Options) { DryRun = dryRun };
+                        var s = await engine.RunCycleAsync(ct);
+                        failed += s.Errors;
+                        if (dryRun) Console.WriteLine($"[{p.Name}] dry run: {engine.Plan.Count} action(s) planned, nothing changed");
+                    }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception ex) { log.Error($"[{p.Name}] cycle failed: {ex.Message}"); failed++; }
                 }
@@ -344,7 +352,7 @@ static void Usage()
     Console.WriteLine("  UnisonoCli auth");
     Console.WriteLine("  UnisonoCli nas login <server> <user> [--insecure]   |   UnisonoCli nas logout <server> [user]");
     Console.WriteLine("  UnisonoCli init <remote/path> <localDir> [--create] [--nas <server> <user>] [--insecure]");
-    Console.WriteLine("  UnisonoCli sync [-v]   |   UnisonoCli run [-v]   |   UnisonoCli config   |   UnisonoCli version");
+    Console.WriteLine("  UnisonoCli sync [-v] [--dry-run]   |   UnisonoCli run [-v]   |   UnisonoCli config   |   UnisonoCli version");
     Console.WriteLine("  UnisonoCli ls [drive/path]   |   UnisonoCli pull <drive/path> <localDir>   |   UnisonoCli changes <token>");
 }
 

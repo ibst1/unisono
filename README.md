@@ -42,6 +42,22 @@ one is *My Drive, all except* that folder; pair two is that folder alone.
 Pairs may nest: a Drive pair's local folder can lie inside a NAS pair's local folder. The outer
 pair then leaves that subfolder alone locally and remotely, so every file belongs to one pair.
 
+### Safety and control
+
+* **Previous versions**: before Unisono replaces a local file with a newer remote one, it keeps a
+  copy under `versions\<pair>\<path>\` in the data folder (default 5 copies, 30 days; Settings).
+  Deletions go to the Recycle Bin or the remote trash, conflicts keep both files.
+* **Ignore rules**: gitignore-style patterns in Settings (all pairs), per pair, and in
+  `.unisonoignore` files, which apply to their folder and below and sync to other computers.
+  `*.log`, `__pycache__/`, `renv/library/`, `!keep.log`, `/only-at-this-level`. Ignored items
+  are never touched on either side; a folder holding ignored items is never deleted as a whole.
+* **Direction** per pair: two-way, *download only* (remote changes, deletions included, come
+  here; nothing here goes up or is undone) or *upload only* (the reverse). In a one-way pair
+  the source side wins where both changed; the replaced local file is kept as a version.
+* **Preview** on a pair (or `UnisonoCli sync --dry-run`) shows what the next sync would do
+  and changes nothing.
+* **Automatic pause** on metered connections (on by default) and, optionally, during
+  presentations and full-screen apps. "Sync now" still runs a round.
 ### Several accounts
 
 Pairs name their Google account by e-mail address (config `Account`; empty means the first
