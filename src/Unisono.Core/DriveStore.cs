@@ -87,6 +87,26 @@ public sealed class DriveStore : IRemoteStore
     public Task<string?> RevisionAsync(RemoteNode node, CancellationToken ct) =>
         node.MimeType == "application/vnd.google-apps.document" ? _drive.DocsRevisionAsync(node.Id, ct) : Task.FromResult<string?>(null);
 
+    public async Task<(RemoteNode? Fresh, string? Revision, string? Why)> PatchAsync(RemoteNode node, string localPath, CancellationToken ct)
+    {
+        if (node.MimeType != "application/vnd.google-apps.document") return (null, null, "only Google Docs documents can be written back part by part");
+        using var json = await _drive.DocsDocumentAsync(node.Id, ct);
+        if (json == null) return (null, null, "the Google Docs API is not enabled for Unisono's Google project");
+        var (revision, tabs) = DocsPatch.ReadGoogle(json.RootElement);
+        var edited = DocsPatch.ReadDocx(localPath, tabs, out var why);
+        if (edited == null) return (null, null, why);
+        var requests = DocsPatch.Plan(tabs, edited, out why);
+        if (requests == null) return (null, null, why);
+        string? newRevision = revision;
+        if (requests.Count > 0)
+        {
+            newRevision = await _drive.DocsBatchUpdateAsync(node.Id, requests, revision, ct);
+            if (newRevision == null) return (null, null, "the document changed in Google at the same time");
+        }
+        var fresh = await RefreshAsync(node, ct) ?? node;
+        return (fresh, newRevision, null);
+    }
+
     public async Task<string?> WhyNotImportAsync(RemoteNode node, CancellationToken ct)
     {
         var risk = await _drive.RoundTripRiskAsync(node.Id, node.MimeType == "application/vnd.google-apps.document", ct);

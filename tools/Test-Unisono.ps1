@@ -217,6 +217,45 @@ function Test-WriteBack([string]$remote) {
         Check "drive ... and the Google document is unchanged" { -not ((Docx-Text (Join-Path $w2.Local "WB doc.docx")) -match "written back from wb-1") -and -not ((Docx-Text $doc) -match "written back from wb-1") }
     }
 }
+# Edits the document part of a docx in place with a script block (string in, string out).
+function Edit-Docx([string]$path, [scriptblock]$edit) {
+    $zip = [IO.Compression.ZipFile]::Open($path, "Update")
+    try {
+        $e = $zip.GetEntry("word/document.xml"); $r = New-Object IO.StreamReader($e.Open()); $xml = $r.ReadToEnd(); $r.Dispose()
+        $new = & $edit $xml; $e.Delete()
+        $w = New-Object IO.StreamWriter($zip.CreateEntry("word/document.xml").Open(), (New-Object Text.UTF8Encoding $false)); $w.Write($new); $w.Dispose()
+    } finally { $zip.Dispose() }
+}
+function Test-TabWriteBack([string]$remote) {
+    Section "drive: Word edits of a document with tabs go back tab by tab"
+    Use-Data (Join-Path $work "init-data"); & $cli drive-newtabdoc $remote "Tabs doc" | Out-Null
+    $t1 = Computer "tabs-1" @{ Kind = "Drive"; RemotePath = $remote }
+    $null = Sync $t1
+    $doc = Join-Path $t1.Local "Tabs doc.docx"
+    Check "drive the tabbed document is exported" { Test-Path -LiteralPath $doc }
+    Edit-Docx $doc {
+        param($xml)
+        $xml = $xml.Replace("Text in the second tab", "Text in the second tab, edited in Word")
+        # A new paragraph after the first tab's text: a copy of that paragraph with other words.
+        $i = $xml.IndexOf("Text in the first tab"); $s = $xml.LastIndexOf("<w:p ", $i); $e = $xml.IndexOf("</w:p>", $i) + 6
+        $para = $xml.Substring($s, $e - $s)
+        $xml = $xml.Insert($e, $para.Replace("Text in the first tab", "A new paragraph from Word"))
+        # The heading one level down (in a tab the export shows Heading 1 as Heading 2).
+        $h = $xml.IndexOf("Heading one"); $hs = $xml.LastIndexOf("<w:p ", $h)
+        $xml.Substring(0, $hs) + $xml.Substring($hs, $h - $hs).Replace('w:val="Heading2"', 'w:val="Heading3"') + $xml.Substring($h)
+    }
+    (Get-Item -LiteralPath $doc).LastWriteTime = (Get-Date).AddMinutes(-1)
+    $out = (Sync $t1) -join "`n"
+    Check "drive the edit is written back tab by tab" { $out -match "wrote back into the Google document, tab by tab" }
+    Use-Data (Join-Path $work "init-data"); $text = (& $cli drive-doctext $remote "Tabs doc") -join "`n"
+    Check "drive ... both tabs are still there" { @([regex]::Matches($text, "\[tab\]")).Count -eq 2 -and $text -match "\[tab\] First" -and $text -match "\[tab\] Second" }
+    Check "drive ... the second tab has the edited text" { $text -match "Text in the second tab, edited in Word" }
+    Check "drive ... the first tab has the new paragraph after its text" { $text -match "NORMAL_TEXT: Text in the first tab\s+NORMAL_TEXT: A new paragraph from Word" }
+    Check "drive ... and the heading is one level down" { $text -match "HEADING_2: Heading one" }
+    $idle = Sync $t1
+    Check "drive ... and nothing is exported again over the edited file" { -not (($idle -join "`n") -match "exported|wrote back") }
+}
+
 # ------------------------------------------------------------ files on demand
 function Attr($c, $rel) { [int][IO.File]::GetAttributes((Join-Path $c.Local $rel)) }
 function IsOnline($c, $rel) { $a = Attr $c $rel; ($a -band 0x400) -ne 0 -and ($a -band (0x400000 -bor 0x40000 -bor 0x1000)) -ne 0 }
@@ -345,14 +384,14 @@ if ($Suite -contains "drive") {
     $remote = "Unisono-tests-$stamp"
     Use-Data (New-TestDir "$work\init-data")
     & $cli init $remote (New-TestDir "$work\init") --create | Out-Null
-    try { Test-Core @{ Kind = "Drive"; RemotePath = $remote } "drive"; Test-WriteBack $remote }
+    try { Test-Core @{ Kind = "Drive"; RemotePath = $remote } "drive"; Test-WriteBack $remote; Test-TabWriteBack $remote }
     finally { if (-not $KeepFiles) { & $cli drive-trash $remote | Out-Null } }
 }
 if ($Suite -contains "writeback" -and $Suite -notcontains "drive") {
     $remote = "Unisono-tests-$stamp-wb"
     Use-Data (New-TestDir "$work\init-data")
     & $cli init $remote (New-TestDir "$work\init") --create | Out-Null
-    try { Test-WriteBack $remote }
+    try { Test-WriteBack $remote; Test-TabWriteBack $remote }
     finally { if (-not $KeepFiles) { Use-Data "$work\init-data"; & $cli drive-trash $remote | Out-Null } }
 }
 if ($Suite -contains "nas") {

@@ -224,10 +224,15 @@ a conflict instead of being overwritten.
 * **GoogleDocs**: `Export` writes Docs/Sheets/Slides/Drawings as docx/xlsx/pptx/png,
   `Link` writes a `.url` shortcut that opens the document on Drive, `Skip` ignores them.
   Exports are ordinary, writable files: save an edit in Word, Excel or PowerPoint and it is
-  written back into the Google document, when nothing would be lost: the document has no tabs
-  (checked with the Google Docs API, see the one-time setup) and no open comments. Otherwise the
-  edit is kept as `Name (edited MACHINE time).docx` next to it, uploaded as an ordinary file, and
-  the tray says why. A write-back is converted by Drive; the previous content stays in the
+  written back into the Google document. A document without tabs or open comments is replaced
+  by the saved file (Drive converts it). A Google Docs document with tabs or comments is updated
+  tab by tab through the Docs API instead: the Word file is split at its tab names, and only the
+  differences go in (text, new or removed paragraphs, heading levels), so tabs, comments and all
+  formatting stay; character formatting made in Word (bold, colours) is not carried over. When
+  that cannot be done safely (a tab name, a table or an image was changed) or the Docs API is not
+  enabled, the edit is kept as `Name (edited MACHINE time).docx` next to it, uploaded as an
+  ordinary file, and the tray says why. In Word, tab names are titles and appear in the
+  navigation pane with each tab's headings beneath them. A write-back is converted by Drive; the previous content stays in the
   document's version history, and some Google-only formatting may shift in the round trip. When the document also changed in Google since, the local edit is kept as
   `Name (conflict MACHINE time).docx` next to it and the export shows the current version.
   The export is re-written when the document changes on Drive. Drive caps exports at 10 MB.

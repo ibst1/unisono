@@ -397,6 +397,50 @@ public sealed class DriveClient
         return list;
     }
 
+    /// <summary>The whole document with all tabs' content (Docs API); null when unreachable.</summary>
+    public async Task<System.Text.Json.JsonDocument?> DocsDocumentAsync(string fileId, CancellationToken ct)
+    {
+        using var res = await _service.HttpClient.GetAsync($"https://docs.googleapis.com/v1/documents/{fileId}?includeTabsContent=true", ct);
+        return res.IsSuccessStatusCode ? System.Text.Json.JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct)) : null;
+    }
+
+    /// <summary>
+    /// Applies Docs API requests only if the document is still at <paramref name="requiredRevision"/>; returns the new
+    /// revision, or null when the document changed in the meantime (nothing was applied then).
+    /// </summary>
+    public async Task<string?> DocsBatchUpdateAsync(string fileId, IReadOnlyList<object> requests, string requiredRevision, CancellationToken ct)
+    {
+        var body = System.Text.Json.JsonSerializer.Serialize(new { requests, writeControl = new { requiredRevisionId = requiredRevision } });
+        using var res = await _service.HttpClient.PostAsync($"https://docs.googleapis.com/v1/documents/{fileId}:batchUpdate",
+            new StringContent(body, System.Text.Encoding.UTF8, "application/json"), ct);
+        var text = await res.Content.ReadAsStringAsync(ct);
+        if (!res.IsSuccessStatusCode)
+        {
+            if (text.Contains("revision", StringComparison.OrdinalIgnoreCase) && (int)res.StatusCode == 400) return null;
+            throw new IOException($"Docs API {(int)res.StatusCode}: {text[..Math.Min(400, text.Length)]}");
+        }
+        using var doc = System.Text.Json.JsonDocument.Parse(text);
+        return doc.RootElement.TryGetProperty("writeControl", out var wc) && wc.TryGetProperty("requiredRevisionId", out var r) ? r.GetString() : requiredRevision;
+    }
+
+    /// <summary>Adds a tab to a Google document; returns its id (tests).</summary>
+    public async Task<string> DocsAddTabAsync(string fileId, string title, CancellationToken ct)
+    {
+        using var reply = await DocsRequestsAsync(fileId, new object[] { new { addDocumentTab = new { tabProperties = new { title } } } }, ct);
+        return reply.RootElement.GetProperty("replies")[0].GetProperty("addDocumentTab").GetProperty("tabProperties").GetProperty("tabId").GetString()!;
+    }
+
+    /// <summary>Raw Docs API batchUpdate without a revision condition (tests).</summary>
+    public async Task<System.Text.Json.JsonDocument> DocsRequestsAsync(string fileId, IReadOnlyList<object> requests, CancellationToken ct)
+    {
+        var body = System.Text.Json.JsonSerializer.Serialize(new { requests });
+        using var res = await _service.HttpClient.PostAsync($"https://docs.googleapis.com/v1/documents/{fileId}:batchUpdate",
+            new StringContent(body, System.Text.Encoding.UTF8, "application/json"), ct);
+        var text = await res.Content.ReadAsStringAsync(ct);
+        if (!res.IsSuccessStatusCode) throw new IOException($"Docs API {(int)res.StatusCode}: {text[..Math.Min(400, text.Length)]}");
+        return System.Text.Json.JsonDocument.Parse(text);
+    }
+
     /// <summary>Inserts text at the start of a Google Docs document, as an edit in the browser would (tests).</summary>
     public async Task DocsInsertAsync(string fileId, string text, CancellationToken ct)
     {

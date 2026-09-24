@@ -175,6 +175,39 @@ try
             Console.WriteLine($"repaired {args[1]}");
             return 0;
         }
+        case "drive-newtabdoc":
+        {
+            // Tests: a Google document with two tabs: "First" (a heading and a paragraph) and "Second" (a paragraph).
+            if (args.Length < 3) { Usage(); return 2; }
+            var drive = await DriveClient.ConnectAsync(ct, quiet: true);
+            var folder = await drive.ResolveFolderAsync(args[1], ct);
+            var file = await drive.CreateNativeAsync(args[2], "application/vnd.google-apps.document", folder.Id, ct);
+            var second = await drive.DocsAddTabAsync(file.Id, "Second", ct);
+            await drive.DocsRequestsAsync(file.Id, new object[]
+            {
+                new { updateDocumentTabProperties = new { tabProperties = new { tabId = "t.0", title = "First" }, fields = "title" } },
+                new { insertText = new { location = new { index = 1, tabId = second }, text = "Text in the second tab" } },
+                new { insertText = new { location = new { index = 1, tabId = "t.0" }, text = "Heading one\nText in the first tab" } },
+                new { updateParagraphStyle = new { range = new { startIndex = 1, endIndex = 13, tabId = "t.0" }, paragraphStyle = new { namedStyleType = "HEADING_1" }, fields = "namedStyleType" } },
+            }, ct);
+            Console.WriteLine($"created {args[1]}/{args[2]} with tabs First, Second");
+            return 0;
+        }
+        case "drive-doctext":
+        {
+            // Tests: each tab of a Google document with its paragraphs and styles.
+            if (args.Length < 3) { Usage(); return 2; }
+            var drive = await DriveClient.ConnectAsync(ct, quiet: true);
+            var folder = await drive.ResolveFolderAsync(args[1], ct);
+            var file = (await drive.ListChildrenAsync(folder.Id, ct)).FirstOrDefault(f => f.Name == args[2]) ?? throw new FileNotFoundException(args[2]);
+            using var json = await drive.DocsDocumentAsync(file.Id, ct) ?? throw new InvalidOperationException("Docs API not reachable");
+            foreach (var tab in DocsPatch.ReadGoogle(json.RootElement).Tabs)
+            {
+                Console.WriteLine($"[tab] {tab.Title}");
+                foreach (var p in tab.Paras) Console.WriteLine($"  {p.Style}: {p.Text}");
+            }
+            return 0;
+        }
         case "drive-docedit":
         {
             // Tests: edit a Google document through the Docs API, like typing in the browser.

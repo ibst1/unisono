@@ -66,6 +66,12 @@ public interface IRemoteStore
     /// <summary>Why writing an export back would lose something in this document (tabs, comments), or null when it is safe.</summary>
     Task<string?> WhyNotImportAsync(RemoteNode node, CancellationToken ct);
 
+    /// <summary>
+    /// Carries a Word edit over into a native document part by part (Google Docs: tab by tab, see <see cref="DocsPatch"/>)
+    /// when replacing the whole document would lose something. Returns the fresh node and new revision, or why not.
+    /// </summary>
+    Task<(RemoteNode? Fresh, string? Revision, string? Why)> PatchAsync(RemoteNode node, string localPath, CancellationToken ct);
+
     /// <summary>Replaces a native document's content with an Office file (<paramref name="mime"/>), converted by the server.</summary>
     Task<RemoteNode> ImportAsync(RemoteNode node, string localPath, string mime, CancellationToken ct);
 

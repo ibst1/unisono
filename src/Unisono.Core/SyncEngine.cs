@@ -616,7 +616,11 @@ public sealed partial class SyncEngine
         var writeBack = kind == EntryKind.Export && _store.CanImport(node);
         if (s != null && s.Kind == kind && s.DriveId == node.Id && s.LocalName == derivedRel && l is { IsDir: false })
         {
-            var upToDate = s.DriveModifiedUtc == node.ModifiedUtc && !_staleExports.Contains(rel);
+            // Google Docs: the revision (asked this cycle) decides; Drive's modified time trails edits, write-backs included.
+            var upToDate = _revisions.TryGetValue(rel, out var revNow) && s.Revision != null
+                ? revNow == s.Revision
+                : s.DriveModifiedUtc == node.ModifiedUtc && !_staleExports.Contains(rel);
+            if (upToDate && s.DriveModifiedUtc != node.ModifiedUtc) s.DriveModifiedUtc = node.ModifiedUtc; // caught up
             var needsRepair = kind == EntryKind.Export && s.ExportVersion < DocxFix.Version; // made before a repair: once more
             if (upToDate && s.Revision == null && _revisions.TryGetValue(rel, out var firstRev)) s.Revision = firstRev; // from now on
             var editedLocally = l.Size != s.LocalSize || l.MtimeTicks != s.LocalMtimeTicks;
@@ -635,6 +639,23 @@ public sealed partial class SyncEngine
                         await Try(rel, stats, () => WriteBackAsync(node, rel, derivedRel, path, remote, stats, ct));
                         return;
                     }
+                    // Tabs or comments: carry the edit over paragraph by paragraph (tab by tab) instead of replacing all.
+                    try
+                    {
+                        var size = new FileInfo(path).Length;
+                        var (fresh, revision, notPatched) = await Tracked(SyncActivity.Direction.Up, derivedRel, size, () => _store.PatchAsync(node, path, ct));
+                        if (fresh != null)
+                        {
+                            remote[rel] = fresh;
+                            RecordWriteBack(rel, derivedRel, path, fresh, revision);
+                            stats.Uploaded++;
+                            _log.Info($"[{_pair.Name}] wrote back into the Google document, tab by tab: {derivedRel}");
+                            return;
+                        }
+                        why = notPatched ?? why;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex) { why = $"{why}, and writing it back tab by tab failed ({ex.Message})"; }
                 }
                 // The edit is kept as its own file (uploaded as an ordinary file on the next cycle) and the export below
                 // brings back the document's own version: edited here and changed in Google too, or not safe to write back.
@@ -771,6 +792,21 @@ public sealed partial class SyncEngine
         }
     }
 
+    /// <summary>
+    /// After a write-back the local file stays as it is (no re-export of the document right away, which would rewrite a
+    /// file that is probably still open): the state says it matches the document at this revision.
+    /// </summary>
+    private void RecordWriteBack(string rel, string derivedRel, string path, RemoteNode fresh, string? revision)
+    {
+        Adopt(path, fresh.Id, pin: true);
+        var info = new FileInfo(path);
+        _state.Entries[rel] = new StateEntry
+        {
+            Path = rel, Kind = EntryKind.Export, DriveId = fresh.Id, Md5 = fresh.Md5, Size = fresh.Size, DriveModifiedUtc = fresh.ModifiedUtc,
+            LocalName = derivedRel, LocalSize = info.Length, LocalMtimeTicks = info.LastWriteTimeUtc.Ticks, Revision = revision, ExportVersion = DocxFix.Version,
+        };
+    }
+
     /// <summary>An edited export goes back into its Google document (Drive converts it; the old content stays in its history).</summary>
     private async Task WriteBackAsync(RemoteNode node, string rel, string derivedRel, string path, Dictionary<string, RemoteNode> remote, CycleStats stats, CancellationToken ct)
     {
@@ -782,14 +818,7 @@ public sealed partial class SyncEngine
         Adopt(path, fresh.Id, pin: true);
         string? revision = null;
         try { revision = await _store.RevisionAsync(fresh, ct); } catch { }
-        var info = new FileInfo(path);
-        // The local file stays as it is (no re-export of the converted document right away, which would rewrite a file
-        // that is probably still open).
-        _state.Entries[rel] = new StateEntry
-        {
-            Path = rel, Kind = EntryKind.Export, DriveId = fresh.Id, Md5 = fresh.Md5, Size = fresh.Size, DriveModifiedUtc = fresh.ModifiedUtc,
-            LocalName = derivedRel, LocalSize = info.Length, LocalMtimeTicks = info.LastWriteTimeUtc.Ticks, Revision = revision, ExportVersion = DocxFix.Version,
-        };
+        RecordWriteBack(rel, derivedRel, path, fresh, revision);
         _log.Info($"[{_pair.Name}] wrote back into the Google document: {derivedRel} ({size:N0} bytes)");
     }
 
