@@ -192,6 +192,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
         <div class="inline"><input type="number" id="optKeep" min="0" max="1000" style="width:80px"><span class="small muted">copies, for</span>
           <input type="number" id="optDays" min="0" max="36500" style="width:80px"><span class="small muted">days</span></div>
         <button class="btn" data-open="versions">Open</button></div>
+      <div class="setting"><div class="grow"><div>Previous versions folder</div>
+        <div class="small muted"><span class="mono" id="verDir"></span> <span id="verDirNote"></span></div></div>
+        <button class="btn" id="verDirPick">Change...</button><button class="btn" id="verDirReset">Default</button></div>
       <div class="setting"><label class="switch"><input type="checkbox" id="optMetered"><span></span></label>
         <div class="grow"><div>Pause on metered connections</div><div class="small muted" id="meteredNow">Mobile hotspots and networks marked as metered in Windows.</div></div></div>
       <div class="setting"><label class="switch"><input type="checkbox" id="optPresenting"><span></span></label>
@@ -264,6 +267,12 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     <div class="inline"><input type="text" id="pairLocal"><button class="btn" id="pairPickLocal">Browse...</button></div>
     <div class="help">May lie inside another pair's folder (e.g. a Drive folder inside a NAS folder); the outer pair then leaves it alone.
       Folders under your profile are stored as <span class="mono">%USERPROFILE%</span> / <span class="mono">%APPDATA%</span>, so the pair also fits your other computers.</div></div>
+  <div class="field"><label>Files on demand</label>
+    <label class="check"><input type="checkbox" id="pairOnDemand"> Show everything, download only what is opened or kept</label>
+    <div class="help">Like OneDrive: all files and folders appear in Explorer but take no space until opened. Right-click in Explorer:
+      <i>Always keep on this device</i> downloads a file or folder and keeps it up to date (new files in it too); <i>Free up space</i> makes it online-only again.
+      Explorer shows the status: cloud = online-only, green outline = on this computer, filled green = always kept.
+      Needs a folder outside OneDrive and Work Folders, e.g. <span class="mono">%USERPROFILE%\Unisono\...</span>, and Unisono running to open online-only files.</div></div>
   <div class="field"><label>Computers</label><input type="text" id="pairMachines" placeholder="empty = every computer">
     <div class="help" id="pairMachinesHelp"></div></div>
   <div class="field" id="pairDocsRow"><label id="pairDocsLabel">Google Docs</label>
@@ -506,6 +515,7 @@ function renderPairs() {
       <div class="pairfoot">${statusChip(p)}
         <span class="small muted">${p.lastSync ? "last run " + esc(p.lastSync) : "not run yet"}</span>
         ${p.activeHere ? "" : `<span class="chip plain">not on this computer</span>`}
+        ${p.onDemand ? `<span class="chip plain" title="Files on demand: online-only until opened or kept">on demand</span>` : ""}
         ${p.direction !== "TwoWay" ? `<span class="chip plain">${p.direction === "DownloadOnly" ? "download only" : "upload only"}</span>` : ""}
         <span class="small grow ellipsis" style="${p.failed ? "color:var(--red)" : ""}" title="${esc(p.lastResult)}">${esc(p.lastResult)}</span>
         <button class="btn" data-preview="${esc(p.id)}" title="Show what the next sync would do, without doing it">Preview</button>
@@ -591,9 +601,16 @@ function setKind(k) {
     ? "A shared folder (e.g. /home) or a folder inside one. Turn on the Recycle Bin for that shared folder in DSM so deletions can be undone."
     : "A folder under My Drive, e.g. Projects/2026. Deletions go to the Drive trash.";
   if (!editing) $("#pairPoll").value = nas ? 60 : 30;
+  syncOnDemand();
   $("#pairBrowse").textContent = "Browse...";
   syncRootBox();
 }
+// Cloud-only rules (links for big files) are what files on demand does properly: hide them while it is on.
+function syncOnDemand() {
+  const on = $("#pairOnDemand").checked;
+  document.querySelectorAll("#dlgPair .drive-only").forEach(e => e.hidden = pairKind !== "Drive" || on);
+}
+$("#pairOnDemand").onchange = syncOnDemand;
 function syncRootBox() {
   const root = pairKind === "Drive" && $("#pairRoot").checked;
   $("#pairRemote").disabled = root; if (root) $("#pairRemote").value = "";
@@ -621,6 +638,8 @@ function pairDialog(p) {
   $("#pairFolders").value = p ? p.cloudOnlyFolders.join(", ") : "";
   $("#pairPoll").value = p ? p.pollSeconds : (pairKind === "Synology" ? 60 : 30);
   $("#pairDirection").value = p ? p.direction : "TwoWay";
+  $("#pairOnDemand").checked = !!p && p.onDemand;
+  syncOnDemand();
   $("#pairMachines").value = p ? p.machines : "";
   $("#pairMachinesHelp").innerHTML = `Names of the computers that sync this pair, comma-separated. This computer is <b>${esc(S.machine)}</b>. Useful with a shared pair list (Settings).`;
   $("#pairIgnore").value = p ? p.ignorePatterns : "";
@@ -750,7 +769,7 @@ function pairFromForm() {
   const [server, user] = nas ? ($("#pairAcct").value || "|").split("|") : [null, null];
   return {
     includeFolders: scope.include, excludeFolders: scope.exclude,
-    direction: $("#pairDirection").value, ignorePatterns: $("#pairIgnore").value, machines: $("#pairMachines").value,
+    direction: $("#pairDirection").value, onDemand: $("#pairOnDemand").checked, ignorePatterns: $("#pairIgnore").value, machines: $("#pairMachines").value,
     kind: pairKind, account: nas || folder ? null : $("#pairAcct").value, server, user,
     remotePath: nas || folder ? $("#pairRemote").value : ($("#pairRoot").checked ? "" : $("#pairRemote").value),
     localPath: $("#pairLocal").value, docs: $("#pairDocs").value,
@@ -843,6 +862,9 @@ function renderSettings() {
   $("#setVerbose").checked = S.settings.verbose;
   $("#setPaused").checked = S.host.paused;
   $("#dataDir").textContent = S.dataDir;
+  $("#verDir").textContent = S.options.versionsDir;
+  $("#verDirNote").textContent = S.options.versionsDefault ? "(default, in the settings folder)" : "";
+  $("#verDirReset").hidden = S.options.versionsDefault;
   $("#version").textContent = "Unisono " + S.version;
   const o = S.options;
   if (document.activeElement !== $("#optKeep")) $("#optKeep").value = o.keepVersions;
@@ -861,6 +883,11 @@ $("#setVerbose").onchange = e => call("settings.set", { verbose: e.target.checke
 $("#setPaused").onchange = e => call("sync.pause", { paused: e.target.checked });
 const setOpt = o => call("settings.set", o).then(s => { if (s) { S = s; render(); } }).catch(x => toast(x.message, true));
 $("#optKeep").onchange = e => setOpt({ keepVersions: parseInt(e.target.value || "0", 10) });
+$("#verDirPick").onclick = async () => {
+  const r = await call("pickLocal", { current: S.options.versionsDir, title: "Folder for previous versions (e.g. on another drive)" });
+  if (r) setOpt({ versionsFolder: r });
+};
+$("#verDirReset").onclick = () => setOpt({ versionsFolder: "" });
 $("#optDays").onchange = e => setOpt({ keepVersionsDays: parseInt(e.target.value || "0", 10) });
 $("#optMetered").onchange = e => setOpt({ pauseOnMetered: e.target.checked });
 $("#optPresenting").onchange = e => setOpt({ pauseWhilePresenting: e.target.checked });

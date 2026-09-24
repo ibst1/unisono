@@ -108,22 +108,33 @@ public sealed class SyncHost : IAsyncDisposable
         var pairs = Pairs;
         var engines = new SyncEngine?[pairs.Count];
         var watchers = new List<FileSystemWatcher>();
+        var providers = new List<HydrationProvider>();
+        // Missed events (sleep, no network, another computer) need no replay: every cycle compares everything. What
+        // matters is running one soon: at start (below), when the network is back and when Windows wakes up.
+        System.Net.NetworkInformation.NetworkAvailabilityChangedEventHandler onNet = (_, e) => { if (e.IsAvailable) { _log.Debug("network available: syncing"); Nudge(); } };
+        System.Net.NetworkInformation.NetworkAddressChangedEventHandler onAddr = (_, _) => Nudge(); // VPN, another network
+        Microsoft.Win32.PowerModeChangedEventHandler onPower = (_, e) => { if (e.Mode == Microsoft.Win32.PowerModes.Resume) { _log.Info("woke up: syncing"); Nudge(); } };
+        System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged += onNet;
+        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += onAddr;
+        try { Microsoft.Win32.SystemEvents.PowerModeChanged += onPower; } catch { /* no session events (service) */ }
         await using var stores = new StoreFactory(_log, _interactive);
         try
         {
             foreach (var p in pairs)
             {
-                var w = TryWatch(p.Pair.LocalFullPath);
+                if (p.Pair.OnDemand) ServeOnDemand(p, stores, providers);
+                var w = TryWatch(p.Pair.LocalFullPath, attributes: p.Pair.OnDemand);
                 if (w != null) watchers.Add(w);
                 // A folder pair's other side is a folder too: watch it as well, so its changes come across at once.
                 // Network shares usually deliver these events; polling covers the ones that do not.
-                if (p.Pair.Kind == RemoteKind.Folder && TryWatch(p.Pair.RemoteFullPath) is { } rw) watchers.Add(rw);
+                if (p.Pair.Kind == RemoteKind.Folder && TryWatch(p.Pair.RemoteFullPath, attributes: false) is { } rw) watchers.Add(rw);
             }
             var poll = TimeSpan.FromSeconds(pairs.Count == 0 ? 60 : Math.Max(5, pairs.Min(p => p.Pair.PollSeconds)));
             if (pairs.Count > 0)
                 _log.Info($"syncing {pairs.Count} pair(s), watching {watchers.Count} folder(s), polling every {poll.TotalSeconds:0}s");
 
             var backoff = TimeSpan.Zero;
+            var followUp = false; // files still being written were skipped: look again shortly
             while (!ct.IsCancellationRequested)
             {
                 TimeSpan wait;
@@ -144,6 +155,7 @@ public sealed class SyncHost : IAsyncDisposable
                     _forceOnce = false;
                     SetState(HostState.Syncing);
                     var ok = true;
+                    followUp = false;
                     for (var i = 0; i < pairs.Count; i++)
                     {
                         var ps = pairs[i];
@@ -152,6 +164,7 @@ public sealed class SyncHost : IAsyncDisposable
                             Update(ps, "syncing");
                             engines[i] ??= new SyncEngine(await stores.CreateAsync(ps.Pair, ct), ps.Pair, _log, pairs.Select(x => x.Pair).ToList(), _options);
                             var stats = await engines[i]!.RunCycleAsync(ct);
+                            followUp |= engines[i]!.NeedsFollowUp;
                             ps.LastStats = stats;
                             ps.LastSync = DateTime.Now;
                             ps.LastError = stats.Errors > 0 ? $"{stats.Errors} item(s) failed, see log" : null;
@@ -180,11 +193,13 @@ public sealed class SyncHost : IAsyncDisposable
                     wait = Timeout.InfiniteTimeSpan;
                 }
 
+                if (followUp && wait > TimeSpan.FromSeconds(3)) wait = TimeSpan.FromSeconds(3);
                 if (await _nudge.WaitAsync(wait, ct))
                 {
-                    // Let a burst of writes (save, rename, temp file dance) settle before scanning.
-                    await Task.Delay(2000, ct);
-                    while (_nudge.CurrentCount > 0) await _nudge.WaitAsync(0, ct);
+                    // Let a burst of writes settle before scanning (R, Office: temp file, rename, delete): wait until
+                    // nothing has happened for 2 s, but no longer than 30 s in all under a steady stream of changes.
+                    var burst = DateTime.UtcNow;
+                    while (DateTime.UtcNow - burst < TimeSpan.FromSeconds(30) && await _nudge.WaitAsync(2000, ct)) { }
                 }
             }
         }
@@ -192,6 +207,48 @@ public sealed class SyncHost : IAsyncDisposable
         finally
         {
             foreach (var w in watchers) w.Dispose();
+            foreach (var p in providers) p.Dispose();
+            System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged -= onNet;
+            System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= onAddr;
+            try { Microsoft.Win32.SystemEvents.PowerModeChanged -= onPower; } catch { }
+        }
+    }
+
+    /// <summary>
+    /// Registers a files-on-demand pair's folder and answers Windows when an online-only file in it is opened. A problem
+    /// here (folder inside OneDrive, ...) is reported on the pair; its cycles then fail with the same explanation.
+    /// </summary>
+    private void ServeOnDemand(PairStatus ps, StoreFactory stores, List<HydrationProvider> providers)
+    {
+        var pair = ps.Pair;
+        try
+        {
+            if (CloudFiles.WhyNot(pair.LocalFullPath, pair) is { } why) throw new InvalidOperationException(why);
+            if (!CloudFiles.IsRegistered(pair)) CloudFiles.Register(pair);
+            IRemoteStore? store = null;
+            var gate = new SemaphoreSlim(1, 1);
+            providers.Add(HydrationProvider.Connect(pair.LocalFullPath, async (rel, identity, size, ct) =>
+            {
+                await gate.WaitAsync(ct);
+                try { store ??= await stores.CreateAsync(pair, ct); }
+                finally { gate.Release(); }
+                var dir = Path.Combine(AppPaths.DataDir, "hydrate");
+                Directory.CreateDirectory(dir);
+                var tmp = Path.Combine(dir, Guid.NewGuid().ToString("N") + Path.GetExtension(rel));
+                try
+                {
+                    using var t = SyncActivity.Begin(SyncActivity.Direction.Down, pair.Name, rel, size);
+                    await store.DownloadAsync(store.HydrationNode(rel, identity, size), tmp, ct);
+                    t.Complete();
+                }
+                catch { store = null; throw; } // e.g. a NAS session the sync loop has replaced: reconnect next time
+                return tmp;
+            }, _log, pair.Name));
+        }
+        catch (Exception ex)
+        {
+            ps.LastError = ex.Message;
+            _log.Error($"[{pair.Name}] files on demand: {ex.Message}");
         }
     }
 
@@ -200,7 +257,9 @@ public sealed class SyncHost : IAsyncDisposable
         try { return AutoPauseReason?.Invoke(); } catch { return null; }
     }
 
-    private FileSystemWatcher? TryWatch(string path)
+    /// <param name="attributes">Also react to attribute changes: in a files-on-demand folder that is how Explorer's
+    /// "Always keep on this device" and "Free up space" arrive.</param>
+    private FileSystemWatcher? TryWatch(string path, bool attributes)
     {
         if (!Directory.Exists(path)) return null;
         try
@@ -208,7 +267,8 @@ public sealed class SyncHost : IAsyncDisposable
             var w = new FileSystemWatcher(path)
             {
                 IncludeSubdirectories = true,
-                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size
+                               | (attributes ? NotifyFilters.Attributes : 0),
                 InternalBufferSize = 64 * 1024,
             };
             FileSystemEventHandler onChange = (_, ev) => { if (!LocalScanner.IsIgnored(Path.GetFileName(ev.FullPath))) Nudge(); };

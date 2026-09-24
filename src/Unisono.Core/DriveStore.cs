@@ -81,6 +81,9 @@ public sealed class DriveStore : IRemoteStore
         return fresh;
     }
 
+    public RemoteNode HydrationNode(string rel, string identity, long size) =>
+        new() { Id = identity, Name = PathUtil.NameOf(rel), RelPath = rel, Size = size, ModifiedUtc = DateTime.UtcNow };
+
     public async Task DownloadAsync(RemoteNode node, string localPath, CancellationToken ct)
     {
         var file = new Google.Apis.Drive.v3.Data.File { Id = node.Id, Name = node.Name, ModifiedTimeDateTimeOffset = node.ModifiedUtc };

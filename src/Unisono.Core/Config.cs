@@ -77,6 +77,13 @@ public sealed class SyncPair
         return fullPath;
     }
 
+    /// <summary>
+    /// Files on demand: everything remote shows up locally, but as online-only placeholders that take no space until
+    /// opened; "Always keep on this device" in Explorer keeps a file or folder here, "Free up space" makes it online-only
+    /// again. The local folder must not lie inside another provider's folder (OneDrive, Work Folders).
+    /// </summary>
+    public bool OnDemand { get; set; }
+
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public SyncDirection Direction { get; set; } = SyncDirection.TwoWay;
 
@@ -150,6 +157,8 @@ public sealed class AppOptions
     public int KeepVersions { get; set; } = 5;
     /// <summary>Kept versions older than this are pruned (0 = no age limit).</summary>
     public int KeepVersionsDays { get; set; } = 30;
+    /// <summary>Where kept versions go; empty = the "versions" folder in Unisono's data folder. May contain %VARS%.</summary>
+    public string? VersionsFolder { get; set; }
     /// <summary>No syncing while Windows says the connection is metered (mobile hotspot, a network set to metered).</summary>
     public bool PauseOnMetered { get; set; } = true;
     /// <summary>No syncing during presentations and full-screen apps (Windows' "do not disturb" states).</summary>
@@ -209,6 +218,7 @@ public sealed class Config
         var config = File.Exists(FilePath)
             ? JsonSerializer.Deserialize<Config>(File.ReadAllText(FilePath), JsonOptions) ?? new Config()
             : new Config();
+        VersionStore.Folder = config.Options.VersionsFolder;
         if (config.SharedFile is { } shared && File.Exists(shared))
             config.Pairs = JsonSerializer.Deserialize<PairList>(File.ReadAllText(shared), JsonOptions)?.Pairs ?? new();
         return config;

@@ -1,10 +1,11 @@
-# Builds Unisono as a self-contained single-file exe and copies it to
+# Builds Unisono as a single-file exe (framework-dependent: needs the .NET 8 Desktop Runtime, or a newer one;
+# -SelfContained bundles the runtime instead, for computers without it) and copies it to
 # %USERPROFILE%\Program\Unisono (a location unsigned exes may run from on
 # locked-down machines) and to dist\ next to this script.
 param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
-    [switch]$FrameworkDependent
+    [switch]$SelfContained
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,12 +33,16 @@ $info = "$version+$hash$dirty"
 $buildTime = Get-Date -Format "yyyy-MM-dd HH:mm"
 Write-Host "Building Unisono $info ($buildTime)"
 
-$selfContained = if ($FrameworkDependent) { "false" } else { "true" }
+# Framework-dependent starts in a fraction of a second; a self-contained single file (~60-90 MB) takes seconds to
+# unpack and scan on every start, which Explorer's "Open in..." and the command line feel.
+$selfContainedArg = if ($SelfContained) { "true" } else { "false" }
 New-Item -ItemType Directory -Force $dist, $target | Out-Null
 # Unisono.exe is the tray app, UnisonoCli.exe the command line; both share Unisono.Core.
 foreach ($app in @(@{ Proj = "src\Unisono\Unisono.csproj"; Exe = "Unisono" }, @{ Proj = "src\Unisono.Cli\Unisono.Cli.csproj"; Exe = "UnisonoCli" })) {
     # A running exe is locked, but may still be RENAMED: move it aside so publish can write the new one.
     $exe = Join-Path $target "$($app.Exe).exe"
+    # Copies parked by earlier builds: gone once nothing runs from them any more.
+    Get-ChildItem $target -Filter "$($app.Exe).prev*.exe" -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Delete() } catch { } }
     if (Test-Path $exe) {
         $prev = Join-Path $target "$($app.Exe).prev.exe"
         Remove-Item $prev -Force -ErrorAction SilentlyContinue
@@ -45,8 +50,8 @@ foreach ($app in @(@{ Proj = "src\Unisono\Unisono.csproj"; Exe = "Unisono" }, @{
         if (Test-Path $prev) { $prev = Join-Path $target ("{0}.prev-{1:yyyyMMddHHmmss}.exe" -f $app.Exe, (Get-Date)) }
         try { Move-Item $exe $prev -Force } catch { Write-Host "note: could not move the old $($app.Exe).exe aside ($_)" }
     }
-    & $dotnet publish (Join-Path $root $app.Proj) -c $Configuration -r $Runtime --self-contained $selfContained `
-        -p:PublishSingleFile=true -p:Version=$version -p:InformationalVersion=$info -p:BuildTime="$buildTime" -o $target
+    & $dotnet publish (Join-Path $root $app.Proj) -c $Configuration -r $Runtime --self-contained $selfContainedArg `
+        -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=$selfContainedArg -p:Version=$version -p:InformationalVersion=$info -p:BuildTime="$buildTime" -o $target
     if ($LASTEXITCODE -ne 0) { throw "publish of $($app.Exe) failed" }
     Copy-Item $exe (Join-Path $dist "$($app.Exe).exe") -Force
     # WebView2Loader.dll (native) is not bundled into a single-file exe; it has to sit next to Unisono.exe.

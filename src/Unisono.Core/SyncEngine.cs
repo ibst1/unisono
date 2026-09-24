@@ -4,10 +4,10 @@ namespace Unisono;
 
 public sealed class CycleStats
 {
-    public int Downloaded, Uploaded, Exported, Linked, Trashed, Recycled, Conflicts, Errors, Moved;
-    public bool Any => Downloaded + Uploaded + Exported + Linked + Trashed + Recycled + Conflicts + Errors + Moved > 0;
+    public int Downloaded, Uploaded, Exported, Linked, Trashed, Recycled, Conflicts, Errors, Moved, Online;
+    public bool Any => Downloaded + Uploaded + Exported + Linked + Trashed + Recycled + Conflicts + Errors + Moved + Online > 0;
     public override string ToString() =>
-        $"{Downloaded} down, {Uploaded} up, {Moved} moved, {Exported} exported, {Linked} linked, {Trashed} deleted remotely, {Recycled} recycled locally, {Conflicts} conflicts, {Errors} errors";
+        $"{Downloaded} down, {Uploaded} up, {Moved} moved,{(Online > 0 ? $" {Online} online-only," : "")} {Exported} exported, {Linked} linked, {Trashed} deleted remotely, {Recycled} recycled locally, {Conflicts} conflicts, {Errors} errors";
 }
 
 /// <summary>One thing a dry run found it would do.</summary>
@@ -46,6 +46,17 @@ public sealed partial class SyncEngine
     public bool DryRun { get; init; }
     public List<PlannedAction> Plan { get; } = new();
 
+    /// <summary>Something was left for a moment (a file still being written); the host runs another cycle soon.</summary>
+    public bool NeedsFollowUp { get; private set; }
+
+    /// <summary>A file written to in the last seconds is left for the next cycle rather than uploaded half-saved.</summary>
+    private bool Settling(LocalItem l)
+    {
+        if (DryRun || !LocalScanner.Unsettled(l)) return false; // a preview shows what would happen, settled or not
+        NeedsFollowUp = true;
+        return true;
+    }
+
     private bool Down => _pair.Direction != SyncDirection.UploadOnly;   // may change the local side
     private bool Up => _pair.Direction != SyncDirection.DownloadOnly;   // may change the remote side
 
@@ -74,6 +85,9 @@ public sealed partial class SyncEngine
         // Selective sync and ignore rules: out-of-scope and ignored items are simply invisible to the rest of the
         // cycle, so they are never touched on either side.
         _scope = new SyncScope(_pair, _others);
+        EnsureSyncRoot();
+        _doneThisCycle.Clear();
+        NeedsFollowUp = false;
         var remoteAll = await _store.GetTreeAsync(_log, ct);
         var localAll = LocalScanner.Scan(_root, _log);
         var ignore = IgnoreRules.Build(_options, _pair, _root,
@@ -89,6 +103,7 @@ public sealed partial class SyncEngine
             await SyncFoldersAsync(remote, local, stats, ct);
             await DetectFileMovesAsync(remote, local, stats, ct);
             await SyncFilesAsync(remote, local, stats, ct);
+            await ApplyOnDemandAsync(remote, local, stats, ct);
             if (!DryRun) TidyBridgeFolders(local);
         }
         finally
@@ -204,6 +219,7 @@ public sealed partial class SyncEngine
                 // Deleted locally, unchanged remotely since we last saw it: propagate (unless this pair only downloads,
                 // in which case the local deletion is simply left as it is).
                 if (!Up) continue;
+                if (Directory.Exists(Local(rel))) { NeedsFollowUp = true; continue; } // back already (renamed away and back)
                 await Try(rel, stats, async () =>
                 {
                     if (!Planned("delete folder remotely (deleted locally)", rel)) await _store.DeleteAsync(node, ct);
@@ -253,7 +269,7 @@ public sealed partial class SyncEngine
                     {
                         if (!Planned("move folder to the Recycle Bin (deleted remotely)", rel))
                         {
-                            var where = RecycleBin.Delete(item.FullPath);
+                            var where = RemoveLocal(item.FullPath);
                             _log.Info($"[{_pair.Name}] moved folder to {where} (deleted remotely): {rel}");
                         }
                         RemoveTree(local, rel);
@@ -274,8 +290,16 @@ public sealed partial class SyncEngine
 
     private void CreateLocalFolder(string rel, RemoteNode node, Dictionary<string, LocalItem> local)
     {
-        if (!Planned("create folder locally", rel)) Directory.CreateDirectory(Local(rel));
-        local[rel] = new LocalItem { RelPath = rel, FullPath = Local(rel), IsDir = true };
+        if (!Planned("create folder locally", rel))
+        {
+            if (OnDemand)
+            {
+                CloudFiles.CreatePlaceholder(Local(rel), isDir: true, 0, node.ModifiedUtc == default ? DateTime.UtcNow : node.ModifiedUtc, node.Id);
+                if (ParentPinned(Local(rel))) CloudFiles.SetPinState(Local(rel), 1); // new folders in a kept folder are kept too
+            }
+            else Directory.CreateDirectory(Local(rel));
+        }
+        local[rel] = new LocalItem { RelPath = rel, FullPath = Local(rel), IsDir = true, Attributes = DryRun ? FileAttributes.Directory : File.GetAttributes(Local(rel)) };
         UpsertFolderEntry(rel, node.Id);
     }
 
@@ -358,7 +382,7 @@ public sealed partial class SyncEngine
                     {
                         if (!Planned("move to the Recycle Bin (deleted remotely)", rel))
                         {
-                            var where = RecycleBin.Delete(item.FullPath);
+                            var where = RemoveLocal(item.FullPath);
                             _log.Info($"[{_pair.Name}] moved to {where} (deleted remotely): {rel}");
                         }
                         local.Remove(rel);
@@ -371,11 +395,13 @@ public sealed partial class SyncEngine
                 if (Up) _log.Warn($"[{_pair.Name}] '{rel}' was deleted remotely but changed locally; uploading it again");
             }
             if (!Up || !parentKnown) continue; // download-only: local-only files stay local
+            if (Settling(item)) continue;
             await Try(rel, stats, async () =>
             {
                 var node = Planned("upload", rel, $"{item.Size:N0} bytes") ? DryNode(rel, parent, folder: false)
-                    : await _store.UploadNewAsync(item.FullPath, rel, parent, ct);
+                    : await Tracked(SyncActivity.Direction.Up, rel, item.Size, () => _store.UploadNewAsync(item.FullPath, rel, parent, ct));
                 remote[rel] = node;
+                if (!DryRun) Uploaded(item.FullPath, node.Id);
                 RecordFile(rel, node, item.FullPath);
                 stats.Uploaded++;
                 if (!DryRun) _log.Info($"[{_pair.Name}] uploaded: {rel} ({item.Size:N0} bytes)");
@@ -441,6 +467,8 @@ public sealed partial class SyncEngine
                     if (Down) await DownloadAsync(fresh, path, stats, "changed remotely after local delete", ct);
                     return;
                 }
+                // Saving programs replace files by rename; the scan may have caught the moment it was gone.
+                if (File.Exists(path)) { NeedsFollowUp = true; return; }
                 if (!Planned("delete remotely (deleted locally)", rel)) await _store.DeleteAsync(fresh, ct);
                 remote.Remove(rel);
                 _state.Entries.Remove(rel);
@@ -451,6 +479,8 @@ public sealed partial class SyncEngine
 
             if (s == null)
             {
+                // An online-only placeholder without history holds nothing local: describe the remote file.
+                if (l.Dehydrated) { if (Down) await DownloadAsync(node, path, stats, "online-only placeholder without history", ct); return; }
                 // Both sides have it and we have never synced it: content decides; in a one-way pair the source wins.
                 if (await SameContentAsync(node, path, ct)) { RecordFile(rel, node, path); return; }
                 if (_pair.Direction == SyncDirection.DownloadOnly) await DownloadAsync(node, path, stats, "differs; download-only pair", ct);
@@ -460,7 +490,8 @@ public sealed partial class SyncEngine
             }
 
             var remoteChanged = !RemoteUnchanged(node, s);
-            var localTouched = l.Size != s.LocalSize || l.MtimeTicks != s.LocalMtimeTicks;
+            var localTouched = !l.Dehydrated && (l.Size != s.LocalSize || l.MtimeTicks != s.LocalMtimeTicks);
+            if (localTouched && Up && Settling(l)) return; // still being saved: next cycle
             var localChanged = localTouched && !string.Equals(PathUtil.Md5Of(path), s.Md5, StringComparison.OrdinalIgnoreCase);
             if (localTouched && !localChanged)
             {
@@ -504,25 +535,30 @@ public sealed partial class SyncEngine
 
     private async Task UploadChangeAsync(RemoteNode node, string rel, string path, LocalItem l, Dictionary<string, RemoteNode> remote, CycleStats stats, CancellationToken ct)
     {
-        var fresh = Planned("upload change", rel, $"{l.Size:N0} bytes") ? node : await _store.UploadUpdateAsync(path, node, ct);
+        var fresh = Planned("upload change", rel, $"{l.Size:N0} bytes") ? node : await Tracked(SyncActivity.Direction.Up, rel, l.Size, () => _store.UploadUpdateAsync(path, node, ct));
         remote[rel] = fresh;
+        if (!DryRun) Uploaded(path, fresh.Id);
         RecordFile(rel, fresh, path);
         stats.Uploaded++;
         if (!DryRun) _log.Info($"[{_pair.Name}] uploaded change: {rel} ({l.Size:N0} bytes)");
     }
 
-    private async Task DownloadAsync(RemoteNode node, string path, CycleStats stats, string why, CancellationToken ct)
+    private async Task DownloadAsync(RemoteNode node, string path, CycleStats stats, string why, CancellationToken ct, bool keep = false)
     {
+        if (!keep && !KeepLocal(path)) { Placeholder(node, path, stats, why); return; }
+        _doneThisCycle.Add(node.RelPath);
+        var pin = OnDemand && (keep || ParentPinned(path) || (File.Exists(path) && CloudFiles.IsPinned(File.GetAttributes(path))));
         stats.Downloaded++;
         if (Planned("download", node.RelPath, $"{why}, {node.Size:N0} bytes{(File.Exists(path) ? ", replaces the local file (a copy is kept)" : "")}")) return;
-        // The local file is about to be replaced: keep a copy first.
-        if (File.Exists(path))
+        // The local file is about to be replaced: keep a copy first (an online-only placeholder has nothing to keep).
+        if (File.Exists(path) && !CloudFiles.IsDehydrated(File.GetAttributes(path)))
         {
             try { VersionStore.Save(_pair, node.RelPath, path, _options); }
             catch (Exception ex) { _log.Warn($"[{_pair.Name}] could not keep a copy of {node.RelPath} before replacing it: {ex.Message}"); }
         }
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        await _store.DownloadAsync(node, path, ct);
+        await Tracked(SyncActivity.Direction.Down, node.RelPath, node.Size, () => _store.DownloadAsync(node, path, ct));
+        Adopt(path, node.Id, pin);
         RecordFile(node.RelPath, node, path);
         _log.Info($"[{_pair.Name}] downloaded ({why}): {node.RelPath} ({node.Size:N0} bytes)");
     }
@@ -544,8 +580,9 @@ public sealed partial class SyncEngine
         await DownloadAsync(node, path, stats, "conflict, remote version", ct);
 
         TryParent(rel, remote, out var parent);
-        var cnode = await _store.UploadNewAsync(conflictPath, conflictRel, parent, ct);
+        var cnode = await Tracked(SyncActivity.Direction.Up, conflictRel, new FileInfo(conflictPath).Length, () => _store.UploadNewAsync(conflictPath, conflictRel, parent, ct));
         remote[conflictRel] = cnode;
+        Uploaded(conflictPath, cnode.Id);
         RecordFile(conflictRel, cnode, conflictPath);
         stats.Uploaded++;
     }
@@ -610,7 +647,7 @@ public sealed partial class SyncEngine
             {
                 stats.Exported++;
                 if (Planned("export", derivedRel)) return;
-                await _store.ExportAsync(node, ExportMime(node.MimeType)!, path, ct);
+                await Tracked(SyncActivity.Direction.Down, derivedRel, node.Size, () => _store.ExportAsync(node, ExportMime(node.MimeType)!, path, ct));
                 File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly);
                 _log.Info($"[{_pair.Name}] exported: {derivedRel}");
             }
@@ -698,7 +735,7 @@ public sealed partial class SyncEngine
         {
             Path = rel, Kind = EntryKind.File, DriveId = node.Id,
             // Without a remote checksum (NAS) the local one stands in; local edits are still detected against it.
-            Md5 = node.Md5 ?? PathUtil.Md5Of(path),
+            Md5 = node.Md5 ?? (CloudFiles.IsDehydrated(info.Attributes) ? null : PathUtil.Md5Of(path)),
             Size = node.Size, DriveModifiedUtc = node.ModifiedUtc,
             LocalSize = info.Length, LocalMtimeTicks = info.LastWriteTimeUtc.Ticks,
         };
@@ -726,7 +763,8 @@ public sealed partial class SyncEngine
             : node.ModifiedUtc == s.DriveModifiedUtc && node.Size == s.Size;
 
     private static bool LocalUnchanged(LocalItem l, StateEntry s) =>
-        (l.Size == s.LocalSize && l.MtimeTicks == s.LocalMtimeTicks)
+        l.Dehydrated // online-only: nothing local that could have changed
+        || (l.Size == s.LocalSize && l.MtimeTicks == s.LocalMtimeTicks)
         || (l.Size == s.Size && string.Equals(PathUtil.Md5Of(l.FullPath), s.Md5, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Compares content; a remote without checksums is downloaded to a scratch file next to the target for that.</summary>
@@ -772,6 +810,18 @@ public sealed partial class SyncEngine
         }
         return false;
     }
+
+    /// <summary>Runs a transfer so the tray can show it (arrows, the file in the tooltip).</summary>
+    private async Task<T> Tracked<T>(SyncActivity.Direction dir, string rel, long size, Func<Task<T>> op)
+    {
+        using var t = SyncActivity.Begin(dir, _pair.Name, rel, size);
+        var result = await op();
+        t.Complete();
+        return result;
+    }
+
+    private Task Tracked(SyncActivity.Direction dir, string rel, long size, Func<Task> op) =>
+        Tracked(dir, rel, size, async () => { await op(); return true; });
 
     private async Task Try(string rel, CycleStats stats, Func<Task> action)
     {

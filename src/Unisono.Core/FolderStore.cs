@@ -33,7 +33,7 @@ public sealed class FolderStore : IRemoteStore
             foreach (var e in dir.EnumerateFileSystemInfos())
             {
                 if (LocalScanner.IsIgnored(e.Name)) continue;
-                if ((e.Attributes & (FileAttributes.ReparsePoint | FileAttributes.System)) != 0) continue;
+                if (LocalScanner.IsLinkOrSystem(e)) continue;
                 var childRel = PathUtil.Join(rel, e.Name);
                 tree[childRel] = ToNode(e, childRel);
                 if (e is DirectoryInfo d) queue.Enqueue((d, childRel));
@@ -64,6 +64,9 @@ public sealed class FolderStore : IRemoteStore
     public Task<RemoteNode?> RefreshAsync(RemoteNode node, CancellationToken ct) => Task.FromResult(Stat(node.Id, node.RelPath));
 
     public Task DownloadAsync(RemoteNode node, string localPath, CancellationToken ct) => CopyAsync(node.Id, localPath, ct);
+
+    public RemoteNode HydrationNode(string rel, string identity, long size) =>
+        new() { Id = Path.Combine(_root, rel.Replace('/', '\\')), Name = PathUtil.NameOf(rel), RelPath = rel, Size = size, ModifiedUtc = DateTime.UtcNow };
 
     public async Task<RemoteNode> UploadNewAsync(string localPath, string relPath, RemoteNode? parent, CancellationToken ct)
     {

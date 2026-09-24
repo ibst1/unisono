@@ -71,6 +71,9 @@ public sealed class SynologyStore : IRemoteStore
         return info == null ? null : ToNode(info, node.ParentId, node.RelPath);
     }
 
+    public RemoteNode HydrationNode(string rel, string identity, long size) =>
+        new() { Id = FullPath(rel), Name = PathUtil.NameOf(rel), RelPath = rel, Size = size, ModifiedUtc = DateTime.UtcNow };
+
     public Task DownloadAsync(RemoteNode node, string localPath, CancellationToken ct) =>
         _nas.DownloadAsync(node.Id, localPath, node.ModifiedUtc, ct);
 

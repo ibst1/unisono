@@ -45,7 +45,9 @@ pair then leaves that subfolder alone locally and remotely, so every file belong
 ### Safety and control
 
 * **Previous versions**: before Unisono replaces a local file with a newer remote one, it keeps a
-  copy under `versions\<pair>\<path>\` in the data folder (default 5 copies, 30 days; Settings).
+  copy under `versions\<pair>\<path>\` (default 5 copies, 30 days; Settings). The versions folder is the data
+  folder's `versions` by default and can be moved anywhere outside the synced folders, e.g. to another drive
+  (Settings > Previous versions folder); kept copies move along.
   Deletions go to the Recycle Bin or the remote trash, conflicts keep both files.
 * **Ignore rules**: gitignore-style patterns in Settings (all pairs), per pair, and in
   `.unisonoignore` files, which apply to their folder and below and sync to other computers.
@@ -95,6 +97,8 @@ organisation can sign in; other accounts need the screen set to *External* and p
 ## Requirements on the machine that runs it
 
 * Windows 10/11, no admin needed.
+* The .NET 8 Desktop Runtime (or 9, 10). Without it, build with `build.ps1 -SelfContained`, which bundles the
+  runtime but makes every start take seconds.
 * Outbound HTTPS to `www.googleapis.com`, `oauth2.googleapis.com` and `accounts.google.com`.
 * Permission to run an unsigned exe from `%USERPROFILE%\Program\Unisono`.
 * A loopback HTTP listener on 127.0.0.1 for the one-time OAuth redirect.
@@ -245,10 +249,35 @@ Rules:
 * Two machines syncing the same Drive folder need no coordination; Drive is the hub and
   each machine has its own state.
 
-Limitations: renames are seen as delete plus add (correct, but re-transfers the data);
-Drive allows two siblings with the same name or names differing only in case, Windows
+* Missed events need no replay: every cycle compares everything, so what happened while
+  Unisono was not running (asleep, offline, work on another computer) is picked up by the first
+  cycle, which runs at start, when the network comes back and when Windows wakes up. Drive
+  changes are fetched incrementally from the change feed with the saved page token.
+* Programs save in steps (R, Office: temp file, rename, delete). Unisono waits until a folder has
+  been quiet for 2 s (at most 30 s), leaves files written to in the last 2 s for the next cycle,
+  checks again that a file is really gone before deleting it remotely, and ignores Office's lock
+  and temp files (`~$...`, `~WRL....tmp`, `8A3F2B1C.tmp`).
+
+Limitations: Drive allows two siblings with the same name or names differing only in case, Windows
 does not, so the first one wins and the rest are reported; Docs exports have no md5, so
 change detection for them uses Drive's modified time.
+
+## Files on demand
+
+Tick *Files on demand* on a pair and it works like OneDrive: everything in the remote folder shows up in
+Explorer, but files are online-only placeholders that take no space until something opens them; then they are
+downloaded on the spot. Explorer shows the state with its usual icons (cloud = online-only, green outline = on
+this computer, filled green = always kept, arrows = syncing), and its right-click menu decides what is local:
+
+* **Always keep on this device** on a file or folder downloads it and keeps it up to date, new files in the folder too.
+* **Free up space** makes it online-only again (only when nothing in it changed locally).
+
+So a whole Drive can be browsed while only the folders you choose take space. Edits, new files, deletions and
+renames work as in any pair; renaming or deleting an online-only file never downloads it. Unisono must be
+running to open an online-only file (like OneDrive). It uses the Windows Cloud Files API, which allows no such
+folder inside another provider's: pick one outside OneDrive and Work Folders, e.g. `%USERPROFILE%\Unisono\Drive`.
+Turning it off (or removing the pair) turns what is local back into ordinary files; online-only files are
+downloaded (or, when the pair is removed, simply dropped: they are still online).
 
 ## Folder pairs
 
@@ -286,7 +315,7 @@ powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite nas -NasS
 ```
 ## Building
 
-`build.ps1` publishes a self-contained single-file exe to `%USERPROFILE%\Program\Unisono`
+`build.ps1` publishes framework-dependent single-file exes (`-SelfContained` for a bundled runtime) to `%USERPROFILE%\Program\Unisono`
 and to `dist\`. It uses a user-local SDK from `%LOCALAPPDATA%\dotnet` when present.
 Set `UNISONO_DATA` to redirect config, state and logs (sign-in stays in
 `%LOCALAPPDATA%\Unisono`), which is how the end-to-end test runs two pairs against one

@@ -3,11 +3,13 @@
   <!-- The tray app: accounts, sync pairs, live log, pause, autostart. -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PlatformTarget>x64</PlatformTarget>
+    <!-- Framework-dependent: use .NET 9 or 10 where 8 is missing. -->
+    <RollForward>Major</RollForward>
     <RootNamespace>Unisono.App</RootNamespace>
     <AssemblyName>Unisono</AssemblyName>
     <Version>0.2.0</Version>
@@ -15,7 +17,6 @@
     <ApplicationIcon>unisono.ico</ApplicationIcon>
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 

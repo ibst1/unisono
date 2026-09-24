@@ -133,6 +133,13 @@ sealed class Bridge : IAsyncDisposable
             case "pair.remove":
             {
                 var pair = FindPair(Str(p, "id"));
+                if (pair.OnDemand && pair.ActiveHere)
+                {
+                    // Placeholders need their provider: turn them back into ordinary files (online-only ones are dropped;
+                    // they stay online) while nothing is syncing.
+                    await _host.StopAsync();
+                    CloudFiles.TurnOff(pair, _log);
+                }
                 Config.Pairs.Remove(pair);
                 Config.Save();
                 // Without its history a re-added pair starts by matching content, which is the safe way round.
@@ -153,6 +160,20 @@ sealed class Bridge : IAsyncDisposable
                 var changed = false;
                 if (p.TryGetProperty("keepVersions", out var kv) && kv.TryGetInt32(out var kvi)) { o.KeepVersions = Math.Clamp(kvi, 0, 1000); changed = true; }
                 if (p.TryGetProperty("keepVersionsDays", out var kd) && kd.TryGetInt32(out var kdi)) { o.KeepVersionsDays = Math.Clamp(kdi, 0, 36500); changed = true; }
+                if (p.TryGetProperty("versionsFolder", out var vf))
+                {
+                    var raw = vf.ValueKind == JsonValueKind.String ? vf.GetString()?.Trim() : null;
+                    var full = string.IsNullOrEmpty(raw) ? null : Path.GetFullPath(Environment.ExpandEnvironmentVariables(raw));
+                    if (full != null && Config.Pairs.FirstOrDefault(x => x.ActiveHere && WithSep(full).StartsWith(WithSep(x.LocalFullPath), StringComparison.OrdinalIgnoreCase)) is { } inside)
+                        throw new InvalidOperationException($"That folder lies inside {inside.LocalFullPath}, which Unisono syncs: the kept versions would be synced too. Pick a folder outside your sync pairs.");
+                    var oldRoot = VersionStore.Root;
+                    o.VersionsFolder = full == null ? null : SyncPair.Portable(full);
+                    VersionStore.Folder = o.VersionsFolder;
+                    await _host.StopAsync(); // nothing may write versions while they move
+                    VersionStore.MoveAll(oldRoot, VersionStore.Root);
+                    _log.Info($"previous versions now kept in {VersionStore.Root}");
+                    changed = true;
+                }
                 if (p.TryGetProperty("pauseOnMetered", out var pm)) { o.PauseOnMetered = pm.GetBoolean(); changed = true; }
                 if (p.TryGetProperty("pauseWhilePresenting", out var pp)) { o.PauseWhilePresenting = pp.GetBoolean(); changed = true; }
                 if (Str(p, "ignorePatterns") is { } ig) { o.IgnorePatterns = Lines(ig); changed = true; }
@@ -230,7 +251,7 @@ sealed class Bridge : IAsyncDisposable
             keepVersions = Config.Options.KeepVersions, keepVersionsDays = Config.Options.KeepVersionsDays,
             pauseOnMetered = Config.Options.PauseOnMetered, pauseWhilePresenting = Config.Options.PauseWhilePresenting,
             ignorePatterns = string.Join("\n", Config.Options.IgnorePatterns), metered = AutoPause.IsMetered(),
-            versionsDir = VersionStore.Root,
+            versionsDir = VersionStore.Root, versionsFolder = Config.Options.VersionsFolder ?? "", versionsDefault = string.IsNullOrWhiteSpace(Config.Options.VersionsFolder),
             explorerMenu = Config.Options.ExplorerMenu, sharedPairsFile = Config.Options.SharedPairsFile,
         },
     };
@@ -241,7 +262,7 @@ sealed class Bridge : IAsyncDisposable
         return new
         {
             id = p.Id, kind = p.Kind.ToString(), name = p.Name, account = p.Account, server = p.Server, user = p.User,
-            remotePath = p.RemotePath, remoteFullPath = p.RemoteFullPath, localPath = p.LocalFullPath, localPathStored = p.LocalPath, docs = p.GoogleDocs.ToString(),
+            onDemand = p.OnDemand, remotePath = p.RemotePath, remoteFullPath = p.RemoteFullPath, localPath = p.LocalFullPath, localPathStored = p.LocalPath, docs = p.GoogleDocs.ToString(),
             machines = string.Join(", ", p.Machines), activeHere = p.ActiveHere,
             cloudOnlyMinMB = p.CloudOnlyMinMB, cloudOnlyFolders = p.CloudOnlyFolders, pollSeconds = p.PollSeconds,
             includeFolders = p.IncludeFolders, excludeFolders = p.ExcludeFolders,
@@ -502,6 +523,7 @@ sealed class Bridge : IAsyncDisposable
         pair.Machines = (Str(d, "machines") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         pair.GoogleDocs = Enum.TryParse<GoogleDocsMode>(Str(d, "docs"), out var docs) ? docs : GoogleDocsMode.Export;
         pair.Direction = Enum.TryParse<SyncDirection>(Str(d, "direction"), out var dir) ? dir : SyncDirection.TwoWay;
+        pair.OnDemand = d.TryGetProperty("onDemand", out var od) && od.ValueKind == JsonValueKind.True;
         pair.IgnorePatterns = Lines(Str(d, "ignorePatterns"));
         pair.IncludeFolders = StrList(d, "includeFolders");
         pair.ExcludeFolders = StrList(d, "excludeFolders");
@@ -585,13 +607,20 @@ sealed class Bridge : IAsyncDisposable
                              "'name (conflict <computer> <time>)' and uploaded next to the remote one). Nothing is deleted.");
             if (pair.Kind == RemoteKind.Drive && pair.RemotePath.Length == 0)
                 messages.Add("This syncs your whole My Drive. Everything in it is downloaded to this computer unless cloud-only rules keep large files or folders online.");
-            if (pair.ActiveHere && ManagedSyncRoot(pair.LocalFullPath) is { } root)
+            if (original is { OnDemand: true } && (!pair.OnDemand || original.Id != pair.Id))
+                messages.Add("Files on demand ends for this folder: what is on this computer stays as ordinary files, and everything that is online-only now will be downloaded.");
+            if (pair.ActiveHere && !pair.OnDemand && ManagedSyncRoot(pair.LocalFullPath) is { } root)
                 messages.Add($"The local folder is inside {root}, which Windows itself syncs to another server (OneDrive or your organisation's Work Folders). " +
                              "Everything Unisono downloads there ends up in that place too.");
             if (messages.Count > 0) return new { status = "confirm", messages };
         }
 
         if (!exists) await createRemote();
+        if (original is { OnDemand: true } && original.ActiveHere && (!pair.OnDemand || original.Id != pair.Id))
+        {
+            await _host.StopAsync(); // restarted below; the state must not change under a running cycle
+            CloudFiles.TurnOff(original, _log);
+        }
         if (pair.ActiveHere) Directory.CreateDirectory(pair.LocalFullPath);
         if (original != null)
         {
@@ -617,6 +646,16 @@ sealed class Bridge : IAsyncDisposable
             // Nesting is fine (the outer pair leaves the inner folder alone); the very same folder is not.
             if (WithSep(other.LocalFullPath).Equals(mine, StringComparison.OrdinalIgnoreCase))
                 return $"The pair '{other.Name}' already syncs {other.LocalFullPath}. Each local folder can belong to one pair only.";
+        }
+        if (p.OnDemand && p.ActiveHere)
+        {
+            if (CloudFiles.WhyNot(p.LocalFullPath, original is { OnDemand: true } && original.Id == p.Id ? original : null) is { } why) return why;
+            foreach (var other in Config.Pairs.Where(o => !ReferenceEquals(o, original) && o.ActiveHere))
+            {
+                var theirs = WithSep(other.LocalFullPath);
+                if (theirs.StartsWith(mine, StringComparison.OrdinalIgnoreCase) || mine.StartsWith(theirs, StringComparison.OrdinalIgnoreCase))
+                    return $"With files on demand the folder cannot contain or lie inside another pair's folder ({other.LocalFullPath}); Windows does not allow that.";
+            }
         }
         if (p.Kind == RemoteKind.Folder)
         {

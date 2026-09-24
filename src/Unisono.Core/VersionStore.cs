@@ -7,7 +7,26 @@ namespace Unisono;
 /// </summary>
 public static class VersionStore
 {
-    public static string Root => Path.Combine(AppPaths.DataDir, "versions");
+    /// <summary>The configured folder (<see cref="AppOptions.VersionsFolder"/>, set when the config is loaded); null = default.</summary>
+    public static string? Folder { get; set; }
+
+    public static string DefaultRoot => Path.Combine(AppPaths.DataDir, "versions");
+
+    public static string Root => string.IsNullOrWhiteSpace(Folder) ? DefaultRoot : Path.GetFullPath(Environment.ExpandEnvironmentVariables(Folder));
+
+    /// <summary>Moves every kept version from one root to another (merging; a copy across drives), then removes the old root.</summary>
+    public static void MoveAll(string from, string to)
+    {
+        if (!Directory.Exists(from) || Path.GetFullPath(from).TrimEnd('\\').Equals(Path.GetFullPath(to).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) return;
+        foreach (var f in Directory.EnumerateFiles(from, "*", SearchOption.AllDirectories))
+        {
+            var target = Path.Combine(to, Path.GetRelativePath(from, f));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            if (File.Exists(target)) { File.SetAttributes(f, FileAttributes.Normal); File.Delete(f); continue; }
+            File.Move(f, target); // File.Move copies across drives
+        }
+        try { Directory.Delete(from, recursive: true); } catch { /* something still open: harmless leftovers */ }
+    }
 
     public static string DirFor(SyncPair pair) => Path.Combine(Root, pair.Id);
 

@@ -13,6 +13,8 @@
             download-only
     nas     the same core on a NAS folder (needs -NasServer, -NasUser and a stored login for them)
     folder  the same core with an ordinary folder as the other side (-OtherFolder, default a scratch folder)
+    ondemand  files on demand: placeholders, download on open, keep / free up space, edits, deletes, renames, turning it off
+              (registers a temporary sync root in Explorer; removed at the end)
     ui      starts the window on a scratch config and checks that every part of the page renders without errors
 
 .EXAMPLE
@@ -159,6 +161,68 @@ function Test-Core([hashtable]$pair, [string]$label) {
     Check "$label an idle cycle changes nothing" { -not (($idle -join "`n") -match "(uploaded|downloaded|moved|deleted|recycled)") }
 }
 
+# ------------------------------------------------------------ files on demand
+function Attr($c, $rel) { [int][IO.File]::GetAttributes((Join-Path $c.Local $rel)) }
+function IsOnline($c, $rel) { $a = Attr $c $rel; ($a -band 0x400) -ne 0 -and ($a -band (0x400000 -bor 0x40000 -bor 0x1000)) -ne 0 }
+function Test-OnDemand([hashtable]$pair) {
+    $a = Computer "od-A" $pair
+    $b = Computer "od-B" ($pair + @{ OnDemand = $true })
+    try {
+        Section "ondemand: placeholders"
+        Put $a "hello.txt" "hello"; Put $a "sub\note.txt" "a note"; Put $a "big\data.bin" ("x" * 100000)
+        $null = Sync $a; Start-Sleep 2; $outB = Sync $b
+        Check "ondemand remote files appear locally" { (Has $b "hello.txt") -and (Has $b "sub\note.txt") -and (Has $b "big\data.bin") }
+        Check "ondemand ... as online-only placeholders, nothing downloaded" { (IsOnline $b "hello.txt") -and (IsOnline $b "big\data.bin") -and -not (($outB -join "`n") -match "downloaded") }
+        Check "ondemand ... with the right size" { (Get-Item -LiteralPath (Join-Path $b.Local "big\data.bin")).Length -eq (Get-Item -LiteralPath (Join-Path $a.Local "big\data.bin")).Length }
+
+        Section "ondemand: open an online-only file"
+        Use-Data $b.Data
+        $run = Start-Process $cli -ArgumentList "run" -PassThru -WindowStyle Hidden
+        Start-Sleep 6
+        $text = try { (Get-Content -LiteralPath (Join-Path $b.Local "hello.txt") -Raw).Trim() } catch { "ERR $_" }
+        Stop-Process -Id $run.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 2
+        Check "ondemand opening downloads the content" { $text -eq "hello" }
+        Check "ondemand ... and it stays on this computer" { -not (IsOnline $b "hello.txt") }
+
+        Section "ondemand: always keep on this device"
+        attrib +P (Join-Path $b.Local "sub") | Out-Null
+        $out = Sync $b
+        Check "ondemand a kept folder's files are downloaded" { -not (IsOnline $b "sub\note.txt") -and (Text $b "sub\note.txt") -eq "a note" }
+        Put $a "sub\later.txt" "added later"; $null = Sync $a; Start-Sleep 2; $null = Sync $b
+        Check "ondemand ... new files in it too" { (Has $b "sub\later.txt") -and -not (IsOnline $b "sub\later.txt") }
+
+        Section "ondemand: free up space"
+        attrib -P +U (Join-Path $b.Local "sub\note.txt") | Out-Null
+        $out = Sync $b
+        Check "ondemand freeing up space makes it online-only again" { (IsOnline $b "sub\note.txt") -and (($out -join "`n") -match "freed up space") }
+
+        Section "ondemand: edits, remote changes, deletes, renames"
+        Put $b "hello.txt" "edited on B"
+        $null = Sync $b; Start-Sleep 2; $null = Sync $a
+        Check "ondemand a local edit is uploaded" { (Text $a "hello.txt") -eq "edited on B" }
+        Put $a "big\data.bin" ("y" * 200000); $null = Sync $a; Start-Sleep 2; $outB = Sync $b
+        Check "ondemand a remote change updates the placeholder only" { (IsOnline $b "big\data.bin") -and (Get-Item -LiteralPath (Join-Path $b.Local "big\data.bin")).Length -eq (Get-Item -LiteralPath (Join-Path $a.Local "big\data.bin")).Length -and -not (($outB -join "`n") -match "downloaded") }
+        [IO.File]::Delete((Join-Path $b.Local "big\data.bin"))
+        $null = Sync $b; Start-Sleep 2; $null = Sync $a
+        Check "ondemand deleting an online-only file deletes it remotely" { -not (Has $a "big\data.bin") }
+        Rename-Item (Join-Path $b.Local "sub\note.txt") "renamed.txt"
+        $outB = Sync $b; Start-Sleep 2; $null = Sync $a
+        Check "ondemand renaming an online-only file is a remote move" { (($outB -join "`n") -match "moved remotely") -and (Has $a "sub\renamed.txt") -and -not (Has $a "sub\note.txt") }
+        Check "ondemand ... without downloading it" { IsOnline $b "sub\renamed.txt" }
+        Put $b "fromB.txt" "new on B"; $null = Sync $b; Start-Sleep 2; $null = Sync $a
+        Check "ondemand a new local file is uploaded" { (Text $a "fromB.txt") -eq "new on B" }
+        $idle = Sync $b
+        Check "ondemand an idle cycle changes nothing" { -not (($idle -join "`n") -match "(uploaded|downloaded|moved|deleted|recycled|online-only)") }
+
+        Section "ondemand: turning it off"
+        Use-Data $b.Data; & $cli ondemand-off 2>&1 | Out-Null
+        $null = Sync $b
+        Check "ondemand after turning it off every file is a real local file" { (Text $b "sub\renamed.txt") -eq "a note" -and -not (IsOnline $b "sub\renamed.txt") -and (Text $b "hello.txt") -eq "edited on B" }
+        Check "ondemand ... and nothing was deleted remotely" { (Has $a "sub\renamed.txt") -and (Has $a "sub\later.txt") -and (Has $a "fromB.txt") }
+    }
+    finally { Use-Data $b.Data; & $cli ondemand-off 2>&1 | Out-Null }
+}
+
 # ------------------------------------------------------------------ UI
 function Test-Ui {
     Section "ui: window renders"
@@ -224,8 +288,21 @@ if ($Suite -contains "folder") {
         Test-Core @{ Kind = "Folder"; RemotePath = $other } "folder"
         Check "folder the files are plain files in the other folder" { (Test-Path -LiteralPath "$other\kept.txt") -and (Test-Path -LiteralPath "$other\folder2") }
         Check "folder no temporary copies are left behind" { @(Get-ChildItem -LiteralPath $other -Recurse -Filter "*.unisono-part").Count -eq 0 }
+        Section "folder: previous versions in a folder of your choice"
+        $v = Computer "folder-V" @{ Kind = "Folder"; RemotePath = $other }
+        $vdir = New-TestDir "$work\my-versions"
+        $cfg = Get-Content "$($v.Data)\config.json" -Raw | ConvertFrom-Json; $cfg.Options | Add-Member VersionsFolder $vdir -Force
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content "$($v.Data)\config.json" -Encoding UTF8
+        $null = Sync $v
+        Set-Content -LiteralPath "$other\kept.txt" "changed on the other side"; (Get-Item -LiteralPath "$other\kept.txt").LastWriteTime = (Get-Date).AddMinutes(-1)
+        $null = Sync $v
+        Check "folder a replaced file is kept in the chosen versions folder" { @(Get-ChildItem $vdir -Recurse -File).Count -ge 1 -and -not (Test-Path "$($v.Data)\versions") }
     }
     finally { if (-not $KeepFiles -and $OtherFolder) { Wipe $other } }
+}
+if ($Suite -contains "ondemand") {
+    $other = "$work\od-other"; New-TestDir $other | Out-Null
+    Test-OnDemand @{ Kind = "Folder"; RemotePath = $other }
 }
 if ($Suite -contains "ui") { Test-Ui }
 

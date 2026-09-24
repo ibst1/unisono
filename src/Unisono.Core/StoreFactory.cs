@@ -27,7 +27,18 @@ public sealed class StoreFactory : IAsyncDisposable
             throw new InvalidOperationException($"the Google account {acct.Email ?? acct.Id} needs to sign in again; use Accounts in the Unisono window");
         return _drive[acct.Id] = await DriveClient.ConnectAsync(acct.Id, ct);
     }
+
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
+    /// <summary>Safe to call concurrently: the sync loop and on-open downloads share the connections.</summary>
     public async Task<IRemoteStore> CreateAsync(SyncPair pair, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try { return await CreateCoreAsync(pair, ct); }
+        finally { _gate.Release(); }
+    }
+
+    private async Task<IRemoteStore> CreateCoreAsync(SyncPair pair, CancellationToken ct)
     {
         if (pair.Kind == RemoteKind.Folder)
             return new FolderStore(pair);

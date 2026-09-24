@@ -24,7 +24,8 @@ sealed class HostForm : Form
     private readonly WebView2 _web = new() { Dock = DockStyle.Fill };
     private readonly NotifyIcon _tray = new();
     private readonly ToolStripMenuItem _trayPause = new("Pause");
-    private readonly Dictionary<Color, Icon> _icons = new();
+    private readonly Dictionary<(Color, string), Icon> _icons = new();
+    private readonly System.Windows.Forms.Timer _trayTimer = new() { Interval = 300 };
     private readonly List<object> _history = new();
     private readonly System.Windows.Forms.Timer _stateTimer = new() { Interval = 250 };
     private bool _webReady;
@@ -54,6 +55,9 @@ sealed class HostForm : Form
             OnUi(() => Post(new { @event = "log", data = entry }));
         };
         _host.StateChanged += () => OnUi(() => { UpdateTray(); QueueState(); });
+        // Transfers start and end in bursts: redraw the tray icon at most a few times a second.
+        _trayTimer.Tick += (_, _) => { _trayTimer.Stop(); UpdateTray(); };
+        SyncActivity.Changed += () => OnUi(() => { if (!_trayTimer.Enabled) _trayTimer.Start(); });
         _host.PairChanged += _ => OnUi(QueueState);
         _host.CycleCompleted += (ps, stats) =>
         {
@@ -224,8 +228,24 @@ sealed class HostForm : Form
         _tray.BalloonTipClicked += (_, _) => ShowFromTray();
     }
 
+    /// <summary>
+    /// The tray icon: arrows while files go up or down, otherwise a coloured U for the overall state. Hovering shows
+    /// what is being transferred, or when the last sync ran, what has moved since start and which pair has trouble.
+    /// </summary>
     private void UpdateTray()
     {
+        var snap = SyncActivity.Now();
+        if (snap.Active.Count > 0)
+        {
+            var ups = snap.Active.Count(t => t.Dir == SyncActivity.Direction.Up);
+            var downs = snap.Active.Count - ups;
+            var glyph = ups > 0 && downs > 0 ? "both" : ups > 0 ? "up" : "down";
+            var lines = new List<string> { "Unisono: " + string.Join(", ", new[] { downs > 0 ? $"downloading {downs}" : null, ups > 0 ? $"uploading {ups}" : null }.Where(s => s != null)) };
+            lines.AddRange(snap.Active.Take(4).Select(t => $"{(t.Dir == SyncActivity.Direction.Up ? "\u2191" : "\u2193")} {Shorten(PathUtil.NameOf(t.Rel), 38)} ({Ui.Size(t.Size)})"));
+            if (snap.Active.Count > 4) lines.Add($"and {snap.Active.Count - 4} more");
+            SetTray(lines, Ui.Blue, glyph);
+            return;
+        }
         var (text, color) = _host.State switch
         {
             HostState.Syncing => ("Syncing...", Ui.Blue),
@@ -238,15 +258,36 @@ sealed class HostForm : Form
         };
         if (_host.Paused && _host.State != HostState.Syncing) (text, color) = ("Paused", Ui.Amber);
         else if (_host.PausedBecause is { } why && _host.State != HostState.Syncing) (text, color) = ("Paused: " + why, Ui.Amber);
-        _tray.Text = ("Unisono: " + text) is var t && t.Length > 63 ? t[..63] : t;
-        _tray.Icon = IconFor(color);
-        Icon = IconFor(color);
+        var details = new List<string> { "Unisono: " + text };
+        var last = _host.Pairs.Where(p => p.LastSync != null).Select(p => p.LastSync!.Value).DefaultIfEmpty().Max();
+        if (last != default) details.Add($"Last sync {last:HH:mm}" + (_host.Pairs.Count > 1 ? $", {_host.Pairs.Count} pairs" : ""));
+        if (snap.Downloaded + snap.Uploaded > 0)
+            details.Add($"Since start: \u2193{snap.Downloaded} ({Ui.Size(snap.DownBytes)}) \u2191{snap.Uploaded} ({Ui.Size(snap.UpBytes)})");
+        foreach (var bad in _host.Pairs.Where(p => p.LastError != null).Take(2))
+            details.Add($"{Shorten(bad.Pair.Name, 24)}: {bad.LastError}");
+        SetTray(details, color, "U");
         _trayPause.Text = _host.Paused ? "Resume" : "Pause";
     }
 
-    private Icon IconFor(Color c)
+    /// <summary>Tooltips hold 127 characters: whole lines as long as they fit, the last one cut.</summary>
+    private void SetTray(List<string> lines, Color color, string glyph)
     {
-        if (!_icons.TryGetValue(c, out var icon)) _icons[c] = icon = Ui.StatusIcon(c);
+        var text = lines[0];
+        foreach (var l in lines.Skip(1))
+        {
+            if (text.Length + 1 + l.Length <= 127) text += "\n" + l;
+            else { if (text.Length < 120) text += "\n" + l[..(126 - text.Length - 1)] + "\u2026"; break; }
+        }
+        _tray.Text = text.Length > 127 ? text[..127] : text;
+        _tray.Icon = IconFor(color, glyph);
+        Icon = IconFor(color, "U");
+    }
+
+    private static string Shorten(string s, int max) => s.Length <= max ? s : s[..(max - 1)] + "\u2026";
+
+    private Icon IconFor(Color c, string glyph = "U")
+    {
+        if (!_icons.TryGetValue((c, glyph), out var icon)) _icons[(c, glyph)] = icon = Ui.StatusIcon(c, glyph);
         return icon;
     }
 

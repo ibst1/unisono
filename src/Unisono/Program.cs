@@ -6,6 +6,7 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
+        CloudFiles.ExposePlaceholders();
         // Explorer's context menu: open the item online and exit, without touching the tray app.
         if (args.Length >= 3 && args[0] == "--open")
         {

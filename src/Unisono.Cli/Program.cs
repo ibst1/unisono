@@ -16,6 +16,7 @@ var asm = Assembly.GetExecutingAssembly();
 var version = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "?";
 var buildTime = asm.GetCustomAttributes<AssemblyMetadataAttribute>().FirstOrDefault(a => a.Key == "BuildTime")?.Value;
 
+CloudFiles.ExposePlaceholders();
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 var ct = cts.Token;
@@ -29,6 +30,18 @@ try
     AppPaths.EnsureDataDir();
     switch (args.Length > 0 ? args[0].ToLowerInvariant() : "help")
     {
+        case "ondemand-off":
+        {
+            // Ends files on demand for every pair that has it (placeholders back to ordinary files, sync roots unregistered).
+            var config = Config.Load();
+            foreach (var p in config.Pairs.Where(p => p.OnDemand && p.ActiveHere))
+            {
+                CloudFiles.TurnOff(p, log);
+                p.OnDemand = false;
+            }
+            config.Save();
+            return 0;
+        }
         case "version":
             Console.WriteLine($"Unisono {version}{(buildTime != null ? $" ({buildTime})" : "")}");
             Console.WriteLine($"data: {AppPaths.DataDir}");
@@ -168,6 +181,7 @@ try
             var create = args.Contains("--create");
             var insecure = args.Contains("--insecure");
             var folder = args.Contains("--folder");
+            var onDemand = args.Contains("--on-demand");
             var nasIdx = Array.IndexOf(args, "--nas");
             string? server = null, user = null;
             if (nasIdx >= 0)
@@ -177,7 +191,7 @@ try
                 user = args[nasIdx + 2];
                 args = args.Where((_, i) => i < nasIdx || i > nasIdx + 2).ToArray();
             }
-            args = args.Where(a => a is not ("--create" or "--insecure" or "--folder")).ToArray();
+            args = args.Where(a => a is not ("--create" or "--insecure" or "--folder" or "--on-demand")).ToArray();
             if (args.Length < 3) { Usage(); return 2; }
             var localPath = Path.GetFullPath(args[2]);
             var pair = new SyncPair
@@ -188,7 +202,9 @@ try
                 Server = server,
                 User = user,
                 AllowInvalidCertificate = insecure,
+                OnDemand = onDemand,
             };
+            if (onDemand && CloudFiles.WhyNot(localPath) is { } why) { Console.Error.WriteLine("error: " + why); return 1; }
             if (pair.Kind == RemoteKind.Synology) pair.PollSeconds = 60;
 
             var config = Config.Load();
@@ -257,10 +273,16 @@ try
                 var failed = 0;
                 foreach (var p in config.ActivePairs)
                 {
-                                        try
+                    try
                     {
                         var engine = new SyncEngine(await stores.CreateAsync(p, ct), p, log, config.Pairs, config.Options) { DryRun = dryRun };
                         var s = await engine.RunCycleAsync(ct);
+                        // Files still being written were left alone: a one-off sync waits for them rather than skipping them.
+                        for (var round = 0; round < 5 && engine.NeedsFollowUp && !dryRun; round++)
+                        {
+                            await Task.Delay(2500, ct);
+                            s = await engine.RunCycleAsync(ct);
+                        }
                         failed += s.Errors;
                         if (dryRun) Console.WriteLine($"[{p.Name}] dry run: {engine.Plan.Count} action(s) planned, nothing changed");
                     }
@@ -369,6 +391,8 @@ static void Usage()
     Console.WriteLine("  UnisonoCli nas login <server> <user> [--insecure]   |   UnisonoCli nas logout <server> [user]");
     Console.WriteLine("  UnisonoCli init <remote/path> <localDir> [--create] [--nas <server> <user>] [--insecure]");
     Console.WriteLine("  UnisonoCli init <otherDir> <localDir> --folder [--create]   (two ordinary folders, e.g. a network share)");
+    Console.WriteLine("  UnisonoCli init ... --on-demand      files on demand: online-only placeholders, downloaded when opened or kept");
+    Console.WriteLine("  UnisonoCli ondemand-off              end files on demand for all pairs (keeps what is local, unregisters)");
     Console.WriteLine("  UnisonoCli sync [-v] [--dry-run]   |   UnisonoCli run [-v]   |   UnisonoCli config   |   UnisonoCli version");
     Console.WriteLine("  UnisonoCli ls [drive/path]   |   UnisonoCli pull <drive/path> <localDir>   |   UnisonoCli changes <token>");
 }

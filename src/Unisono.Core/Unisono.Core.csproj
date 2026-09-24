@@ -3,10 +3,12 @@
   <!-- Everything that is not UI: Drive and Synology backends, the sync engine and the sync host.
        Shared by the tray app (Unisono.exe) and the command line (UnisonoCli.exe). -->
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PlatformTarget>x64</PlatformTarget>
+    <!-- Cloud Files API callbacks and structures (files on demand). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>Unisono</RootNamespace>
     <AssemblyName>Unisono.Core</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
@@ -18,6 +20,8 @@
     <PackageReference Include="Google.Apis.Drive.v3" Version="1.76.0.4261" />
     <!-- DPAPI for the NAS password (per Windows user; no admin, no key management). -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <!-- Resume from sleep: sync right away. -->
+    <PackageReference Include="Microsoft.Win32.SystemEvents" Version="8.0.0" />
   </ItemGroup>
 
 </Project>

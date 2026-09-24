@@ -51,6 +51,12 @@ public interface IRemoteStore
     /// <summary>A browser URL for the item, used for links (cloud-only files, native documents). Only called when <see cref="CanLink"/>.</summary>
     Task<string> LinkUrlAsync(RemoteNode node, CancellationToken ct);
 
+    /// <summary>
+    /// The remote item behind an online-only placeholder, for downloading it when it is opened. <paramref name="identity"/>
+    /// is what the placeholder was created with (the remote id); stores whose ids are paths go by the relative path.
+    /// </summary>
+    RemoteNode HydrationNode(string rel, string identity, long size);
+
     /// <summary>Export a native document (Google Docs, Synology Office) to an Office file.</summary>
     Task ExportAsync(RemoteNode node, string exportMime, string localPath, CancellationToken ct);
 }

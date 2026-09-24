@@ -98,7 +98,7 @@ public sealed partial class SyncEngine
             var gone = _state.Entries.Values
                 .Where(e => e.Kind == EntryKind.File && !local.ContainsKey(e.Path) && remote.TryGetValue(e.Path, out var n) && !n.IsFolder && RemoteUnchanged(n, e))
                 .ToList();
-            var fresh = local.Values.Where(i => !i.IsDir && !_state.Entries.ContainsKey(i.RelPath) && !remote.ContainsKey(i.RelPath) && !derivedNames.Contains(i.RelPath))
+            var fresh = local.Values.Where(i => !i.IsDir && !_state.Entries.ContainsKey(i.RelPath) && !remote.ContainsKey(i.RelPath) && !derivedNames.Contains(i.RelPath) && !LocalScanner.Unsettled(i))
                 .ToList();
             foreach (var old in gone)
             {
@@ -108,7 +108,8 @@ public sealed partial class SyncEngine
                 var f = candidates[0];
                 // The same file must not also be the best match for another vanished file.
                 if (gone.Count(g => g.LocalSize == f.Size && g.LocalMtimeTicks == f.MtimeTicks) != 1) continue;
-                if (!string.Equals(PathUtil.Md5Of(f.FullPath), old.Md5, StringComparison.OrdinalIgnoreCase)) continue;
+                // An online-only placeholder cannot be hashed without downloading it; its unique size and time suffice.
+                if (!f.Dehydrated && !string.Equals(PathUtil.Md5Of(f.FullPath), old.Md5, StringComparison.OrdinalIgnoreCase)) continue;
                 if (!TryParent(f.RelPath, remote, out var parent)) continue;
 
                 var from = old.Path;
@@ -154,7 +155,7 @@ public sealed partial class SyncEngine
                         File.Move(Local(old.Path), Local(node.RelPath));
                     var l = local[old.Path];
                     local.Remove(old.Path);
-                    local[node.RelPath] = new LocalItem { RelPath = node.RelPath, FullPath = Local(node.RelPath), Size = l.Size, MtimeTicks = l.MtimeTicks };
+                    local[node.RelPath] = new LocalItem { RelPath = node.RelPath, FullPath = Local(node.RelPath), Size = l.Size, MtimeTicks = l.MtimeTicks, Attributes = l.Attributes };
                     MoveEntry(old.Path, node.RelPath, node);
                     fresh.Remove(node);
                     stats.Moved++;
@@ -217,7 +218,7 @@ public sealed partial class SyncEngine
             var l = local[key];
             local.Remove(key);
             var rel = newRel + key[oldRel.Length..];
-            local[rel] = new LocalItem { RelPath = rel, FullPath = Local(rel), IsDir = l.IsDir, Size = l.Size, MtimeTicks = l.MtimeTicks };
+            local[rel] = new LocalItem { RelPath = rel, FullPath = Local(rel), IsDir = l.IsDir, Size = l.Size, MtimeTicks = l.MtimeTicks, Attributes = l.Attributes };
         }
     }
 
