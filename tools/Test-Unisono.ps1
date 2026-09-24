@@ -195,6 +195,10 @@ function Test-WriteBack([string]$remote) {
         Check "drive ... another computer's export has the new text" { (Docx-Text (Join-Path $w2.Local "WB doc.docx")) -match "written back from wb-1" }
         $idle = Sync $w1
         Check "drive ... without exporting it again over the edited file" { -not (($idle -join "`n") -match "exported|wrote back") }
+        # A change made elsewhere must arrive within a cycle, not when Drive's change feed gets round to it (minutes).
+        New-Docx (Join-Path $w2.Local "WB doc.docx") "changed on wb-2"; (Get-Item -LiteralPath (Join-Path $w2.Local "WB doc.docx")).LastWriteTime = (Get-Date).AddMinutes(-1)
+        $null = Sync $w2; Start-Sleep 3; $null = Sync $w1
+        Check "drive a document changed elsewhere is exported again at once" { (Docx-Text $doc) -match "changed on wb-2" }
     }
     else {
         Write-Host "        (the Docs API is not enabled: tabs cannot be checked, so edits are kept as their own file)" -ForegroundColor DarkGray

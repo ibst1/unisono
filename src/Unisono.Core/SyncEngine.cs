@@ -323,6 +323,7 @@ public sealed partial class SyncEngine
     {
         // Local paths that are derived from the remote (exports, links) and must not be treated as new local files.
         var derived = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await FreshenExportedDocsAsync(remote, ct);
 
         foreach (var node in remote.Values.Where(n => !n.IsFolder).OrderBy(n => n.RelPath, StringComparer.OrdinalIgnoreCase).ToList())
         {
@@ -719,6 +720,39 @@ public sealed partial class SyncEngine
             };
             local[derivedRel] = new LocalItem { RelPath = derivedRel, FullPath = path, Size = info.Length, MtimeTicks = info.LastWriteTimeUtc.Ticks };
         });
+    }
+
+    private int _docsRotation;
+
+    /// <summary>
+    /// Drive's change feed reports edits of Google documents minutes late (5 minutes was measured), while asking for the
+    /// document itself is always current. So the exported documents are asked directly: the 10 most recently changed
+    /// every cycle, and 10 more of the rest in turn, which keeps it cheap with many documents.
+    /// </summary>
+    private async Task FreshenExportedDocsAsync(Dictionary<string, RemoteNode> remote, CancellationToken ct)
+    {
+        if (_store.Kind != "Drive" || !Down) return;
+        var docs = _state.Entries.Values.Where(e => e.Kind == EntryKind.Export && remote.ContainsKey(e.Path))
+            .OrderByDescending(e => e.DriveModifiedUtc).Select(e => e.Path).ToList();
+        if (docs.Count == 0) return;
+        var rest = docs.Skip(10).ToList();
+        var pick = docs.Take(10).ToList();
+        if (rest.Count > 0)
+        {
+            _docsRotation %= rest.Count;
+            pick.AddRange(rest.Skip(_docsRotation).Take(10));
+            _docsRotation += 10;
+        }
+        foreach (var rel in pick)
+        {
+            try
+            {
+                var fresh = await _store.RefreshAsync(remote[rel], ct);
+                if (fresh != null && fresh.ModifiedUtc != remote[rel].ModifiedUtc) remote[rel] = fresh;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { _log.Debug($"[{_pair.Name}] {rel}: {ex.Message}"); }
+        }
     }
 
     /// <summary>An edited export goes back into its Google document (Drive converts it; the old content stays in its history).</summary>
