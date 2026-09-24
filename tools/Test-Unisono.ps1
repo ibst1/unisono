@@ -179,6 +179,11 @@ function Docx-Text([string]$path) {
     $zip = [IO.Compression.ZipFile]::OpenRead($path)
     try { $r = New-Object IO.StreamReader(($zip.Entries | Where-Object FullName -eq "word/document.xml").Open()); $r.ReadToEnd() } finally { $zip.Dispose() }
 }
+function Docx-Decimals([string]$path) {
+    $zip = [IO.Compression.ZipFile]::OpenRead($path)
+    try { ($zip.Entries | Where-Object { $_.FullName -like "word/*.xml" } | ForEach-Object { [regex]::Matches((New-Object IO.StreamReader($_.Open())).ReadToEnd(), 'w:\w+="-?\d+\.\d+"').Count } | Measure-Object -Sum).Sum }
+    finally { $zip.Dispose() }
+}
 function Test-WriteBack([string]$remote) {
     Section "drive: Google Docs exports and local edits"
     Use-Data (Join-Path $work "init-data"); & $cli drive-newdoc $remote "WB doc" | Out-Null
@@ -186,6 +191,7 @@ function Test-WriteBack([string]$remote) {
     $null = Sync $w1
     $doc = Join-Path $w1.Local "WB doc.docx"
     Check "drive a Google document is exported as a writable docx" { (Test-Path -LiteralPath $doc) -and -not (Get-Item -LiteralPath $doc).IsReadOnly }
+    Check "drive ... repaired for Word (no fractional sizes, which make Word drop styles)" { (Docx-Decimals $doc) -eq 0 }
     New-Docx $doc "written back from wb-1"; (Get-Item -LiteralPath $doc).LastWriteTime = (Get-Date).AddMinutes(-1)
     $out = (Sync $w1) -join "`n"
     $w2 = Computer "wb-2" @{ Kind = "Drive"; RemotePath = $remote }

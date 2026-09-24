@@ -165,6 +165,14 @@ try
             Console.WriteLine($"moved {args[1]} to the Drive trash");
             return 0;
         }
+        case "docx-fix":
+        {
+            // Diagnostic: repair a docx the way exports are repaired (fractional sizes Word rejects).
+            if (args.Length < 2) { Usage(); return 2; }
+            DocxFix.Apply(args[1]);
+            Console.WriteLine($"repaired {args[1]}");
+            return 0;
+        }
         case "drive-docedit":
         {
             // Tests: edit a Google document through the Docs API, like typing in the browser.

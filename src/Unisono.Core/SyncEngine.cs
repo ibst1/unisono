@@ -617,6 +617,7 @@ public sealed partial class SyncEngine
         if (s != null && s.Kind == kind && s.DriveId == node.Id && s.LocalName == derivedRel && l is { IsDir: false })
         {
             var upToDate = s.DriveModifiedUtc == node.ModifiedUtc && !_staleExports.Contains(rel);
+            var needsRepair = kind == EntryKind.Export && s.ExportVersion < DocxFix.Version; // made before a repair: once more
             if (upToDate && s.Revision == null && _revisions.TryGetValue(rel, out var firstRev)) s.Revision = firstRev; // from now on
             var editedLocally = l.Size != s.LocalSize || l.MtimeTicks != s.LocalMtimeTicks;
             if (editedLocally && writeBack && Up)
@@ -662,7 +663,7 @@ public sealed partial class SyncEngine
                 s.LocalSize = l.Size; s.LocalMtimeTicks = l.MtimeTicks; // warn once per edit
                 if (upToDate) return;
             }
-            else if (upToDate)
+            else if (upToDate && !needsRepair)
             {
                 // Exports that can be written back are ordinary, writable files (earlier versions made them read-only).
                 if (writeBack && !DryRun && (l.Attributes & FileAttributes.ReadOnly) != 0)
@@ -718,7 +719,7 @@ public sealed partial class SyncEngine
             {
                 Path = rel, Kind = kind, DriveId = node.Id, Md5 = node.Md5, Size = node.Size, DriveModifiedUtc = node.ModifiedUtc,
                 LocalName = derivedRel, LocalSize = info.Length, LocalMtimeTicks = info.LastWriteTimeUtc.Ticks,
-                Revision = _revisions.GetValueOrDefault(rel),
+                Revision = _revisions.GetValueOrDefault(rel), ExportVersion = DocxFix.Version,
             };
             local[derivedRel] = new LocalItem { RelPath = derivedRel, FullPath = path, Size = info.Length, MtimeTicks = info.LastWriteTimeUtc.Ticks };
         });
@@ -787,7 +788,7 @@ public sealed partial class SyncEngine
         _state.Entries[rel] = new StateEntry
         {
             Path = rel, Kind = EntryKind.Export, DriveId = fresh.Id, Md5 = fresh.Md5, Size = fresh.Size, DriveModifiedUtc = fresh.ModifiedUtc,
-            LocalName = derivedRel, LocalSize = info.Length, LocalMtimeTicks = info.LastWriteTimeUtc.Ticks, Revision = revision,
+            LocalName = derivedRel, LocalSize = info.Length, LocalMtimeTicks = info.LastWriteTimeUtc.Ticks, Revision = revision, ExportVersion = DocxFix.Version,
         };
         _log.Info($"[{_pair.Name}] wrote back into the Google document: {derivedRel} ({size:N0} bytes)");
     }

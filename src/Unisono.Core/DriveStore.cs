@@ -168,6 +168,12 @@ public sealed class DriveStore : IRemoteStore
 
     public Task<string> LinkUrlAsync(RemoteNode node, CancellationToken ct) => Task.FromResult($"https://drive.google.com/open?id={node.Id}");
 
-    public Task ExportAsync(RemoteNode node, string exportMime, string localPath, CancellationToken ct) =>
-        _drive.ExportAsync(node.Id, node.Name, exportMime, localPath, node.ModifiedUtc, ct);
+    public async Task ExportAsync(RemoteNode node, string exportMime, string localPath, CancellationToken ct)
+    {
+        await _drive.ExportAsync(node.Id, node.Name, exportMime, localPath, node.ModifiedUtc, ct);
+        if (!exportMime.EndsWith("wordprocessingml.document", StringComparison.Ordinal)) return;
+        // Google's docx has sizes Word rejects (tab names lose their Title style): repair, keep the document's time.
+        DocxFix.Apply(localPath);
+        File.SetLastWriteTimeUtc(localPath, node.ModifiedUtc);
+    }
 }

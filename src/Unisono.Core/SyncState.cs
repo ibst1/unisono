@@ -35,6 +35,8 @@ public sealed class StateEntry
     public string? LocalName { get; set; }
     /// <summary>Exports of Google Docs: the document's revision (Docs API) the export was made from.</summary>
     public string? Revision { get; set; }
+    /// <summary>Exports: the <see cref="DocxFix.Version"/> they were made with (0 = before repairs existed).</summary>
+    public int ExportVersion { get; set; }
 }
 
 /// <summary>Per-pair, per-machine persistent state: the remote index (with its changes token) and the sync entries.</summary>
