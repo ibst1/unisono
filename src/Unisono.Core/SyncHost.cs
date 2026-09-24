@@ -271,7 +271,13 @@ public sealed class SyncHost : IAsyncDisposable
                                | (attributes ? NotifyFilters.Attributes : 0),
                 InternalBufferSize = 64 * 1024,
             };
-            FileSystemEventHandler onChange = (_, ev) => { if (!LocalScanner.IsIgnored(Path.GetFileName(ev.FullPath))) Nudge(); };
+            // Office's owner file (~$...) is ignored for syncing, but its removal means Word or Excel let go of a file whose update
+            // was held back while it was open: sync right away.
+            FileSystemEventHandler onChange = (_, ev) =>
+            {
+                var name = Path.GetFileName(ev.FullPath);
+                if (!LocalScanner.IsIgnored(name) || (ev.ChangeType == WatcherChangeTypes.Deleted && name.StartsWith("~$", StringComparison.Ordinal))) Nudge();
+            };
             w.Created += onChange; w.Changed += onChange; w.Deleted += onChange;
             w.Renamed += (_, _) => Nudge();
             w.Error += (_, ev) => { _log.Warn($"watcher: {ev.GetException().Message}"); Nudge(); };
