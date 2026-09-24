@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   End-to-end tests for Unisono against the real Google Drive and/or Synology NAS of the signed-in user.
 
@@ -12,6 +12,7 @@
     drive   sync both ways, conflicts, deletions, renames and moves, ignore rules, versions, dry run, selective sync,
             download-only
     nas     the same core on a NAS folder (needs -NasServer, -NasUser and a stored login for them)
+    folder  the same core with an ordinary folder as the other side (-OtherFolder, default a scratch folder)
     ui      starts the window on a scratch config and checks that every part of the page renders without errors
 
 .EXAMPLE
@@ -24,6 +25,7 @@ param(
     [string]$NasServer,
     [string]$NasUser,
     [string]$NasFolder,
+    [string]$OtherFolder,
     [switch]$KeepFiles
 )
 
@@ -161,6 +163,10 @@ function Test-Core([hashtable]$pair, [string]$label) {
 function Test-Ui {
     Section "ui: window renders"
     $c = Computer "ui" @{ Kind = "Drive"; RemotePath = "Unisono-tests-$stamp-ui"; Machines = @("NOT-THIS-COMPUTER") }
+    # A second pair of the folder kind, also inactive here, so both kinds of card are drawn.
+    $cfg = Get-Content "$($c.Data)\config.json" -Raw | ConvertFrom-Json
+    $cfg.Pairs += [pscustomobject]@{ Kind = "Folder"; RemotePath = "\\server\share\ui-test"; LocalPath = "$($c.Local)-2"; Machines = @("NOT-THIS-COMPUTER") }
+    $cfg | ConvertTo-Json -Depth 6 | Set-Content "$($c.Data)\config.json" -Encoding UTF8
     Use-Data $c.Data; $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9339"
     $p = Start-Process $app -PassThru; Start-Sleep 15
     $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = ""
@@ -181,7 +187,7 @@ function Test-Ui {
         $buf = New-Object byte[] 65536; $r = $ws.ReceiveAsync([ArraySegment[byte]]$buf, [Threading.CancellationToken]::None).Result
         $res = ([Text.Encoding]::UTF8.GetString($buf, 0, $r.Count) | ConvertFrom-Json).result.result.value | ConvertFrom-Json
         Check "ui every part renders without errors" { $res.errors.Count -eq 0 }
-        Check "ui the scratch pair is listed" { $res.pairs -eq 1 }
+        Check "ui the scratch pairs are listed" { $res.pairs -eq 2 }
         Check "ui stored accounts are listed" { ($res.google + $res.nas) -ge 1 }
     }
     catch { Check "ui debug connection" { $false } }
@@ -209,6 +215,17 @@ if ($Suite -contains "nas") {
     & $cli init $remote (New-TestDir "$work\init-nas") --create --nas $server $NasUser | Out-Null
     try { Test-Core @{ Kind = "Synology"; RemotePath = $remote; Server = $server; User = $NasUser } "nas" }
     finally { if (-not $KeepFiles) { & $cli nas api $server entry.cgi api=SYNO.FileStation.Delete version=2 method=delete "path=$remote" recursive=true | Out-Null } }
+}
+if ($Suite -contains "folder") {
+    # The other side may be a network folder (-OtherFolder \\server\share\tests); a subfolder is created and removed.
+    $other = if ($OtherFolder) { Join-Path $OtherFolder "unisono-tests-$stamp" } else { "$work\other-folder" }
+    New-TestDir $other | Out-Null
+    try {
+        Test-Core @{ Kind = "Folder"; RemotePath = $other } "folder"
+        Check "folder the files are plain files in the other folder" { (Test-Path -LiteralPath "$other\kept.txt") -and (Test-Path -LiteralPath "$other\folder2") }
+        Check "folder no temporary copies are left behind" { @(Get-ChildItem -LiteralPath $other -Recurse -Filter "*.unisono-part").Count -eq 0 }
+    }
+    finally { if (-not $KeepFiles -and $OtherFolder) { Wipe $other } }
 }
 if ($Suite -contains "ui") { Test-Ui }
 

@@ -45,6 +45,7 @@ section { margin-bottom: 28px; }
 .small { font-size: 12.5px; }
 .mono { font-family: var(--mono); font-size: 12.5px; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[hidden] { display: none !important; } /* .field and .check set display, which would otherwise win over the attribute */
 .btn { border: 1px solid var(--line); background: var(--panel2); border-radius: 7px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
 .btn:hover { border-color: var(--muted); }
 .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
@@ -245,9 +246,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 <div class="modal" id="dlgPair"><div class="dialog">
   <h3 id="pairTitle">Add sync pair</h3>
-  <div class="field"><label>Remote</label><div class="seg" id="pairKind"><button data-k="Drive">Google Drive</button><button data-k="Synology">Synology NAS</button></div></div>
-  <div class="field"><label id="pairAcctLabel">Account</label><select id="pairAcct"></select></div>
-  <div class="field"><label>Remote folder</label>
+  <div class="field"><label>Remote</label><div class="seg" id="pairKind"><button data-k="Drive">Google Drive</button><button data-k="Synology">Synology NAS</button><button data-k="Folder">Folder</button></div></div>
+  <div class="field" id="pairAcctRow"><label id="pairAcctLabel">Account</label><select id="pairAcct"></select></div>
+  <div class="field"><label id="pairRemoteLabel">Remote folder</label>
     <div class="inline"><input type="text" id="pairRemote"><button class="btn" id="pairBrowse">Browse...</button></div>
     <label class="check help" id="pairRootRow" style="margin-top:4px"><input type="checkbox" id="pairRoot"> Whole My Drive (the root folder)</label>
     <div class="help" id="pairRemoteHelp"></div>
@@ -265,7 +266,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       Folders under your profile are stored as <span class="mono">%USERPROFILE%</span> / <span class="mono">%APPDATA%</span>, so the pair also fits your other computers.</div></div>
   <div class="field"><label>Computers</label><input type="text" id="pairMachines" placeholder="empty = every computer">
     <div class="help" id="pairMachinesHelp"></div></div>
-  <div class="field"><label id="pairDocsLabel">Google Docs</label>
+  <div class="field" id="pairDocsRow"><label id="pairDocsLabel">Google Docs</label>
     <select id="pairDocs"><option value="Export">Export to docx / xlsx / pptx (read-only copies)</option>
       <option value="Link">Link that opens the document in the browser</option><option value="Skip">Skip</option></select></div>
   <div class="field drive-only"><label>Cloud-only files</label>
@@ -274,7 +275,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="field"><label>Ignore</label>
     <textarea id="pairIgnore" rows="3" placeholder="one pattern per line, gitignore style, e.g.&#10;*.log&#10;__pycache__/&#10;renv/library/"></textarea>
     <div class="help">On top of the patterns in Settings and any <span class="mono">.unisonoignore</span> file in the folder. Ignored items are never touched on either side.</div></div>  <div class="field"><label>Check remote every</label>
-    <div class="inline"><input type="number" id="pairPoll" min="10" max="3600" style="width:110px"> <span class="muted small">seconds; local changes are picked up at once</span></div></div>
+    <div class="inline"><input type="number" id="pairPoll" min="10" max="3600" style="width:110px"> <span class="muted small" id="pairPollHelp">seconds; local changes are picked up at once</span></div></div>
   <div id="pairMsg"></div>
   <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="pairSave">Save</button></div>
 </div></div>
@@ -485,6 +486,7 @@ function statusChip(p) {
   return `<span class="chip ${cls}">${esc(p.status)}</span>`;
 }
 function remoteLabel(p) {
+  if (p.kind === "Folder") return { what: "Folder", who: /^(\\\\|\/\/)/.test(p.remoteFullPath) ? "network" : "this computer", path: p.remotePath };
   if (p.kind === "Synology") {
     let host = p.server; try { host = new URL(p.server).host; } catch {}
     return { what: "Synology NAS", who: `${p.user} @ ${host}`, path: p.remotePath };
@@ -497,7 +499,7 @@ function renderPairs() {
     const r = remoteLabel(p);
     return `<div class="card" style="${p.activeHere ? "" : "opacity:.6"}">
       <div class="pair">
-        <div class="side"><div class="label">${esc(r.what)} &middot; ${esc(r.who)}</div><div class="ellipsis" title="${esc(r.path)}"><b>${esc(r.path)}</b></div></div>
+        <div class="side"><div class="label">${esc(r.what)} &middot; ${esc(r.who)}</div><div class="ellipsis" title="${esc(r.path)}">${p.kind === "Folder" ? `<a class="path" data-openremote="${esc(p.id)}"><b>${esc(r.path)}</b></a>` : `<b>${esc(r.path)}</b>`}</div></div>
         <div class="arrow">&#8646;</div>
         <div class="side"><div class="label">This computer</div><div class="ellipsis" title="${esc(p.localPath)}"><a class="path" data-openpair="${esc(p.id)}">${esc(p.localPath)}</a></div></div>
       </div>
@@ -513,6 +515,7 @@ function renderPairs() {
     </div>`;
   }).join("") : `<div class="empty">No sync pairs yet. Add an account first, then a pair.</div>`;
   document.querySelectorAll("[data-openpair]").forEach(a => a.onclick = () => call("open", { what: "pair", id: a.dataset.openpair }));
+  document.querySelectorAll("[data-openremote]").forEach(a => a.onclick = () => call("open", { what: "remote", id: a.dataset.openremote }));
   document.querySelectorAll("[data-editpair]").forEach(b => b.onclick = () => pairDialog(S.pairs.find(p => p.id === b.dataset.editpair)));
   document.querySelectorAll("[data-versions]").forEach(b => b.onclick = () => versionsDialog(S.pairs.find(p => p.id === b.dataset.versions)));
   document.querySelectorAll("[data-preview]").forEach(b => b.onclick = () => preview(S.pairs.find(p => p.id === b.dataset.preview), b));
@@ -571,24 +574,30 @@ let editing = null, pairKind = "Drive";
 function setKind(k) {
   pairKind = k;
   document.querySelectorAll("#pairKind button").forEach(b => b.classList.toggle("on", b.dataset.k === k));
-  const nas = k === "Synology";
+  const nas = k === "Synology", folder = k === "Folder";
+  $("#pairAcctRow").hidden = folder; $("#pairDocsRow").hidden = folder;
+  $("#pairRemoteLabel").textContent = folder ? "Other folder" : "Remote folder";
+  $("#pairPollHelp").textContent = folder ? "seconds; changes in either folder are usually picked up at once" : "seconds; local changes are picked up at once";
   $("#pairAcctLabel").textContent = nas ? "NAS login" : "Google account";
   $("#pairAcct").innerHTML = nas
     ? (S.nas.length ? S.nas.map(n => `<option value="${esc(n.server)}|${esc(n.user)}">${esc(n.user)} @ ${esc(n.server)}</option>`).join("") : `<option value="">(add a NAS login under Accounts first)</option>`)
     : (S.google.length ? S.google.map(a => `<option value="${esc(a.email || "")}">${esc(a.email || a.id)}${a.isDefault ? " (default)" : ""}</option>`).join("") : `<option value="">(add a Google account under Accounts first)</option>`);
   $("#pairDocsLabel").textContent = nas ? "Synology Office" : "Google Docs";
-  document.querySelectorAll("#dlgPair .drive-only").forEach(e => e.hidden = nas);
-  $("#pairRootRow").hidden = nas;
-  $("#pairRemoteHelp").textContent = nas
+  document.querySelectorAll("#dlgPair .drive-only").forEach(e => e.hidden = nas || folder);
+  $("#pairRootRow").hidden = nas || folder;
+  $("#pairRemoteHelp").textContent = folder
+    ? "A network folder (\\\\server\\share\\...), a mapped or USB drive, or another folder on this computer. Deletions go to the Recycle Bin, or to Unisono's trash folder where the drive has none."
+    : nas
     ? "A shared folder (e.g. /home) or a folder inside one. Turn on the Recycle Bin for that shared folder in DSM so deletions can be undone."
     : "A folder under My Drive, e.g. Projects/2026. Deletions go to the Drive trash.";
   if (!editing) $("#pairPoll").value = nas ? 60 : 30;
+  $("#pairBrowse").textContent = "Browse...";
   syncRootBox();
 }
 function syncRootBox() {
   const root = pairKind === "Drive" && $("#pairRoot").checked;
   $("#pairRemote").disabled = root; if (root) $("#pairRemote").value = "";
-  $("#pairRemote").placeholder = pairKind === "Drive" ? "Projects/2026" : "/home/Sync";
+  $("#pairRemote").placeholder = pairKind === "Drive" ? "Projects/2026" : pairKind === "Folder" ? "\\\\server\\share\\Projects" : "/home/Sync";
 }
 $("#pairRoot").onchange = syncRootBox;
 document.querySelectorAll("#pairKind button").forEach(b => b.onclick = () => { if (!editing) setKind(b.dataset.k); });
@@ -622,14 +631,18 @@ function pairDialog(p) {
 }
 $("#btnAddPair").onclick = () => pairDialog();
 $("#pairPickLocal").onclick = async () => { const r = await call("pickLocal", { current: $("#pairLocal").value }); if (r) $("#pairLocal").value = r; };
-$("#pairBrowse").onclick = () => browseDialog();
+$("#pairBrowse").onclick = async () => {
+  if (pairKind !== "Folder") return browseDialog();
+  const r = await call("pickLocal", { current: $("#pairRemote").value, title: "The other folder (a network folder, another drive, ...)" });
+  if (r && r !== $("#pairRemote").value) { $("#pairRemote").value = r; resetScope("a different folder was chosen"); }
+};
 
 // ------------------------------------------------------- selective sync
 // scope.include / scope.exclude are paths relative to the pair's remote folder. The picker keeps explicit
 // overrides per path; a folder inherits its parent's state. "All except unchecked" starts with everything on,
 // "Only checked" with everything off. Inside an explicitly unchecked folder nothing can be re-checked.
 let scope = { include: [], exclude: [] }, scopeBase = null;
-function currentRemote() { return pairKind === "Drive" && $("#pairRoot").checked ? "" : $("#pairRemote").value.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").replace(/^/, pairKind === "Synology" ? "/" : ""); }
+function currentRemote() { if (pairKind === "Folder") return $("#pairRemote").value.trim().replace(/[\\\/]+$/, ""); return pairKind === "Drive" && $("#pairRoot").checked ? "" : $("#pairRemote").value.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").replace(/^/, pairKind === "Synology" ? "/" : ""); }
 function renderScopeText() {
   const t = !scope.include.length && !scope.exclude.length ? "Everything in the remote folder"
     : scope.include.length ? `Only ${scope.include.length} folder(s)` + (scope.exclude.length ? `, minus ${scope.exclude.length}` : "") + "; new folders are ignored"
@@ -644,18 +657,20 @@ $("#pairRemote").addEventListener("input", () => resetScope("the remote folder c
 $("#pairRoot").addEventListener("change", () => resetScope("the remote folder changed"));
 
 $("#pairScopeBtn").onclick = () => {
-  const acct = $("#pairAcct").value; if (!acct) { toast("Choose an account first", true); return; }
+  const folder = pairKind === "Folder";
+  const acct = $("#pairAcct").value; if (!acct && !folder) { toast("Choose an account first", true); return; }
   const nas = pairKind === "Synology";
   const base = currentRemote();
-  if (!nas && !$("#pairRoot").checked && !base) { toast("Choose the remote folder first", true); return; }
+  if (folder && !base) { toast("Choose the other folder first", true); return; }
+  if (!nas && !folder && !$("#pairRoot").checked && !base) { toast("Choose the remote folder first", true); return; }
   if (nas && base.replace(/\//g, "") === "") { toast("Choose the remote folder first", true); return; }
   const [server, user] = nas ? acct.split("|") : [null, null];
-  const req = nas ? { kind: "Synology", server, user } : { kind: "Drive", account: acct };
+  const req = folder ? { kind: "Folder" } : nas ? { kind: "Synology", server, user } : { kind: "Drive", account: acct };
   let mode = scope.include.length ? "include" : "exclude";
   const over = new Map(); scope.include.forEach(r => over.set(r, true)); scope.exclude.forEach(r => over.set(r, false));
   // Folders another pair already syncs (same account, inside this remote folder) get a marker.
   const others = S.pairs.filter(p => p.kind === pairKind && (!editing || p.id !== editing.id) &&
-      (nas ? p.server === server && p.user === user : (p.account || (S.google.find(a => a.isDefault) || {}).email) === acct))
+      (folder ? true : nas ? p.server === server && p.user === user : (p.account || (S.google.find(a => a.isDefault) || {}).email) === acct))
     .map(p => p.remotePath);
   const relOfPath = path => { const b = base.replace(/\/+$/, ""); return b === "" ? path.replace(/^\/+/, "") : path.slice(b.length + 1); };
   const parentOf = r => r.includes("/") ? r.slice(0, r.lastIndexOf("/")) : "";
@@ -716,8 +731,8 @@ $("#pairScopeBtn").onclick = () => {
   // The root row is the remote folder itself: always synced, only its subfolders are chosen.
   const root = document.createElement("li");
   root.innerHTML = `<div class="node"><span class="tw">&#9662;</span><span class="ellipsis"><b></b></span></div><ul></ul>`;
-  root.querySelector("b").textContent = nas ? base : (base ? "My Drive/" + base : "My Drive");
-  root._key = nas ? base : null; root._path = base; root._loaded = false;
+  root.querySelector("b").textContent = nas || folder ? base : (base ? "My Drive/" + base : "My Drive");
+  root._key = nas || folder ? base : null; root._path = base; root._loaded = false;
   tree.firstChild.appendChild(root);
   document.querySelectorAll("#scopeMode button").forEach(b => b.onclick = () => { if (b.dataset.m !== mode) setMode(b.dataset.m, true); });
   setMode(mode, false);
@@ -731,13 +746,13 @@ $("#pairScopeBtn").onclick = () => {
 };
 
 function pairFromForm() {
-  const nas = pairKind === "Synology";
+  const nas = pairKind === "Synology", folder = pairKind === "Folder";
   const [server, user] = nas ? ($("#pairAcct").value || "|").split("|") : [null, null];
   return {
     includeFolders: scope.include, excludeFolders: scope.exclude,
     direction: $("#pairDirection").value, ignorePatterns: $("#pairIgnore").value, machines: $("#pairMachines").value,
-    kind: pairKind, account: nas ? null : $("#pairAcct").value, server, user,
-    remotePath: nas ? $("#pairRemote").value : ($("#pairRoot").checked ? "" : $("#pairRemote").value),
+    kind: pairKind, account: nas || folder ? null : $("#pairAcct").value, server, user,
+    remotePath: nas || folder ? $("#pairRemote").value : ($("#pairRoot").checked ? "" : $("#pairRemote").value),
     localPath: $("#pairLocal").value, docs: $("#pairDocs").value,
     cloudOnlyMinMB: parseInt($("#pairMb").value || "0", 10), cloudOnlyFolders: $("#pairFolders").value,
     pollSeconds: parseInt($("#pairPoll").value || "60", 10),
@@ -745,6 +760,9 @@ function pairFromForm() {
 }
 $("#pairSave").onclick = async () => {
   const btn = $("#pairSave"); $("#pairMsg").innerHTML = "";
+  if (pairKind === "Folder" && !$("#pairRemote").value.trim()) {
+    $("#pairMsg").innerHTML = `<div class="note err">Choose the other folder.</div>`; return;
+  }
   if (pairKind === "Drive" && !$("#pairRoot").checked && !$("#pairRemote").value.trim()) {
     $("#pairMsg").innerHTML = `<div class="note err">Choose a remote folder, or tick "Whole My Drive" to sync the root.</div>`; return;
   }

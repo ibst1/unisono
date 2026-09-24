@@ -27,7 +27,7 @@ static class ItemLocator
             {
                 "drive" or "docs" => p.Kind == RemoteKind.Drive,
                 "nas" => p.Kind == RemoteKind.Synology,
-                _ => true,
+                _ => p.Kind != RemoteKind.Folder, // nothing online to open for a folder pair
             })
             .OrderByDescending(p => p.LocalFullPath.Length) // pairs can nest: the innermost wins
             .FirstOrDefault()

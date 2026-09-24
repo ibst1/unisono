@@ -89,8 +89,8 @@ sealed class Bridge : IAsyncDisposable
             }
             case "pickLocal":
             {
-                using var d = new FolderBrowserDialog { Description = "Local folder to keep in sync", UseDescriptionForTitle = true, ShowNewFolderButton = true };
-                if (Str(p, "current") is { } cur && Directory.Exists(cur)) d.SelectedPath = cur;
+                using var d = new FolderBrowserDialog { Description = Str(p, "title") ?? "Local folder to keep in sync", UseDescriptionForTitle = true, ShowNewFolderButton = true };
+                if (Str(p, "current") is { Length: > 0 } cur && Directory.Exists(Environment.ExpandEnvironmentVariables(cur))) d.SelectedPath = Environment.ExpandEnvironmentVariables(cur);
                 return d.ShowDialog(_owner) == DialogResult.OK ? d.SelectedPath : null;
             }
             case "pair.save": return await SavePairAsync(p);
@@ -184,6 +184,7 @@ sealed class Bridge : IAsyncDisposable
                 if (what == "log") Ui.OpenFolder(_log.Directory);
                 else if (what == "data") Ui.OpenFolder(AppPaths.DataDir);
                 else if (what == "pair") Ui.OpenFolder(FindPair(Str(p, "id")).LocalFullPath);
+                else if (what == "remote" && FindPair(Str(p, "id")) is { Kind: RemoteKind.Folder } fp) Ui.OpenFolder(fp.RemoteFullPath);
                 else if (what == "versions")
                 {
                     var dir = Str(p, "id") is { } vid ? VersionStore.DirFor(FindPair(vid)) : VersionStore.Root;
@@ -240,7 +241,7 @@ sealed class Bridge : IAsyncDisposable
         return new
         {
             id = p.Id, kind = p.Kind.ToString(), name = p.Name, account = p.Account, server = p.Server, user = p.User,
-            remotePath = p.RemotePath, localPath = p.LocalFullPath, localPathStored = p.LocalPath, docs = p.GoogleDocs.ToString(),
+            remotePath = p.RemotePath, remoteFullPath = p.RemoteFullPath, localPath = p.LocalFullPath, localPathStored = p.LocalPath, docs = p.GoogleDocs.ToString(),
             machines = string.Join(", ", p.Machines), activeHere = p.ActiveHere,
             cloudOnlyMinMB = p.CloudOnlyMinMB, cloudOnlyFolders = p.CloudOnlyFolders, pollSeconds = p.PollSeconds,
             includeFolders = p.IncludeFolders, excludeFolders = p.ExcludeFolders,
@@ -431,6 +432,17 @@ sealed class Bridge : IAsyncDisposable
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var key = Str(p, "key");
+        if (Str(p, "kind") == "Folder")
+        {
+            // key = the folder's full path; path = how the page spells it (the pair's remote path + "/" + names).
+            var dir = new DirectoryInfo(Environment.ExpandEnvironmentVariables(key ?? Str(p, "path") ?? ""));
+            var shownPath = Str(p, "path") ?? "";
+            return dir.EnumerateDirectories()
+                .Where(d => (d.Attributes & (FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint)) == 0)
+                .OrderBy(d => d.Name, StringComparer.CurrentCultureIgnoreCase)
+                .Select(d => new { name = d.Name, key = d.FullName, path = shownPath.TrimEnd('/', '\\') + "/" + d.Name })
+                .ToList();
+        }
         if (Str(p, "kind") == "Synology")
         {
             var nas = await NasFor(Str(p, "server")!, Str(p, "user")!, cts.Token);
@@ -467,9 +479,20 @@ sealed class Bridge : IAsyncDisposable
         var create = p.TryGetProperty("create", out var cr) && cr.GetBoolean();
 
         var pair = original == null ? new SyncPair() : JsonSerializer.Deserialize<SyncPair>(JsonSerializer.Serialize(original))!;
-        pair.Kind = Str(d, "kind") == "Synology" ? RemoteKind.Synology : RemoteKind.Drive;
-        var remote = (Str(d, "remotePath") ?? "").Trim().Replace('\\', '/');
-        pair.RemotePath = pair.Kind == RemoteKind.Synology ? "/" + remote.Trim('/') : remote.Trim('/');
+        pair.Kind = Enum.TryParse<RemoteKind>(Str(d, "kind"), out var kind) ? kind : RemoteKind.Drive;
+        if (pair.Kind == RemoteKind.Folder)
+        {
+            // Written like the local folder: unchanged stays as it was, new gets %USERPROFILE% and the like where they fit.
+            var other = (Str(d, "remotePath") ?? "").Trim();
+            var otherFull = other.Length == 0 ? "" : Path.GetFullPath(Environment.ExpandEnvironmentVariables(other)).TrimEnd('\\');
+            pair.RemotePath = original is { Kind: RemoteKind.Folder } && original.RemoteFullPath.Equals(otherFull, StringComparison.OrdinalIgnoreCase)
+                ? original.RemotePath : otherFull.Length == 0 ? "" : SyncPair.Portable(otherFull);
+        }
+        else
+        {
+            var remote = (Str(d, "remotePath") ?? "").Trim().Replace('\\', '/');
+            pair.RemotePath = pair.Kind == RemoteKind.Synology ? "/" + remote.Trim('/') : remote.Trim('/');
+        }
         var local = (Str(d, "localPath") ?? "").Trim();
         var localFull = local.Length == 0 ? "" : Path.GetFullPath(Environment.ExpandEnvironmentVariables(local));
         // Unchanged folder: keep how it was written (the pair's identity and history depend on it). New or changed:
@@ -483,7 +506,14 @@ sealed class Bridge : IAsyncDisposable
         pair.IncludeFolders = StrList(d, "includeFolders");
         pair.ExcludeFolders = StrList(d, "excludeFolders");
         pair.PollSeconds = Math.Clamp(d.TryGetProperty("pollSeconds", out var ps) && ps.TryGetInt32(out var pv) ? pv : 60, 10, 3600);
-        if (pair.Kind == RemoteKind.Synology)
+        if (pair.Kind == RemoteKind.Folder)
+        {
+            pair.Server = pair.User = pair.Account = null;
+            pair.AllowInvalidCertificate = false;
+            pair.CloudOnlyMinMB = 0;
+            pair.CloudOnlyFolders = new();
+        }
+        else if (pair.Kind == RemoteKind.Synology)
         {
             pair.Server = Str(d, "server");
             pair.User = Str(d, "user");
@@ -512,7 +542,15 @@ sealed class Bridge : IAsyncDisposable
         var ct = cts.Token;
         bool exists, remoteHasItems;
         Func<Task> createRemote;
-        if (pair.Kind == RemoteKind.Synology)
+        if (pair.Kind == RemoteKind.Folder)
+        {
+            var full = pair.RemoteFullPath;
+            if (File.Exists(full)) throw new InvalidOperationException($"{full} is a file, not a folder.");
+            exists = Directory.Exists(full);
+            remoteHasItems = exists && Directory.EnumerateFileSystemEntries(full).Any();
+            createRemote = () => { Directory.CreateDirectory(full); return Task.CompletedTask; };
+        }
+        else if (pair.Kind == RemoteKind.Synology)
         {
             var nas = await NasFor(pair.Server!, pair.User!, ct);
             var info = await nas.GetInfoAsync(pair.RemotePath, ct);
@@ -579,6 +617,16 @@ sealed class Bridge : IAsyncDisposable
             // Nesting is fine (the outer pair leaves the inner folder alone); the very same folder is not.
             if (WithSep(other.LocalFullPath).Equals(mine, StringComparison.OrdinalIgnoreCase))
                 return $"The pair '{other.Name}' already syncs {other.LocalFullPath}. Each local folder can belong to one pair only.";
+        }
+        if (p.Kind == RemoteKind.Folder)
+        {
+            if (p.RemotePath.Length == 0) return "Choose the other folder.";
+            var other = WithSep(p.RemoteFullPath);
+            if (other.Equals(mine, StringComparison.OrdinalIgnoreCase)) return "The two folders are the same folder.";
+            if (other.StartsWith(mine, StringComparison.OrdinalIgnoreCase) || mine.StartsWith(other, StringComparison.OrdinalIgnoreCase))
+                return "One folder lies inside the other; they would keep copying into themselves.";
+            if (other.StartsWith(WithSep(AppPaths.DataDir), StringComparison.OrdinalIgnoreCase) || other.StartsWith(WithSep(AppPaths.AuthDir), StringComparison.OrdinalIgnoreCase))
+                return "The other folder cannot be inside Unisono's own data folder.";
         }
         if (p.Kind == RemoteKind.Synology)
         {

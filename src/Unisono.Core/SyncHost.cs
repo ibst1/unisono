@@ -115,6 +115,9 @@ public sealed class SyncHost : IAsyncDisposable
             {
                 var w = TryWatch(p.Pair.LocalFullPath);
                 if (w != null) watchers.Add(w);
+                // A folder pair's other side is a folder too: watch it as well, so its changes come across at once.
+                // Network shares usually deliver these events; polling covers the ones that do not.
+                if (p.Pair.Kind == RemoteKind.Folder && TryWatch(p.Pair.RemoteFullPath) is { } rw) watchers.Add(rw);
             }
             var poll = TimeSpan.FromSeconds(pairs.Count == 0 ? 60 : Math.Max(5, pairs.Min(p => p.Pair.PollSeconds)));
             if (pairs.Count > 0)

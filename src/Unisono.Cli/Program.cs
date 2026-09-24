@@ -6,7 +6,7 @@ using File = Google.Apis.Drive.v3.Data.File;
 //   unisono auth                                    Google: sign in (opens the browser once) and print the account
 //   unisono nas login <server> <user>               Synology: store DSM credentials (DPAPI) after a test login
 //   unisono nas logout <server>                     Synology: forget stored credentials
-//   unisono init <remote/path> <localDir> [--create] [--nas <server> <user>]
+//   unisono init <remote/path> <localDir> [--create] [--nas <server> <user> | --folder]
 //   unisono sync [-v]                               run one sync cycle for every pair
 //   unisono run [-v]                                keep syncing: watch the local folders, poll the remote side
 //   unisono ls [drive/path] | pull <drive/path> <localDir> | changes <token>   Drive helpers
@@ -167,6 +167,7 @@ try
         {
             var create = args.Contains("--create");
             var insecure = args.Contains("--insecure");
+            var folder = args.Contains("--folder");
             var nasIdx = Array.IndexOf(args, "--nas");
             string? server = null, user = null;
             if (nasIdx >= 0)
@@ -176,13 +177,13 @@ try
                 user = args[nasIdx + 2];
                 args = args.Where((_, i) => i < nasIdx || i > nasIdx + 2).ToArray();
             }
-            args = args.Where(a => a is not ("--create" or "--insecure")).ToArray();
+            args = args.Where(a => a is not ("--create" or "--insecure" or "--folder")).ToArray();
             if (args.Length < 3) { Usage(); return 2; }
             var localPath = Path.GetFullPath(args[2]);
             var pair = new SyncPair
             {
-                Kind = server != null ? RemoteKind.Synology : RemoteKind.Drive,
-                RemotePath = server != null ? "/" + args[1].Replace('\\', '/').Trim('/') : args[1].Trim('/', '\\'),
+                Kind = folder ? RemoteKind.Folder : server != null ? RemoteKind.Synology : RemoteKind.Drive,
+                RemotePath = folder ? Path.GetFullPath(args[1]).TrimEnd('\\') : server != null ? "/" + args[1].Replace('\\', '/').Trim('/') : args[1].Trim('/', '\\'),
                 LocalPath = localPath,
                 Server = server,
                 User = user,
@@ -197,7 +198,12 @@ try
                 return 1;
             }
             // Verify the remote folder (or create it) before touching the config.
-            if (pair.Kind == RemoteKind.Synology)
+            if (pair.Kind == RemoteKind.Folder)
+            {
+                if (create) Directory.CreateDirectory(pair.RemoteFullPath);
+                else if (!Directory.Exists(pair.RemoteFullPath)) throw new DirectoryNotFoundException(pair.RemoteFullPath);
+            }
+            else if (pair.Kind == RemoteKind.Synology)
             {
                 var store = (SynologyStore)await stores.CreateAsync(pair, ct);
                 if (create) await store.EnsureRootAsync(ct);
@@ -362,6 +368,7 @@ static void Usage()
     Console.WriteLine("  UnisonoCli auth");
     Console.WriteLine("  UnisonoCli nas login <server> <user> [--insecure]   |   UnisonoCli nas logout <server> [user]");
     Console.WriteLine("  UnisonoCli init <remote/path> <localDir> [--create] [--nas <server> <user>] [--insecure]");
+    Console.WriteLine("  UnisonoCli init <otherDir> <localDir> --folder [--create]   (two ordinary folders, e.g. a network share)");
     Console.WriteLine("  UnisonoCli sync [-v] [--dry-run]   |   UnisonoCli run [-v]   |   UnisonoCli config   |   UnisonoCli version");
     Console.WriteLine("  UnisonoCli ls [drive/path]   |   UnisonoCli pull <drive/path> <localDir>   |   UnisonoCli changes <token>");
 }

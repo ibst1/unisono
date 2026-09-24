@@ -10,6 +10,8 @@ public enum RemoteKind
 {
     Drive,
     Synology,
+    /// <summary>An ordinary folder: a network share, a mapped or USB drive, or another local folder.</summary>
+    Folder,
 }
 
 public enum SyncDirection
@@ -37,7 +39,7 @@ public sealed class SyncPair
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public RemoteKind Kind { get; set; } = RemoteKind.Drive;
 
-    /// <summary>Drive: folder under My Drive, e.g. "Projects/Unisono" (empty = all of My Drive). Synology: absolute path starting with the shared folder, e.g. "/home/Sync".</summary>
+    /// <summary>Drive: folder under My Drive, e.g. "Projects/Unisono" (empty = all of My Drive). Synology: absolute path starting with the shared folder, e.g. "/home/Sync". Folder: a full path, e.g. "\\server\share\Projects" (may contain %VARS%).</summary>
     public string RemotePath { get; set; } = "";
 
     /// <summary>Older config files called it DrivePath; still accepted.</summary>
@@ -50,6 +52,10 @@ public sealed class SyncPair
     /// <summary>The local folder with environment variables expanded; what everything that touches the disk uses.</summary>
     [JsonIgnore]
     public string LocalFullPath => string.IsNullOrWhiteSpace(LocalPath) ? "" : Path.GetFullPath(Environment.ExpandEnvironmentVariables(LocalPath));
+
+    /// <summary>Folder pairs: the other folder with environment variables expanded.</summary>
+    [JsonIgnore]
+    public string RemoteFullPath => Kind != RemoteKind.Folder || string.IsNullOrWhiteSpace(RemotePath) ? "" : Path.GetFullPath(Environment.ExpandEnvironmentVariables(RemotePath)).TrimEnd('\\');
 
     /// <summary>Computer names this pair is synced on; empty = every computer. For a pair list shared between computers.</summary>
     public List<string> Machines { get; set; } = new();
@@ -129,9 +135,12 @@ public sealed class SyncPair
     }
 
     [JsonIgnore]
-    public string Name => Kind == RemoteKind.Synology
-        ? $"NAS:{RemotePath}"
-        : RemotePath.Length == 0 ? "My Drive" : RemotePath;
+    public string Name => Kind switch
+    {
+        RemoteKind.Synology => $"NAS:{RemotePath}",
+        RemoteKind.Folder => RemotePath,
+        _ => RemotePath.Length == 0 ? "My Drive" : RemotePath,
+    };
 }
 
 /// <summary>Settings that apply to all pairs.</summary>

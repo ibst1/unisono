@@ -34,22 +34,48 @@ public static class RecycleBin
     public static string Delete(string fullPath)
     {
         ClearReadOnly(fullPath);
-        var op = new SHFILEOPSTRUCT
+        // On a network path the shell has no Recycle Bin: with "no confirmation" it deletes for good and still reports success.
+        if (!IsNetwork(fullPath))
         {
-            wFunc = FO_DELETE,
-            pFrom = fullPath + "\0\0", // double-null terminated list
-            fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI,
-        };
-        var rc = SHFileOperation(ref op);
-        if (rc == 0 && !op.fAnyOperationsAborted && !Exists(fullPath))
-            return "Recycle Bin";
+            var op = new SHFILEOPSTRUCT
+            {
+                wFunc = FO_DELETE,
+                pFrom = fullPath + "\0\0", // double-null terminated list
+                fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI,
+            };
+            var rc = SHFileOperation(ref op);
+            if (rc == 0 && !op.fAnyOperationsAborted && !Exists(fullPath))
+                return "Recycle Bin";
+        }
 
         var fallbackRoot = Path.Combine(AppPaths.DataDir, "trash", DateTime.Now.ToString("yyyyMMdd-HHmmss"));
         var target = Path.Combine(fallbackRoot, Path.GetFileName(fullPath));
         Directory.CreateDirectory(fallbackRoot);
-        if (Directory.Exists(fullPath)) Directory.Move(fullPath, target);
+        if (Directory.Exists(fullPath))
+        {
+            if (SameVolume(fullPath, fallbackRoot)) Directory.Move(fullPath, target);
+            else { CopyTree(fullPath, target); Directory.Delete(fullPath, recursive: true); } // Directory.Move cannot cross volumes
+        }
         else File.Move(fullPath, target, overwrite: true);
         return target;
+    }
+
+    public static bool IsNetwork(string path)
+    {
+        var full = Path.GetFullPath(path);
+        if (full.StartsWith(@"\\", StringComparison.Ordinal)) return true;
+        try { return new DriveInfo(Path.GetPathRoot(full)!).DriveType == DriveType.Network; }
+        catch { return false; }
+    }
+
+    private static bool SameVolume(string a, string b) =>
+        string.Equals(Path.GetPathRoot(Path.GetFullPath(a)), Path.GetPathRoot(Path.GetFullPath(b)), StringComparison.OrdinalIgnoreCase);
+
+    private static void CopyTree(string from, string to)
+    {
+        Directory.CreateDirectory(to);
+        foreach (var f in Directory.EnumerateFiles(from)) File.Copy(f, Path.Combine(to, Path.GetFileName(f)), overwrite: true);
+        foreach (var d in Directory.EnumerateDirectories(from)) CopyTree(d, Path.Combine(to, Path.GetFileName(d)));
     }
 
     private static bool Exists(string p) => File.Exists(p) || Directory.Exists(p);

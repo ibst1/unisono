@@ -250,6 +250,20 @@ Drive allows two siblings with the same name or names differing only in case, Wi
 does not, so the first one wins and the rest are reported; Docs exports have no md5, so
 change detection for them uses Drive's modified time.
 
+## Folder pairs
+
+The other side of a pair can also be an ordinary folder: a network share (`\\server\share\Projects`), a mapped or
+USB drive, or another folder on the same computer. Everything else works as with Drive and the NAS: two-way or
+one-way, selective sync, ignore rules, versions, renames and moves. Both folders are watched, so changes on either
+side are picked up at once where Windows reports them (network shares usually do), and polled otherwise.
+
+- Copies are written under a temporary name and swapped in, so nobody reading the other folder sees half a file.
+- Deletions go to the Recycle Bin. Network folders have none, so there the item is moved to Unisono's own trash
+  folder (`trash` in the data folder) instead of being deleted for good.
+- If the other folder cannot be reached (VPN off, drive not connected), the pair reports it and waits; nothing
+  is deleted locally.
+
+From the command line: `UnisonoCli init \\server\share\Projects C:\Work\Projects --folder`.
 ## Renames and moves
 
 A file or folder renamed or moved on one side is renamed or moved on the other, instead of
@@ -267,6 +281,7 @@ that is removed afterwards.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1                  # drive + ui
+powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite folder -OtherFolder \\server\share\tests
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite nas -NasServer myid -NasUser me -NasFolder "/home/tests"
 ```
 ## Building

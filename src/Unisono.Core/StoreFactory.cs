@@ -29,6 +29,8 @@ public sealed class StoreFactory : IAsyncDisposable
     }
     public async Task<IRemoteStore> CreateAsync(SyncPair pair, CancellationToken ct)
     {
+        if (pair.Kind == RemoteKind.Folder)
+            return new FolderStore(pair);
         if (pair.Kind == RemoteKind.Drive)
             return new DriveStore(await DriveAsync(pair.Account, ct), pair);
         return new SynologyStore(await NasAsync(pair, ct), pair);
