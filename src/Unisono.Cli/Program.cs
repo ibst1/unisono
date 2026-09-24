@@ -142,6 +142,16 @@ try
             return 0;
         }
 
+        case "drive-trash":
+        {
+            // Tests: move a Drive folder (e.g. a test folder) to the Drive trash. Refuses My Drive itself.
+            if (args.Length < 2 || args[1].Trim('/', '\\').Length == 0) { Usage(); return 2; }
+            var drive = await DriveClient.ConnectAsync(ct, quiet: true);
+            var folder = await drive.ResolveFolderAsync(args[1], ct);
+            await drive.TrashAsync(folder.Id, ct);
+            Console.WriteLine($"moved {args[1]} to the Drive trash");
+            return 0;
+        }
         case "pull":
         {
             if (args.Length < 3) { Usage(); return 2; }

@@ -38,6 +38,8 @@ static class ExplorerMenu
     {
         try
         {
+            // The menu belongs to the real settings: a test instance (UNISONO_DATA) must not rewrite it.
+            if (!string.Equals(AppPaths.DataDir, AppPaths.AuthDir, StringComparison.OrdinalIgnoreCase)) return;
             Remove();
             if (!config.Options.ExplorerMenu) return;
             var exe = Environment.ProcessPath ?? throw new InvalidOperationException("unknown exe path");
