@@ -327,7 +327,7 @@ sealed class Bridge : IAsyncDisposable
     {
         foreach (var a in GoogleAccounts.Load())
         {
-            if (!force && _google.ContainsKey(a.Id)) continue;
+            if (!force && _google.TryGetValue(a.Id, out var known) && known.Error == null) continue; // errors are retried
             if (!DriveClient.HasStoredToken(a.Id)) continue;
             try
             {

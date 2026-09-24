@@ -291,6 +291,7 @@ sealed class HostForm : Form
         Show();
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
         Activate();
+        _ = _bridge.RefreshGoogleInfoAsync(); // retries accounts whose last check failed
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

@@ -53,15 +53,34 @@ public sealed class DriveClient
 
         // Tokens are issued per client id, so keep them per client: swapping client_secret.json
         // then simply triggers a fresh sign-in instead of invalid_grant on a token from the old client.
-        var flow = new GoogleAuthorizationCodeFlow(new GoogleAuthorizationCodeFlow.Initializer
+        // One credential per account and process: each credential refreshes its own access token and writes the
+        // token file, so separate ones for the same account (the window and the sync host) would race on it.
+        var key = TokenFile(client, accountId);
+        Task<UserCredential> Authorize()
         {
-            ClientSecrets = secrets,
-            Scopes = new[] { DriveService.Scope.Drive },
-            DataStore = new FileDataStore(TokenDir(client), fullPath: true),
-            Prompt = chooseAccount ? "select_account consent" : null,
-        });
-        var credential = await new Google.Apis.Auth.OAuth2.AuthorizationCodeInstalledApp(flow, new LocalServerCodeReceiver())
-            .AuthorizeAsync(accountId, ct);
+            var flow = new GoogleAuthorizationCodeFlow(new GoogleAuthorizationCodeFlow.Initializer
+            {
+                ClientSecrets = secrets,
+                Scopes = new[] { DriveService.Scope.Drive },
+                DataStore = new TokenStore(TokenDir(client)),
+                Prompt = chooseAccount ? "select_account consent" : null,
+            });
+            return new AuthorizationCodeInstalledApp(flow, new LocalServerCodeReceiver()).AuthorizeAsync(accountId, ct);
+        }
+        UserCredential credential;
+        if (chooseAccount)
+            credential = await Authorize();
+        else
+        {
+            var pending = Credentials.GetOrAdd(key, _ => Authorize());
+            try { credential = await pending; }
+            catch
+            {
+                Credentials.TryRemove(new KeyValuePair<string, Task<UserCredential>>(key, pending));
+                throw;
+            }
+        }
+        Credentials[key] = Task.FromResult(credential);
 
         var service = new DriveService(new BaseClientService.Initializer
         {
@@ -74,6 +93,9 @@ public sealed class DriveClient
     /// <summary>The default account (the first one added); for callers that do not care which.</summary>
     public static Task<DriveClient> ConnectAsync(CancellationToken ct, bool quiet = false) =>
         ConnectAsync(GoogleAccounts.Resolve(null)?.Id ?? GoogleAccounts.LegacyId, ct, quiet);
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<UserCredential>> Credentials =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private static string TokenDir(OAuthClientInfo client) => Path.Combine(AppPaths.TokenDir, client.TokenFolderName);
 
@@ -99,6 +121,7 @@ public sealed class DriveClient
     {
         if (!HasClientSecret()) return;
         var file = TokenFile(OAuthClientInfo.Read(AppPaths.ClientSecretPath), accountId);
+        Credentials.TryRemove(file, out _);
         if (System.IO.File.Exists(file)) System.IO.File.Delete(file);
     }
     public async Task<(string Email, long Usage, long Limit, string StartPageToken)> WhoAmIAsync(CancellationToken ct)
