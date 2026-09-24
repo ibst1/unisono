@@ -116,6 +116,20 @@ public sealed class DriveStore : IRemoteStore
         return node;
     }
 
+    public async Task<RemoteNode> MoveAsync(RemoteNode node, string newRelPath, RemoteNode? newParent, CancellationToken ct)
+    {
+        var parentId = ParentId(newParent);
+        var moved = await _drive.MoveAsync(node.Id, PathUtil.NameOf(newRelPath), node.ParentId, parentId, ct);
+        var fresh = RemoteNode.From(moved, parentId);
+        fresh.RelPath = newRelPath;
+        _index!.Add(fresh); // children keep pointing at the same folder id
+        return fresh;
+    }
+
+    public bool HasStableIds => true;
+
+    public string RebaseId(string id, string oldFolderId, string newFolderId) => id;
+
     public async Task DeleteAsync(RemoteNode node, CancellationToken ct)
     {
         await _drive.TrashAsync(node.Id, ct);

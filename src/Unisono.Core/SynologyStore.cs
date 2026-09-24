@@ -101,6 +101,24 @@ public sealed class SynologyStore : IRemoteStore
 
     public Task DeleteAsync(RemoteNode node, CancellationToken ct) => _nas.DeleteAsync(node.Id, ct);
 
+    public async Task<RemoteNode> MoveAsync(RemoteNode node, string newRelPath, RemoteNode? newParent, CancellationToken ct)
+    {
+        var folder = newParent?.Id ?? _root;
+        var newName = PathUtil.NameOf(newRelPath);
+        var path = node.Id;
+        // Rename first (in the old folder), then move: File Station has separate calls for the two.
+        if (!PathUtil.NameOf(path).Equals(newName, StringComparison.Ordinal)) path = await _nas.RenameAsync(path, newName, ct);
+        if (!node.ParentId.Equals(folder, StringComparison.Ordinal)) path = await _nas.MoveAsync(path, folder, ct);
+        var info = await _nas.GetInfoAsync(path, ct) ?? throw new IOException($"'{newRelPath}' is missing on the NAS right after moving it");
+        return ToNode(info, folder, newRelPath);
+    }
+
+    /// <summary>NAS ids are paths, so everything inside a moved folder gets a new id.</summary>
+    public bool HasStableIds => false;
+
+    public string RebaseId(string id, string oldFolderId, string newFolderId) =>
+        id.StartsWith(oldFolderId + "/", StringComparison.Ordinal) ? newFolderId + id[oldFolderId.Length..] : id;
+
     private static string MimeFor(string name) => Path.GetExtension(name).ToLowerInvariant() switch
     {
         ".odoc" => RemoteNode.SynologyDocument,

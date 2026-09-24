@@ -1,3 +1,4 @@
+using System.Text;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
@@ -326,14 +327,28 @@ public sealed class SynologyClient : IDisposable
         var mtimeMs = new DateTimeOffset(File.GetLastWriteTimeUtc(localPath)).ToUnixTimeMilliseconds();
         var url = $"{_base}/webapi/{_fsPath}?api=SYNO.FileStation.Upload&version={_uploadVersion}&method=upload&_sid={Uri.EscapeDataString(_sid)}";
         await using var fs = PathUtil.OpenShared(localPath);
-        using var content = new MultipartFormDataContent();
-        content.Add(new StringContent(destFolder), "path");
-        content.Add(new StringContent("true"), "create_parents");
-        content.Add(new StringContent("true"), "overwrite");
-        content.Add(new StringContent(mtimeMs.ToString()), "mtime");
+        // Built the way DSM's own web client sends it: quoted field names, no per-field content type, and the file name
+        // as plain UTF-8 (.NET's default form quotes nothing and encodes the name as filename*=, which DSM rejects).
+        var boundary = "----UnisonoBoundary" + Guid.NewGuid().ToString("N");
+        using var content = new MultipartFormDataContent(boundary);
+        // .NET quotes the boundary in Content-Type; DSM then never finds the end of the body and fails after ~10 s.
+        content.Headers.Remove("Content-Type");
+        content.Headers.TryAddWithoutValidation("Content-Type", "multipart/form-data; boundary=" + boundary);
+        content.HeaderEncodingSelector = (_, _) => Encoding.UTF8;
+        void Field(string field, string value)
+        {
+            var part = new ByteArrayContent(Encoding.UTF8.GetBytes(value));
+            part.Headers.TryAddWithoutValidation("Content-Disposition", $"form-data; name=\"{field}\"");
+            content.Add(part);
+        }
+        Field("path", destFolder);
+        Field("create_parents", "true");
+        Field("overwrite", "true");
+        Field("mtime", mtimeMs.ToString());
         var fileContent = new StreamContent(fs);
+        fileContent.Headers.TryAddWithoutValidation("Content-Disposition", $"form-data; name=\"file\"; filename=\"{name.Replace("\"", "%22")}\"");
         fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-        content.Add(fileContent, "file", name); // must be the last part
+        content.Add(fileContent); // must be the last part
         using var res = await _http.PostAsync(url, content, ct);
         res.EnsureSuccessStatusCode();
         using var doc = ParseApi(await res.Content.ReadAsStringAsync(ct), "upload");
@@ -345,7 +360,8 @@ public sealed class SynologyClient : IDisposable
         var doc = await CallAsync(_fsPath, new Dictionary<string, string>
         {
             ["api"] = "SYNO.FileStation.CreateFolder", ["version"] = _createVersion.ToString(), ["method"] = "create",
-            ["folder_path"] = JsonArray(parentPath), ["name"] = JsonArray(name), ["force_parent"] = "true",
+            // Plain values: this DSM refuses JSON arrays here with 407 (getinfo and download accept them).
+            ["folder_path"] = parentPath, ["name"] = name, ["force_parent"] = "true",
         }, ct);
         var f = doc.RootElement.GetProperty("data").GetProperty("folders")[0];
         if (f.TryGetProperty("code", out var code)) throw new SynologyApiException("create folder", code.GetInt32());
@@ -359,7 +375,7 @@ public sealed class SynologyClient : IDisposable
         await CallAsync(_fsPath, new Dictionary<string, string>
         {
             ["api"] = "SYNO.FileStation.Delete", ["version"] = _deleteVersion.ToString(), ["method"] = "delete",
-            ["path"] = JsonArray(path), ["recursive"] = "true",
+            ["path"] = path, ["recursive"] = "true",
         }, ct);
     }
 
@@ -379,6 +395,43 @@ public sealed class SynologyClient : IDisposable
     }
 
     private static string JsonArray(string value) => JsonSerializer.Serialize(new[] { value });
+
+    /// <summary>Renames within the same folder; returns the new path.</summary>
+    public async Task<string> RenameAsync(string path, string newName, CancellationToken ct)
+    {
+        var doc = await CallAsync(_fsPath, new Dictionary<string, string>
+        {
+            ["api"] = "SYNO.FileStation.Rename", ["version"] = "2", ["method"] = "rename", ["path"] = path, ["name"] = newName,
+        }, ct);
+        var f = doc.RootElement.GetProperty("data").GetProperty("files")[0];
+        if (f.TryGetProperty("code", out var code)) throw new SynologyApiException("rename", code.GetInt32());
+        return f.GetProperty("path").GetString()!;
+    }
+
+    /// <summary>Moves into another folder (a background task on the NAS, polled until done); returns the new path.</summary>
+    public async Task<string> MoveAsync(string path, string destFolder, CancellationToken ct)
+    {
+        var doc = await CallAsync(_fsPath, new Dictionary<string, string>
+        {
+            ["api"] = "SYNO.FileStation.CopyMove", ["version"] = "3", ["method"] = "start", ["path"] = path,
+            ["dest_folder_path"] = destFolder, ["overwrite"] = "false", ["remove_src"] = "true",
+        }, ct);
+        var task = doc.RootElement.GetProperty("data").GetProperty("taskid").GetString()!;
+        for (var i = 0; ; i++)
+        {
+            await Task.Delay(i == 0 ? 300 : 1000, ct);
+            var st = await CallAsync(_fsPath, new Dictionary<string, string>
+            {
+                ["api"] = "SYNO.FileStation.CopyMove", ["version"] = "3", ["method"] = "status", ["taskid"] = task,
+            }, ct);
+            var data = st.RootElement.GetProperty("data");
+            if (data.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.Object && err.TryGetProperty("code", out var ec))
+                throw new SynologyApiException("move", ec.GetInt32());
+            if (data.TryGetProperty("finished", out var fin) && fin.GetBoolean()) break;
+            if (i > 600) throw new TimeoutException($"moving {path} did not finish");
+        }
+        return destFolder.TrimEnd('/') + "/" + PathUtil.NameOf(path.TrimEnd('/'));
+    }
 
     private async Task<JsonDocument> CallAsync(string cgi, Dictionary<string, string> form, CancellationToken ct, bool withSid = true, bool retry = true)
     {

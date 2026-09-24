@@ -4,10 +4,10 @@ namespace Unisono;
 
 public sealed class CycleStats
 {
-    public int Downloaded, Uploaded, Exported, Linked, Trashed, Recycled, Conflicts, Errors;
-    public bool Any => Downloaded + Uploaded + Exported + Linked + Trashed + Recycled + Conflicts + Errors > 0;
+    public int Downloaded, Uploaded, Exported, Linked, Trashed, Recycled, Conflicts, Errors, Moved;
+    public bool Any => Downloaded + Uploaded + Exported + Linked + Trashed + Recycled + Conflicts + Errors + Moved > 0;
     public override string ToString() =>
-        $"{Downloaded} down, {Uploaded} up, {Exported} exported, {Linked} linked, {Trashed} deleted remotely, {Recycled} recycled locally, {Conflicts} conflicts, {Errors} errors";
+        $"{Downloaded} down, {Uploaded} up, {Moved} moved, {Exported} exported, {Linked} linked, {Trashed} deleted remotely, {Recycled} recycled locally, {Conflicts} conflicts, {Errors} errors";
 }
 
 /// <summary>One thing a dry run found it would do.</summary>
@@ -27,7 +27,7 @@ public sealed record PlannedAction(string Action, string Path, string? Detail);
 /// Direction: in a one-way pair only the source side's changes are applied; nothing done on the other side is
 /// propagated or undone. A dry run takes every decision but performs none, collecting them in <see cref="Plan"/>.
 /// </summary>
-public sealed class SyncEngine
+public sealed partial class SyncEngine
 {
     private readonly IRemoteStore _store;
     private readonly SyncPair _pair;
@@ -84,7 +84,10 @@ public sealed class SyncEngine
         var local = Visible(localAll, i => i.IsDir, ignore);
         try
         {
+            // Renames and moves first, so they are carried over as such instead of as a delete plus an upload.
+            await DetectFolderMovesAsync(remote, local, stats, ct);
             await SyncFoldersAsync(remote, local, stats, ct);
+            await DetectFileMovesAsync(remote, local, stats, ct);
             await SyncFilesAsync(remote, local, stats, ct);
             if (!DryRun) TidyBridgeFolders(local);
         }

@@ -33,6 +33,15 @@ public interface IRemoteStore
 
     Task<RemoteNode> CreateFolderAsync(string relPath, RemoteNode? parent, CancellationToken ct);
 
+    /// <summary>Renames and/or moves an item (a folder with everything in it) to <paramref name="newRelPath"/> under <paramref name="newParent"/> (null = root).</summary>
+    Task<RemoteNode> MoveAsync(RemoteNode node, string newRelPath, RemoteNode? newParent, CancellationToken ct);
+
+    /// <summary>True when an item keeps its id when renamed or moved (Drive), so remote moves can be recognised by id.</summary>
+    bool HasStableIds { get; }
+
+    /// <summary>The id of an item inside a folder that moved from <paramref name="oldFolderId"/> to <paramref name="newFolderId"/>.</summary>
+    string RebaseId(string id, string oldFolderId, string newFolderId);
+
     /// <summary>Delete recoverably where the backend allows it (Drive trash, NAS recycle bin), subtree included.</summary>
     Task DeleteAsync(RemoteNode node, CancellationToken ct);
 

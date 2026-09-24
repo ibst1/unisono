@@ -289,6 +289,19 @@ public sealed class DriveClient
         return await req.ExecuteAsync(ct);
     }
 
+    /// <summary>Rename and/or move; the id stays the same.</summary>
+    public async Task<File> MoveAsync(string fileId, string newName, string oldParentId, string newParentId, CancellationToken ct)
+    {
+        var req = _service.Files.Update(new File { Name = newName }, fileId);
+        if (oldParentId != newParentId)
+        {
+            req.AddParents = newParentId;
+            req.RemoveParents = oldParentId;
+        }
+        req.Fields = FileFields;
+        return await req.ExecuteAsync(ct);
+    }
+
     /// <summary>Never a permanent delete: the item goes to the Drive trash, where it can be restored for 30 days.</summary>
     public async Task TrashAsync(string fileId, CancellationToken ct)
     {
