@@ -56,7 +56,7 @@ public sealed class SyncEngine
         _store = store;
         _pair = pair;
         _log = log;
-        _root = Path.GetFullPath(pair.LocalPath);
+        _root = pair.LocalFullPath;
         _state = SyncState.Load(pair);
         _store.LoadState(_state);
     }

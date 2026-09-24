@@ -113,13 +113,16 @@ public sealed class SynologyStore : IRemoteStore
     /// Synology Office and Drive address files by Drive path: the user's home is /mydrive, a shared folder enabled as a
     /// Drive team folder is /team-folders/&lt;name&gt;. File Station paths are /home/..., /homes/&lt;user&gt;/... or /&lt;share&gt;/....
     /// </summary>
-    private string DrivePath(RemoteNode node)
+    private string DrivePath(RemoteNode node) => DrivePathFor(node.Id, _nas.User);
+
+    /// <summary>File Station path to Synology Drive path (see above); also used by Explorer's "Open in Synology Drive".</summary>
+    public static string DrivePathFor(string fileStationPath, string user)
     {
-        var parts = node.Id.Trim('/').Split('/');
+        var parts = fileStationPath.Trim('/').Split('/');
         if (parts[0].Equals("home", StringComparison.OrdinalIgnoreCase))
-            return "/mydrive/" + string.Join('/', parts.Skip(1));
-        if (parts[0].Equals("homes", StringComparison.OrdinalIgnoreCase) && parts.Length > 1 && parts[1].Equals(_nas.User, StringComparison.OrdinalIgnoreCase))
-            return "/mydrive/" + string.Join('/', parts.Skip(2));
+            return ("/mydrive/" + string.Join('/', parts.Skip(1))).TrimEnd('/');
+        if (parts[0].Equals("homes", StringComparison.OrdinalIgnoreCase) && parts.Length > 1 && parts[1].Equals(user, StringComparison.OrdinalIgnoreCase))
+            return ("/mydrive/" + string.Join('/', parts.Skip(2))).TrimEnd('/');
         return "/team-folders/" + string.Join('/', parts);
     }
 

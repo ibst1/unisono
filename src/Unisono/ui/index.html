@@ -177,6 +177,11 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
         <div class="grow"><div>Start with Windows</div><div class="small muted">Starts hidden in the tray when you sign in to Windows.</div></div></div>
       <div class="setting"><label class="switch"><input type="checkbox" id="setPaused"><span></span></label>
         <div class="grow"><div>Pause syncing</div><div class="small muted">Nothing is transferred until you resume. "Sync now" still runs one round.</div></div></div>
+      <div class="setting"><label class="switch"><input type="checkbox" id="optExplorer"><span></span></label>
+        <div class="grow"><div>Explorer menu</div><div class="small muted">Right-click in a synced folder: "Open in Google Drive", "Open in Synology Drive", and for
+          Office files in Drive folders "Open in Google Docs / Sheets / Slides". In Windows 11 under "Show more options".</div></div></div>
+      <div class="setting"><div class="grow"><div>Pair list</div><div class="small muted" id="sharedNow"></div></div>
+        <button class="btn" id="sharedPick">Share via file...</button><button class="btn" id="sharedOff">Keep on this computer</button></div>
       <div class="setting"><label class="switch"><input type="checkbox" id="setVerbose"><span></span></label>
         <div class="grow"><div>Detailed log</div><div class="small muted">Also log index runs, change-feed polls and connection attempts.</div></div></div>
     </section>
@@ -256,7 +261,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <option value="UploadOnly">Upload only: changes here go up; nothing remote comes down</option></select>
     <div class="help">One-way pairs apply the source side's changes, deletions included, and never undo anything done on the other side.</div></div>  <div class="field"><label>Local folder</label>
     <div class="inline"><input type="text" id="pairLocal"><button class="btn" id="pairPickLocal">Browse...</button></div>
-    <div class="help">May lie inside another pair's folder (e.g. a Drive folder inside a NAS folder); the outer pair then leaves it alone.</div></div>
+    <div class="help">May lie inside another pair's folder (e.g. a Drive folder inside a NAS folder); the outer pair then leaves it alone.
+      Folders under your profile are stored as <span class="mono">%USERPROFILE%</span> / <span class="mono">%APPDATA%</span>, so the pair also fits your other computers.</div></div>
+  <div class="field"><label>Computers</label><input type="text" id="pairMachines" placeholder="empty = every computer">
+    <div class="help" id="pairMachinesHelp"></div></div>
   <div class="field"><label id="pairDocsLabel">Google Docs</label>
     <select id="pairDocs"><option value="Export">Export to docx / xlsx / pptx (read-only copies)</option>
       <option value="Link">Link that opens the document in the browser</option><option value="Skip">Skip</option></select></div>
@@ -385,7 +393,7 @@ function renderAccounts() {
 
   $("#googleList").innerHTML = S.google.length ? S.google.map(a => {
     const used = a.limit > 0 ? Math.min(100, a.usage / a.limit * 100) : 0;
-    return `<div class="card"><div class="row">
+    return `<div class="card" style="${p.activeHere ? "" : "opacity:.6"}"><div class="row">
       <div class="grow"><div><b>${esc(a.email || "(checking account...)")}</b> ${a.isDefault ? '<span class="chip plain">default</span>' : ""}
         ${a.signedIn ? "" : '<span class="chip err">needs sign-in</span>'}</div>
         ${a.error ? `<div class="small" style="color:var(--red)">${esc(a.error)}</div>` : a.limit ? `<div class="small muted">${gb(a.usage)} of ${gb(a.limit)} used</div><div class="bar"><i style="width:${used}%"></i></div>` : ""}
@@ -479,7 +487,7 @@ function remoteLabel(p) {
 function renderPairs() {
   $("#pairList").innerHTML = S.pairs.length ? S.pairs.map(p => {
     const r = remoteLabel(p);
-    return `<div class="card">
+    return `<div class="card" style="${p.activeHere ? "" : "opacity:.6"}">
       <div class="pair">
         <div class="side"><div class="label">${esc(r.what)} &middot; ${esc(r.who)}</div><div class="ellipsis" title="${esc(r.path)}"><b>${esc(r.path)}</b></div></div>
         <div class="arrow">&#8646;</div>
@@ -487,6 +495,7 @@ function renderPairs() {
       </div>
       <div class="pairfoot">${statusChip(p)}
         <span class="small muted">${p.lastSync ? "last run " + esc(p.lastSync) : "not run yet"}</span>
+        ${p.activeHere ? "" : `<span class="chip plain">not on this computer</span>`}
         ${p.direction !== "TwoWay" ? `<span class="chip plain">${p.direction === "DownloadOnly" ? "download only" : "upload only"}</span>` : ""}
         <span class="small grow ellipsis" style="${p.failed ? "color:var(--red)" : ""}" title="${esc(p.lastResult)}">${esc(p.lastResult)}</span>
         <button class="btn" data-preview="${esc(p.id)}" title="Show what the next sync would do, without doing it">Preview</button>
@@ -561,13 +570,15 @@ function pairDialog(p) {
   }
   $("#pairRoot").checked = !!p && p.kind === "Drive" && !p.remotePath;
   $("#pairRemote").value = p ? p.remotePath : "";
-  $("#pairLocal").value = p ? p.localPath : "";
+  $("#pairLocal").value = p ? p.localPathStored : "";
   $("#pairCreate").checked = !p;
   $("#pairDocs").value = p ? p.docs : "Export";
   $("#pairMb").value = p ? p.cloudOnlyMinMB : 0;
   $("#pairFolders").value = p ? p.cloudOnlyFolders.join(", ") : "";
   $("#pairPoll").value = p ? p.pollSeconds : (pairKind === "Synology" ? 60 : 30);
   $("#pairDirection").value = p ? p.direction : "TwoWay";
+  $("#pairMachines").value = p ? p.machines : "";
+  $("#pairMachinesHelp").innerHTML = `Names of the computers that sync this pair, comma-separated. This computer is <b>${esc(S.machine)}</b>. Useful with a shared pair list (Settings).`;
   $("#pairIgnore").value = p ? p.ignorePatterns : "";
   scope = { include: p ? [...p.includeFolders] : [], exclude: p ? [...p.excludeFolders] : [] };
   renderScopeText();
@@ -689,7 +700,7 @@ function pairFromForm() {
   const [server, user] = nas ? ($("#pairAcct").value || "|").split("|") : [null, null];
   return {
     includeFolders: scope.include, excludeFolders: scope.exclude,
-    direction: $("#pairDirection").value, ignorePatterns: $("#pairIgnore").value,
+    direction: $("#pairDirection").value, ignorePatterns: $("#pairIgnore").value, machines: $("#pairMachines").value,
     kind: pairKind, account: nas ? null : $("#pairAcct").value, server, user,
     remotePath: nas ? $("#pairRemote").value : ($("#pairRoot").checked ? "" : $("#pairRemote").value),
     localPath: $("#pairLocal").value, docs: $("#pairDocs").value,
@@ -784,6 +795,11 @@ function renderSettings() {
   if (document.activeElement !== $("#optKeep")) $("#optKeep").value = o.keepVersions;
   if (document.activeElement !== $("#optDays")) $("#optDays").value = o.keepVersionsDays;
   $("#optMetered").checked = o.pauseOnMetered; $("#optPresenting").checked = o.pauseWhilePresenting;
+  $("#optExplorer").checked = o.explorerMenu;
+  $("#sharedNow").innerHTML = o.sharedPairsFile
+    ? `Shared: <span class="mono">${esc(o.sharedPairsFile)}</span>. Point your other computers at the same file; sign-ins, settings and sync state stay per computer.`
+    : "Kept on this computer only. To use the same pairs on several computers, keep the list in a file they all see (e.g. in OneDrive).";
+  $("#sharedOff").hidden = !o.sharedPairsFile;
   $("#meteredNow").textContent = "Mobile hotspots and networks marked as metered in Windows. The current connection is " + (o.metered ? "metered." : "not metered.");
   if (document.activeElement !== $("#optIgnore") && !$("#optIgnore").dataset.dirty) $("#optIgnore").value = o.ignorePatterns;
 }
@@ -795,6 +811,13 @@ $("#optKeep").onchange = e => setOpt({ keepVersions: parseInt(e.target.value || 
 $("#optDays").onchange = e => setOpt({ keepVersionsDays: parseInt(e.target.value || "0", 10) });
 $("#optMetered").onchange = e => setOpt({ pauseOnMetered: e.target.checked });
 $("#optPresenting").onchange = e => setOpt({ pauseWhilePresenting: e.target.checked });
+$("#optExplorer").onchange = e => setOpt({ explorerMenu: e.target.checked });
+$("#sharedPick").onclick = async () => {
+  const f = await call("pickPairsFile"); if (!f) return;
+  if (!await confirmBox("Share the pair list", [`Keep the pair list in ${f}? If the file already lists pairs, they are used here too (a pair only syncs on the computers it names), and this computer's pairs are added to it.`])) return;
+  await setOpt({ sharedPairsFile: f }); toast("Pair list shared");
+};
+$("#sharedOff").onclick = async () => { await setOpt({ sharedPairsFile: "" }); toast("Pair list kept on this computer"); };
 $("#optIgnore").oninput = () => $("#optIgnore").dataset.dirty = "1";
 $("#optIgnoreSave").onclick = async () => { await setOpt({ ignorePatterns: $("#optIgnore").value }); delete $("#optIgnore").dataset.dirty; toast("Ignore patterns saved"); };
 

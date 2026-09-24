@@ -39,7 +39,7 @@ try
             var config = Config.Load();
             Console.WriteLine(Config.FilePath);
             foreach (var p in config.Pairs)
-                Console.WriteLine($"  [{p.Kind}] {p.Name}  <->  {p.LocalPath}   {(p.Server != null ? $"server={p.Server} user={p.User} " : "")}docs={p.GoogleDocs} cloudOnly>={p.CloudOnlyMinMB}MB folders=[{string.Join(", ", p.CloudOnlyFolders)}] poll={p.PollSeconds}s");
+                Console.WriteLine($"  [{p.Kind}] {p.Name}  <->  {p.LocalPath}{(p.ActiveHere ? "" : " (not on this computer)")}   {(p.Server != null ? $"server={p.Server} user={p.User} " : "")}docs={p.GoogleDocs} cloudOnly>={p.CloudOnlyMinMB}MB folders=[{string.Join(", ", p.CloudOnlyFolders)}] poll={p.PollSeconds}s");
             if (config.Pairs.Count == 0) Console.WriteLine("  (no pairs; use: unisono init <remote/path> <localDir>)");
             return 0;
         }
@@ -181,7 +181,7 @@ try
             if (pair.Kind == RemoteKind.Synology) pair.PollSeconds = 60;
 
             var config = Config.Load();
-            if (config.Pairs.Any(p => p.LocalPath.Equals(localPath, StringComparison.OrdinalIgnoreCase)))
+            if (config.Pairs.Any(p => p.LocalFullPath.Equals(localPath, StringComparison.OrdinalIgnoreCase)))
             {
                 Console.Error.WriteLine($"error: {localPath} is already part of a pair (see: unisono config)");
                 return 1;
@@ -217,7 +217,7 @@ try
                 Console.Error.WriteLine("error: no sync pairs configured; use: unisono init <remote/path> <localDir>");
                 return 1;
             }
-            log.Info($"UnisonoCli {version} starting, {config.Pairs.Count} pair(s)");
+            log.Info($"UnisonoCli {version} starting, {config.ActivePairs.Count} pair(s) on this computer");
             if (args[0] == "run")
             {
                 await using var host = new SyncHost(log, interactive: true);
@@ -239,7 +239,7 @@ try
             try
             {
                 var failed = 0;
-                foreach (var p in config.Pairs)
+                foreach (var p in config.ActivePairs)
                 {
                                         try
                     {

@@ -20,11 +20,11 @@ public sealed class SyncScope
 
     public static IEnumerable<string> NestedPaths(SyncPair pair, IEnumerable<SyncPair> others)
     {
-        var root = Path.GetFullPath(pair.LocalPath).TrimEnd('\\') + "\\";
+        var root = pair.LocalFullPath.TrimEnd('\\') + "\\";
         foreach (var o in others)
         {
-            if (ReferenceEquals(o, pair) || string.IsNullOrEmpty(o.LocalPath)) continue;
-            var theirs = Path.GetFullPath(o.LocalPath).TrimEnd('\\');
+            if (ReferenceEquals(o, pair) || string.IsNullOrEmpty(o.LocalPath) || !o.ActiveHere) continue;
+            var theirs = o.LocalFullPath.TrimEnd('\\');
             if (theirs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
                 yield return theirs[root.Length..].Replace('\\', '/');
         }

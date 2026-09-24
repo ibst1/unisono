@@ -4,17 +4,24 @@ static class Program
 {
     /// <summary>Unisono.exe [--tray]: the tray app. --tray starts with the window hidden (used by autostart).</summary>
     [STAThread]
-    static void Main(string[] args)
+    static int Main(string[] args)
     {
+        // Explorer's context menu: open the item online and exit, without touching the tray app.
+        if (args.Length >= 3 && args[0] == "--open")
+        {
+            ApplicationConfiguration.Initialize();
+            return OpenOnline.Run(args[1], args[2]);
+        }
         // One tray app per data dir. A second start just asks the running one to show its window.
         using var show = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\Unisono.Show." + SyncLock.Suffix, out var created);
         if (!created)
         {
             show.Set();
-            return;
+            return 0;
         }
         AppPaths.EnsureDataDir();
         ApplicationConfiguration.Initialize();
         Application.Run(new HostForm(startHidden: args.Contains("--tray", StringComparer.OrdinalIgnoreCase), show));
+        return 0;
     }
 }

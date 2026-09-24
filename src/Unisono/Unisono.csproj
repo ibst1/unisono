@@ -12,6 +12,7 @@
     <AssemblyName>Unisono</AssemblyName>
     <Version>0.2.0</Version>
     <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
+    <ApplicationIcon>unisono.ico</ApplicationIcon>
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>

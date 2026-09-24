@@ -76,7 +76,7 @@ public sealed class SyncHost : IAsyncDisposable
         await StopAsync();
         _lock ??= SyncLock.TryAcquire()
                   ?? throw new InvalidOperationException("another Unisono is already syncing (the tray app or 'UnisonoCli run'); close it first");
-        Pairs = config.Pairs.Select(p => new PairStatus { Pair = p }).ToList();
+        Pairs = config.ActivePairs.Select(p => new PairStatus { Pair = p }).ToList();
         _options = config.Options;
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
@@ -113,7 +113,7 @@ public sealed class SyncHost : IAsyncDisposable
         {
             foreach (var p in pairs)
             {
-                var w = TryWatch(p.Pair.LocalPath);
+                var w = TryWatch(p.Pair.LocalFullPath);
                 if (w != null) watchers.Add(w);
             }
             var poll = TimeSpan.FromSeconds(pairs.Count == 0 ? 60 : Math.Max(5, pairs.Min(p => p.Pair.PollSeconds)));

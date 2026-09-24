@@ -58,6 +58,29 @@ pair then leaves that subfolder alone locally and remotely, so every file belong
   and changes nothing.
 * **Automatic pause** on metered connections (on by default) and, optionally, during
   presentations and full-screen apps. "Sync now" still runs a round.
+### Explorer menu
+
+Inside synced folders, right-click (in Windows 11: *Show more options*):
+
+* a file or folder in a Drive pair: **Open in Google Drive**; in a NAS pair: **Open in Synology Drive**
+* a .docx/.xlsx/.pptx in a Drive pair: **Open in Google Docs / Sheets / Slides** (Office-compatibility
+  editing); an exported Google Doc opens the original document
+* **Shift+right-click** on the empty background of a folder: **Open this folder online (Unisono)**
+
+The entries are registered per user (no admin) and limited to synced folders with a path
+condition. Explorer ignores such conditions on folder backgrounds, hence the Shift-only entry
+there. Windows 11's compact menu only accepts packaged apps, which need admin to install. The
+browser opens with the pair's Google account selected. Turn the menu off under Settings.
+
+### Several computers
+
+Each computer has its own settings, sign-ins and sync state, and by default its own pair list.
+To use the same pairs everywhere, keep the list in a shared file (Settings > Pair list > *Share
+via file*, e.g. in OneDrive) and point every computer at it. Local folders under your profile are
+stored as `%USERPROFILE%\...` or `%APPDATA%\...`, so one definition fits computers with different
+user names. A pair can be limited to some computers (*Computers* in the pair dialog). This is
+also how other apps' settings folders are kept alike: a pair for `%APPDATA%\SomeApp` on the
+computers that run it.
 ### Several accounts
 
 Pairs name their Google account by e-mail address (config `Account`; empty means the first
