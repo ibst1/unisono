@@ -227,6 +227,23 @@ public static class CloudFiles
     public static void Revert(string fullPath) =>
         WithHandle(fullPath, write: true, h => CfRevertPlaceholder(h, 0, IntPtr.Zero));
 
+    /// <summary>True when Windows considers the placeholder in sync (no pending-sync arrows in Explorer).</summary>
+    public static unsafe bool IsInSync(string fullPath)
+    {
+        var result = true;
+        try
+        {
+            WithHandle(fullPath, write: false, h =>
+            {
+                var buf = stackalloc byte[4096];
+                if (CfGetPlaceholderInfo(h, 0 /* BASIC */, (IntPtr)buf, 4096, out _) == 0) result = *(int*)(buf + 4) == 1;
+                return 0;
+            });
+        }
+        catch { }
+        return result;
+    }
+
     /// <summary>The identity stored with a placeholder (Unisono stores the remote id), or null for an ordinary file.</summary>
     public static unsafe string? Identity(string fullPath)
     {

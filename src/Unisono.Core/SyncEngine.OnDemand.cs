@@ -142,5 +142,15 @@ public sealed partial class SyncEngine
             }
             catch (Exception ex) { _log.Debug($"[{_pair.Name}] {l.RelPath}: {ex.Message}"); } // open elsewhere etc.: next cycle
         }
+
+        // Windows marks a folder out of sync whenever something in it changes (Unisono adding or downloading files
+        // included). With the cycle through, the folders are in sync again: innermost first, the root last.
+        if (NeedsFollowUp) return; // something is still being written; the next cycle finishes the job
+        foreach (var dir in local.Values.Where(i => i.IsDir && _state.Entries.TryGetValue(i.RelPath, out var e) && e.Kind == EntryKind.Folder)
+                     .OrderByDescending(i => PathUtil.Depth(i.RelPath)).Select(i => i.FullPath).Append(_root))
+        {
+            try { if (Directory.Exists(dir) && !CloudFiles.IsInSync(dir)) CloudFiles.MarkInSync(dir); }
+            catch (Exception ex) { _log.Debug($"[{_pair.Name}] {dir}: {ex.Message}"); }
+        }
     }
 }

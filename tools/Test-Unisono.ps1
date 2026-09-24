@@ -164,6 +164,23 @@ function Test-Core([hashtable]$pair, [string]$label) {
 # ------------------------------------------------------------ files on demand
 function Attr($c, $rel) { [int][IO.File]::GetAttributes((Join-Path $c.Local $rel)) }
 function IsOnline($c, $rel) { $a = Attr $c $rel; ($a -band 0x400) -ne 0 -and ($a -band (0x400000 -bor 0x40000 -bor 0x1000)) -ne 0 }
+# Windows' own view of a placeholder: 1 = in sync (no pending arrows in Explorer), 0 = not, negative = not a placeholder.
+function InSync([string]$path) {
+    if (-not ("CfProbe.Api" -as [type])) {
+        Add-Type -Namespace CfProbe -Name Api -MemberDefinition @"
+[DllImport("cldapi.dll", CharSet = CharSet.Unicode)] static extern int CfOpenFileWithOplock(string p, int f, out IntPtr h);
+[DllImport("cldapi.dll")] static extern IntPtr CfGetWin32HandleFromProtectedHandle(IntPtr h);
+[DllImport("cldapi.dll")] static extern void CfCloseHandle(IntPtr h);
+[DllImport("cldapi.dll")] static extern int CfGetPlaceholderInfo(IntPtr h, int c, byte[] b, int l, out int r);
+public static int InSync(string p) {
+  IntPtr ph; if (CfOpenFileWithOplock(p, 0, out ph) < 0) return -1;
+  try { var b = new byte[4096]; int r; if (CfGetPlaceholderInfo(CfGetWin32HandleFromProtectedHandle(ph), 0, b, 4096, out r) != 0) return -2; return BitConverter.ToInt32(b, 4); }
+  finally { CfCloseHandle(ph); }
+}
+"@
+    }
+    [CfProbe.Api]::InSync($path)
+}
 function Test-OnDemand([hashtable]$pair) {
     $a = Computer "od-A" $pair
     $b = Computer "od-B" ($pair + @{ OnDemand = $true })
@@ -190,6 +207,7 @@ function Test-OnDemand([hashtable]$pair) {
         Check "ondemand a kept folder's files are downloaded" { -not (IsOnline $b "sub\note.txt") -and (Text $b "sub\note.txt") -eq "a note" }
         Put $a "sub\later.txt" "added later"; $null = Sync $a; Start-Sleep 2; $null = Sync $b
         Check "ondemand ... new files in it too" { (Has $b "sub\later.txt") -and -not (IsOnline $b "sub\later.txt") }
+        Check "ondemand folders are in sync after the cycle (no pending arrows)" { (InSync (Join-Path $b.Local "sub")) -eq 1 -and (InSync $b.Local) -eq 1 }
 
         Section "ondemand: free up space"
         attrib -P +U (Join-Path $b.Local "sub\note.txt") | Out-Null
