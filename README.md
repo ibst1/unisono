@@ -232,7 +232,8 @@ a conflict instead of being overwritten.
   that cannot be done safely (a tab name, a table or an image was changed) or the Docs API is not
   enabled, the edit is kept as `Name (edited MACHINE time).docx` next to it, uploaded as an
   ordinary file, and the tray says why. In Word, tab names are titles and appear in the
-  navigation pane with each tab's headings beneath them. A write-back is converted by Drive; the previous content stays in the
+  navigation pane; headings keep their numbers (Heading 1 in Word is Heading 1 in Google), so they
+  appear beside the tab names there rather than beneath them. A write-back is converted by Drive; the previous content stays in the
   document's version history, and some Google-only formatting may shift in the round trip. When the document also changed in Google since, the local edit is kept as
   `Name (conflict MACHINE time).docx` next to it and the export shows the current version.
   The export is re-written when the document changes on Drive. Drive caps exports at 10 MB.

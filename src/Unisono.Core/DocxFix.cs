@@ -11,15 +11,18 @@ namespace Unisono;
 ///           drops such a style. Every fractional numeric attribute in word/*.xml is rounded.
 ///   tabs    A document with tabs is exported with each tab name as a Title paragraph, which Word's navigation pane does
 ///           not show. With the tab list from the Docs API, tab names get the outline level of their nesting (1, or 2
-///           for a tab inside a tab), and the headings in a tab move below it: Word fixes the level of its heading
-///           styles, so a Heading 1 under a top-level tab becomes Heading 2, and the heading styles are redefined one
-///           step down (Heading 2 looks like Heading 1 did, ...) so nothing changes in appearance. The navigation pane
-///           then shows tabs with their headings beneath.
+///           for a tab inside a tab), so the pane lists them. Headings keep their numbers (Heading 1 in Google is
+///           Heading 1 in Word, which is what one reaches for when writing in Word), so they sit beside the tab names
+///           rather than beneath them: Word fixes the level of its heading styles. The document variable
+///           "UnisonoHeadings" = "same" marks this; exports from version 4 (headings moved one level down) lack it.
 /// </summary>
 public static class DocxFix
 {
     /// <summary>Bumped when the repair changes, so earlier exports are made again once.</summary>
-    public const int Version = 4;
+    public const int Version = 5;
+
+    /// <summary>Document variable written into exports whose headings keep Google's numbers (see the summary).</summary>
+    public const string HeadingsVariable = "UnisonoHeadings";
 
     private static readonly XNamespace W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
     private static readonly Regex Decimal = new(@"(w:[A-Za-z]+)=""(-?\d+)\.(\d+)""", RegexOptions.Compiled);
@@ -37,11 +40,10 @@ public static class DocxFix
             .ToDictionary(e => e.FullName, e => { using var r = new StreamReader(e.Open()); return r.ReadToEnd(); });
         var result = parts.ToDictionary(p => p.Key, p => RoundSizes(p.Value));
 
-        if (tabs is { Count: > 1 } && result.TryGetValue("word/document.xml", out var document) && result.TryGetValue("word/styles.xml", out var styles)
-            && OutlineTabsCore(document, tabs) is { } outlined)
+        if (tabs is { Count: > 1 } && result.TryGetValue("word/document.xml", out var document) && OutlineTabsCore(document, tabs) is { } outlined)
         {
             result["word/document.xml"] = outlined;
-            result["word/styles.xml"] = HeadingsOneStepDown(styles);
+            if (result.TryGetValue("word/settings.xml", out var settings)) result["word/settings.xml"] = WithHeadingsVariable(settings);
         }
 
 
@@ -75,40 +77,30 @@ public static class DocxFix
                 SetOutline(p.Element(W + "pPr")!, Math.Min(depth, 8));
                 next++;
             }
-            else if (depth >= 0 && style != null && HeadingStyle.Match(style) is { Success: true } h)
-            {
-                // Below the tab name: Heading n becomes Heading n + depth + 1 (Word fixes the level of heading styles).
-                pStyle!.SetAttributeValue(W + "val", $"Heading{Math.Min(int.Parse(h.Groups[1].Value) + depth + 1, 9)}");
-            }
         }
         return next == 0 ? null : doc.Declaration + doc.ToString(SaveOptions.DisableFormatting);
     }
 
-    /// <summary>Heading k takes the definition Heading k-1 had (Heading 7-9 the last one there is), with its own level.</summary>
-    private static string HeadingsOneStepDown(string xml)
+    /// <summary>Elements that follow w:docVars in w:settings (the schema fixes the order).</summary>
+    private static readonly HashSet<string> AfterDocVars = new()
+    {
+        "rsids", "mathPr", "attachedSchema", "themeFontLang", "clrSchemeMapping", "doNotIncludeSubdocsInStats", "doNotAutoCompressPictures",
+        "forceUpgrade", "captions", "readModeInkLockDown", "smartTagType", "schemaLibrary", "shapeDefaults", "doNotEmbedSmartTags", "decimalSymbol", "listSeparator",
+    };
+
+    private static string WithHeadingsVariable(string xml)
     {
         var doc = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
         var root = doc.Root!;
-        var old = root.Elements(W + "style")
-            .Select(s => (Style: s, Id: s.Attribute(W + "styleId")?.Value ?? ""))
-            .Where(x => HeadingStyle.IsMatch(x.Id))
-            .ToDictionary(x => int.Parse(x.Id[7..]), x => x.Style);
-        if (!old.ContainsKey(1)) return xml;
-        var deepest = old.Keys.Max();
-        var added = new List<XElement>();
-        for (var k = 2; k <= 9; k++)
+        var vars = root.Element(W + "docVars");
+        if (vars == null)
         {
-            var source = old[Math.Min(k - 1, deepest)];
-            var copy = new XElement(source);
-            copy.SetAttributeValue(W + "styleId", $"Heading{k}");
-            copy.Element(W + "name")?.SetAttributeValue(W + "val", $"heading {k}");
-            var pPr = copy.Element(W + "pPr");
-            if (pPr == null) { pPr = new XElement(W + "pPr"); var after = copy.Element(W + "rPr"); if (after != null) after.AddBeforeSelf(pPr); else copy.Add(pPr); }
-            SetOutline(pPr, k - 1);
-            added.Add(copy);
+            vars = new XElement(W + "docVars");
+            var before = root.Elements().FirstOrDefault(e => AfterDocVars.Contains(e.Name.LocalName));
+            if (before != null) before.AddBeforeSelf(vars); else root.Add(vars);
         }
-        foreach (var k in old.Keys.Where(k => k >= 2)) old[k].Remove();
-        old[1].AddAfterSelf(added);
+        vars.Elements(W + "docVar").Where(v => (string?)v.Attribute(W + "name") == HeadingsVariable).Remove();
+        vars.Add(new XElement(W + "docVar", new XAttribute(W + "name", HeadingsVariable), new XAttribute(W + "val", "same")));
         return doc.Declaration + doc.ToString(SaveOptions.DisableFormatting);
     }
 

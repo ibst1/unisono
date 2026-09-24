@@ -240,9 +240,9 @@ function Test-TabWriteBack([string]$remote) {
         $i = $xml.IndexOf("Text in the first tab"); $s = $xml.LastIndexOf("<w:p ", $i); $e = $xml.IndexOf("</w:p>", $i) + 6
         $para = $xml.Substring($s, $e - $s)
         $xml = $xml.Insert($e, $para.Replace("Text in the first tab", "A new paragraph from Word"))
-        # The heading one level down (in a tab the export shows Heading 1 as Heading 2).
+        # The heading one level down: Heading 1 in Word is Heading 1 in Google, so Heading 2 is Heading 2.
         $h = $xml.IndexOf("Heading one"); $hs = $xml.LastIndexOf("<w:p ", $h)
-        $xml.Substring(0, $hs) + $xml.Substring($hs, $h - $hs).Replace('w:val="Heading2"', 'w:val="Heading3"') + $xml.Substring($h)
+        $xml.Substring(0, $hs) + $xml.Substring($hs, $h - $hs).Replace('w:val="Heading1"', 'w:val="Heading2"') + $xml.Substring($h)
     }
     (Get-Item -LiteralPath $doc).LastWriteTime = (Get-Date).AddMinutes(-1)
     $out = (Sync $t1) -join "`n"

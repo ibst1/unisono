@@ -116,8 +116,10 @@ public static class DocsPatch
         List<Para>? current = null;
         var next = 0;
         var depth = 0;
-        // Exports made since tab names got outline levels have the headings in a tab moved down by depth + 1.
-        var shifted = body.Elements(W + "p").Any(p => StyleOf(p) == "Title" && p.Element(W + "pPr")?.Element(W + "outlineLvl") != null);
+        // Only exports of version 4 had the headings in a tab moved down by depth + 1: tab names with an outline level
+        // but without the variable that later exports carry.
+        var shifted = body.Elements(W + "p").Any(p => StyleOf(p) == "Title" && p.Element(W + "pPr")?.Element(W + "outlineLvl") != null)
+                      && !HasHeadingsVariable(path);
         if (tabs.Count == 1)
         {
             // One tab: the export has no tab name, the whole body is that tab.
@@ -159,6 +161,15 @@ public static class DocsPatch
         }
         if (next != tabs.Count) { why = "tab names were renamed or removed in the Word file"; return null; }
         return result;
+    }
+
+    private static bool HasHeadingsVariable(string path)
+    {
+        using var zip = ZipFile.OpenRead(path);
+        var entry = zip.GetEntry("word/settings.xml");
+        if (entry == null) return false;
+        using var s = entry.Open();
+        return XDocument.Load(s).Descendants(W + "docVar").Any(v => (string?)v.Attribute(W + "name") == DocxFix.HeadingsVariable);
     }
 
     private static string? StyleOf(XElement p) => p.Element(W + "pPr")?.Element(W + "pStyle")?.Attribute(W + "val")?.Value;
