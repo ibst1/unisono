@@ -82,13 +82,8 @@ browser opens with the pair's Google account selected. Turn the menu off under S
 
 ### Several computers
 
-Each computer has its own settings, sign-ins and sync state, and by default its own pair list.
-To use the same pairs everywhere, keep the list in a shared file (Settings > Pair list > *Share
-via file*, e.g. in OneDrive) and point every computer at it. Local folders under your profile are
-stored as `%USERPROFILE%\...` or `%APPDATA%\...`, so one definition fits computers with different
-user names. A pair can be limited to some computers (*Computers* in the pair dialog). This is
-also how other apps' settings folders are kept alike: a pair for `%APPDATA%\SomeApp` on the
-computers that run it.
+Each computer has its own pairs, settings, sign-ins and sync state: set up the pairs on each
+computer. Two computers syncing the same remote folder need no coordination.
 ### Several accounts
 
 Pairs name their Google account by e-mail address (config `Account`; empty means the first

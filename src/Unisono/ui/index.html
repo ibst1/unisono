@@ -181,8 +181,6 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <div class="setting"><label class="switch"><input type="checkbox" id="optExplorer"><span></span></label>
         <div class="grow"><div>Explorer menu</div><div class="small muted">Right-click in a synced folder: "Open in Google Drive", "Open in Synology Drive", and for
           Office files in Drive folders "Open in Google Docs / Sheets / Slides". In Windows 11 under "Show more options".</div></div></div>
-      <div class="setting"><div class="grow"><div>Pair list</div><div class="small muted" id="sharedNow"></div></div>
-        <button class="btn" id="sharedPick">Share via file...</button><button class="btn" id="sharedOff">Keep on this computer</button></div>
       <div class="setting"><label class="switch"><input type="checkbox" id="setVerbose"><span></span></label>
         <div class="grow"><div>Detailed log</div><div class="small muted">Also log index runs, change-feed polls and connection attempts.</div></div></div>
     </section>
@@ -203,7 +201,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     <section class="card">
       <div class="setting" style="align-items:flex-start"><div class="grow"><div>Ignore everywhere</div>
         <div class="small muted">gitignore-style patterns for every pair, one per line. A <span class="mono">.unisonoignore</span> file in any synced
-          folder adds patterns for that folder and below (and syncs to your other computers). Ignored items are never touched on either side.</div>
+          folder adds patterns for that folder and below (and syncs with it). Ignored items are never touched on either side.</div>
         <textarea id="optIgnore" rows="4" style="margin-top:8px"></textarea>
         <div style="margin-top:8px"><button class="btn" id="optIgnoreSave">Save patterns</button></div></div></div>
     </section>    <section class="card">
@@ -269,12 +267,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <option value="UploadOnly">Upload only: changes here go up; nothing remote comes down</option></select>
     <div class="help">One-way pairs apply the source side's changes, deletions included, and never undo anything done on the other side.</div></div>  <div class="field"><label>Local folder</label>
     <div class="inline"><input type="text" id="pairLocal"><button class="btn" id="pairPickLocal">Browse...</button></div>
-    <div class="help">May lie inside another pair's folder (e.g. a Drive folder inside a NAS folder); the outer pair then leaves it alone.
-      Folders under your profile are stored as <span class="mono">%USERPROFILE%</span> / <span class="mono">%APPDATA%</span>, so the pair also fits your other computers.</div></div>
-  <div class="field" id="pairMachinesRow"><label>Sync on</label>
-    <div><div class="seg" id="pairWhere"><button data-w="all">Every computer</button><button data-w="here">Only this one</button><button data-w="list">Chosen computers</button></div>
-      <input type="text" id="pairMachines" placeholder="computer names, comma-separated" style="margin-top:6px">
-      <div class="help" id="pairMachinesHelp"></div></div></div>
+    <div class="help">May lie inside another pair's folder (e.g. a Drive folder inside a NAS folder); the outer pair then leaves it alone.</div></div>
   <div class="field" id="pairDocsRow"><label id="pairDocsLabel">Google Docs</label>
     <select id="pairDocs"><option value="Export">Export to docx / xlsx / pptx; your edits go back into the document (Docs: needs the Google Docs API, see Accounts)</option>
       <option value="Link">Link that opens the document in the browser</option><option value="Skip">Skip</option></select></div>
@@ -515,7 +508,7 @@ function remoteLabel(p) {
 function renderPairs() {
   $("#pairList").innerHTML = S.pairs.length ? S.pairs.map(p => {
     const r = remoteLabel(p);
-    return `<div class="card" style="${p.activeHere ? "" : "opacity:.6"}">
+    return `<div class="card">
       <div class="pair">
         <div class="side"><div class="label">${esc(r.what)} &middot; ${esc(r.who)}</div><div class="ellipsis" title="${esc(r.path)}">${p.kind === "Folder" ? `<a class="path" data-openremote="${esc(p.id)}"><b>${esc(r.path)}</b></a>` : `<b>${esc(r.path)}</b>`}</div></div>
         <div class="arrow">&#8646;</div>
@@ -523,7 +516,6 @@ function renderPairs() {
       </div>
       <div class="pairfoot">${statusChip(p)}
         <span class="small muted">${p.lastSync ? "last run " + esc(p.lastSync) : "not run yet"}</span>
-        ${p.activeHere ? "" : `<span class="chip plain">not on this computer</span>`}
         ${p.onDemand ? `<span class="chip plain" title="Files on demand: online-only until opened or kept">on demand</span>` : ""}
         ${p.direction !== "TwoWay" ? `<span class="chip plain">${p.direction === "DownloadOnly" ? "download only" : "upload only"}</span>` : ""}
         <span class="small grow ellipsis" style="${p.failed ? "color:var(--red)" : ""}" title="${esc(p.lastResult)}">${esc(p.lastResult)}</span>
@@ -669,8 +661,6 @@ function pairDialog(p) {
   $("#pairOnDemand").checked = p ? p.onDemand : true; // new pairs: files on demand, where the folder allows it
   syncOnDemand();
   checkOnDemandPlace();
-  $("#pairMachines").value = p ? p.machines : "";
-  setWhere(!p || !p.machines ? "all" : p.machines.toLowerCase() === S.machine.toLowerCase() ? "here" : "list");
   $("#pairIgnore").value = p ? p.ignorePatterns : "";
   scope = { include: p ? [...p.includeFolders] : [], exclude: p ? [...p.excludeFolders] : [] };
   renderScopeText();
@@ -678,25 +668,6 @@ function pairDialog(p) {
   openModal("#dlgPair");
 }
 $("#btnAddPair").onclick = () => pairDialog();
-
-// Which computers sync a pair. Only matters when the pair list is shared between computers (Settings), so the
-// row is hidden otherwise, unless the pair already names computers.
-function setWhere(w) {
-  const shared = !!S.options.sharedPairsFile, names = $("#pairMachines").value.trim();
-  $("#pairMachinesRow").hidden = !shared && !names;
-  document.querySelectorAll("#pairWhere button").forEach(b => b.classList.toggle("on", b.dataset.w === w));
-  $("#pairMachines").hidden = w !== "list";
-  if (w === "all") $("#pairMachines").value = "";
-  if (w === "here") $("#pairMachines").value = S.machine;
-  if (w === "list" && !names) $("#pairMachines").value = S.machine;
-  const known = [...new Set(S.pairs.flatMap(x => x.machines ? x.machines.split(/\s*,\s*/) : []).concat(S.machine))];
-  $("#pairMachinesHelp").innerHTML = {
-    all: "Every computer that uses the shared pair list syncs this pair.",
-    here: `Only this computer (<b>${esc(S.machine)}</b>) syncs this pair; the others see it in the list but leave it alone. For folders that exist on one computer only.`,
-    list: `Only the named computers sync this pair. Known names: ${known.map(n => `<b>${esc(n)}</b>`).join(", ")}. A computer's name is shown here when you open this dialog on it.`,
-  }[w] + (shared ? "" : " The pair list is not shared (Settings), so only this computer uses it anyway.");
-}
-document.querySelectorAll("#pairWhere button").forEach(b => b.onclick = () => setWhere(b.dataset.w));
 $("#pairPickLocal").onclick = async () => { const r = await call("pickLocal", { current: $("#pairLocal").value }); if (r) { $("#pairLocal").value = r; checkOnDemandPlace(); } };
 $("#pairBrowse").onclick = async () => {
   if (pairKind !== "Folder") return browseDialog();
@@ -817,7 +788,7 @@ function pairFromForm() {
   const [server, user] = nas ? ($("#pairAcct").value || "|").split("|") : [null, null];
   return {
     includeFolders: scope.include, excludeFolders: scope.exclude,
-    direction: $("#pairDirection").value, onDemand: $("#pairOnDemand").checked, ignorePatterns: $("#pairIgnore").value, machines: $("#pairMachines").value,
+    direction: $("#pairDirection").value, onDemand: $("#pairOnDemand").checked, ignorePatterns: $("#pairIgnore").value,
     kind: pairKind, account: nas || folder ? null : $("#pairAcct").value, server, user,
     remotePath: nas || folder ? $("#pairRemote").value : ($("#pairRoot").checked ? "" : $("#pairRemote").value),
     localPath: $("#pairLocal").value, docs: $("#pairDocs").value,
@@ -951,10 +922,6 @@ function renderSettings() {
   if (document.activeElement !== $("#optDays")) $("#optDays").value = o.keepVersionsDays;
   $("#optMetered").checked = o.pauseOnMetered; $("#optPresenting").checked = o.pauseWhilePresenting;
   $("#optExplorer").checked = o.explorerMenu;
-  $("#sharedNow").innerHTML = o.sharedPairsFile
-    ? `Shared: <span class="mono">${esc(o.sharedPairsFile)}</span>. Point your other computers at the same file; sign-ins, settings and sync state stay per computer.`
-    : "Kept on this computer only. To use the same pairs on several computers, keep the list in a file they all see (e.g. in OneDrive).";
-  $("#sharedOff").hidden = !o.sharedPairsFile;
   $("#meteredNow").textContent = "Mobile hotspots and networks marked as metered in Windows. The current connection is " + (o.metered ? "metered." : "not metered.");
   if (document.activeElement !== $("#optIgnore") && !$("#optIgnore").dataset.dirty) $("#optIgnore").value = o.ignorePatterns;
 }
@@ -972,12 +939,6 @@ $("#optDays").onchange = e => setOpt({ keepVersionsDays: parseInt(e.target.value
 $("#optMetered").onchange = e => setOpt({ pauseOnMetered: e.target.checked });
 $("#optPresenting").onchange = e => setOpt({ pauseWhilePresenting: e.target.checked });
 $("#optExplorer").onchange = e => setOpt({ explorerMenu: e.target.checked });
-$("#sharedPick").onclick = async () => {
-  const f = await call("pickPairsFile"); if (!f) return;
-  if (!await confirmBox("Share the pair list", [`Keep the pair list in ${f}? If the file already lists pairs, they are used here too (a pair only syncs on the computers it names), and this computer's pairs are added to it.`])) return;
-  await setOpt({ sharedPairsFile: f }); toast("Pair list shared");
-};
-$("#sharedOff").onclick = async () => { await setOpt({ sharedPairsFile: "" }); toast("Pair list kept on this computer"); };
 $("#optIgnore").oninput = () => $("#optIgnore").dataset.dirty = "1";
 $("#optIgnoreSave").onclick = async () => { await setOpt({ ignorePatterns: $("#optIgnore").value }); delete $("#optIgnore").dataset.dirty; toast("Ignore patterns saved"); };
 

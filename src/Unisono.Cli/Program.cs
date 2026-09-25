@@ -34,7 +34,7 @@ try
         {
             // Ends files on demand for every pair that has it (placeholders back to ordinary files, sync roots unregistered).
             var config = Config.Load();
-            foreach (var p in config.Pairs.Where(p => p.OnDemand && p.ActiveHere))
+            foreach (var p in config.Pairs.Where(p => p.OnDemand))
             {
                 CloudFiles.TurnOff(p, log);
                 p.OnDemand = false;
@@ -52,7 +52,7 @@ try
             var config = Config.Load();
             Console.WriteLine(Config.FilePath);
             foreach (var p in config.Pairs)
-                Console.WriteLine($"  [{p.Kind}] {p.Name}  <->  {p.LocalPath}{(p.ActiveHere ? "" : " (not on this computer)")}   {(p.Server != null ? $"server={p.Server} user={p.User} " : "")}docs={p.GoogleDocs} cloudOnly>={p.CloudOnlyMinMB}MB folders=[{string.Join(", ", p.CloudOnlyFolders)}] poll={p.PollSeconds}s");
+                Console.WriteLine($"  [{p.Kind}] {p.Name}  <->  {p.LocalPath}   {(p.Server != null ? $"server={p.Server} user={p.User} " : "")}docs={p.GoogleDocs} cloudOnly>={p.CloudOnlyMinMB}MB folders=[{string.Join(", ", p.CloudOnlyFolders)}] poll={p.PollSeconds}s");
             if (config.Pairs.Count == 0) Console.WriteLine("  (no pairs; use: unisono init <remote/path> <localDir>)");
             return 0;
         }
@@ -321,7 +321,7 @@ try
                 Console.Error.WriteLine("error: no sync pairs configured; use: unisono init <remote/path> <localDir>");
                 return 1;
             }
-            log.Info($"UnisonoCli {version} starting, {config.ActivePairs.Count} pair(s) on this computer");
+            log.Info($"UnisonoCli {version} starting, {config.Pairs.Count} pair(s)");
             if (args[0] == "run")
             {
                 await using var host = new SyncHost(log, interactive: true);
@@ -343,7 +343,7 @@ try
             try
             {
                 var failed = 0;
-                foreach (var p in config.ActivePairs)
+                foreach (var p in config.Pairs)
                 {
                     try
                     {

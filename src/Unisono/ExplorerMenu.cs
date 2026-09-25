@@ -43,7 +43,7 @@ static class ExplorerMenu
             Remove();
             if (!config.Options.ExplorerMenu) return;
             var exe = Environment.ProcessPath ?? throw new InvalidOperationException("unknown exe path");
-            var pairs = config.ActivePairs.Where(p => p.LocalPath.Length > 0).ToList();
+            var pairs = config.Pairs.Where(p => p.LocalPath.Length > 0).ToList();
 
             var drive = AppliesTo(pairs.Where(p => p.Kind == RemoteKind.Drive));
             var nas = AppliesTo(pairs.Where(p => p.Kind == RemoteKind.Synology));

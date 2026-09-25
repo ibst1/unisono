@@ -82,15 +82,6 @@ sealed class Bridge : IAsyncDisposable
             // ----------------------------------------------------- pairs
             case "browse": return await BrowseAsync(p);
             case "browse.mkdir": return await MakeFolderAsync(p);
-            case "pickPairsFile":
-            {
-                using var d = new SaveFileDialog
-                {
-                    Title = "Shared pair list (e.g. in a folder synced between your computers)",
-                    Filter = "Unisono pair list (*.json)|*.json", FileName = "unisono-pairs.json", OverwritePrompt = false,
-                };
-                return d.ShowDialog(_owner) == DialogResult.OK ? d.FileName : null;
-            }
             case "pickLocal":
             {
                 using var d = new FolderBrowserDialog { Description = Str(p, "title") ?? "Local folder to keep in sync", UseDescriptionForTitle = true, ShowNewFolderButton = true };
@@ -144,7 +135,7 @@ sealed class Bridge : IAsyncDisposable
             case "pair.remove":
             {
                 var pair = FindPair(Str(p, "id"));
-                if (pair.OnDemand && pair.ActiveHere)
+                if (pair.OnDemand)
                 {
                     // Placeholders need their provider: turn them back into ordinary files (online-only ones are dropped;
                     // they stay online) while nothing is syncing.
@@ -175,7 +166,7 @@ sealed class Bridge : IAsyncDisposable
                 {
                     var raw = vf.ValueKind == JsonValueKind.String ? vf.GetString()?.Trim() : null;
                     var full = string.IsNullOrEmpty(raw) ? null : Path.GetFullPath(Environment.ExpandEnvironmentVariables(raw));
-                    if (full != null && Config.Pairs.FirstOrDefault(x => x.ActiveHere && WithSep(full).StartsWith(WithSep(x.LocalFullPath), StringComparison.OrdinalIgnoreCase)) is { } inside)
+                    if (full != null && Config.Pairs.FirstOrDefault(x => WithSep(full).StartsWith(WithSep(x.LocalFullPath), StringComparison.OrdinalIgnoreCase)) is { } inside)
                         throw new InvalidOperationException($"That folder lies inside {inside.LocalFullPath}, which Unisono syncs: the kept versions would be synced too. Pick a folder outside your sync pairs.");
                     var oldRoot = VersionStore.Root;
                     o.VersionsFolder = full == null ? null : SyncPair.Portable(full);
@@ -189,20 +180,6 @@ sealed class Bridge : IAsyncDisposable
                 if (p.TryGetProperty("pauseWhilePresenting", out var pp)) { o.PauseWhilePresenting = pp.GetBoolean(); changed = true; }
                 if (Str(p, "ignorePatterns") is { } ig) { o.IgnorePatterns = Lines(ig); changed = true; }
                 if (p.TryGetProperty("explorerMenu", out var em)) { o.ExplorerMenu = em.GetBoolean(); changed = true; }
-                if (p.TryGetProperty("sharedPairsFile", out var sp))
-                {
-                    var target = sp.ValueKind == JsonValueKind.String && sp.GetString() is { Length: > 0 } s ? SyncPair.Portable(Path.GetFullPath(Environment.ExpandEnvironmentVariables(s))) : null;
-                    if (target != null)
-                    {
-                        // Adopt what the shared file already lists, and add this computer's pairs that it lacks.
-                        var shared = Config.ReadPairsFile(target);
-                        foreach (var mine in Config.Pairs.Where(m => shared.All(x => x.Id != m.Id))) shared.Add(mine);
-                        Config.Pairs = shared;
-                    }
-                    o.SharedPairsFile = target;
-                    _log.Info(target != null ? $"pair list now kept in {target}" : "pair list now kept on this computer only");
-                    changed = true;
-                }
                 if (changed)
                 {
                     Config.Save();
@@ -264,7 +241,7 @@ sealed class Bridge : IAsyncDisposable
             pauseOnMetered = Config.Options.PauseOnMetered, pauseWhilePresenting = Config.Options.PauseWhilePresenting,
             ignorePatterns = string.Join("\n", Config.Options.IgnorePatterns), metered = AutoPause.IsMetered(),
             versionsDir = VersionStore.Root, versionsFolder = Config.Options.VersionsFolder ?? "", versionsDefault = string.IsNullOrWhiteSpace(Config.Options.VersionsFolder),
-            explorerMenu = Config.Options.ExplorerMenu, sharedPairsFile = Config.Options.SharedPairsFile,
+            explorerMenu = Config.Options.ExplorerMenu,
         },
     };
 
@@ -275,7 +252,7 @@ sealed class Bridge : IAsyncDisposable
         {
             id = p.Id, kind = p.Kind.ToString(), name = p.Name, account = p.Account, server = p.Server, user = p.User,
             onDemand = p.OnDemand, remotePath = p.RemotePath, remoteFullPath = p.RemoteFullPath, localPath = p.LocalFullPath, localPathStored = p.LocalPath, docs = p.GoogleDocs.ToString(),
-            machines = string.Join(", ", p.Machines), activeHere = p.ActiveHere,
+            
             cloudOnlyMinMB = p.CloudOnlyMinMB, cloudOnlyFolders = p.CloudOnlyFolders, pollSeconds = p.PollSeconds,
             includeFolders = p.IncludeFolders, excludeFolders = p.ExcludeFolders,
             direction = p.Direction.ToString(), ignorePatterns = string.Join("\n", p.IgnorePatterns),
@@ -559,7 +536,6 @@ sealed class Bridge : IAsyncDisposable
         // write it with %USERPROFILE% / %APPDATA% where possible, so the pair also fits other computers.
         pair.LocalPath = original != null && original.LocalFullPath.Equals(localFull, StringComparison.OrdinalIgnoreCase)
             ? original.LocalPath : localFull.Length == 0 ? "" : SyncPair.Portable(localFull);
-        pair.Machines = (Str(d, "machines") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         pair.GoogleDocs = Enum.TryParse<GoogleDocsMode>(Str(d, "docs"), out var docs) ? docs : GoogleDocsMode.Export;
         pair.Direction = Enum.TryParse<SyncDirection>(Str(d, "direction"), out var dir) ? dir : SyncDirection.TwoWay;
         pair.OnDemand = d.TryGetProperty("onDemand", out var od) && od.ValueKind == JsonValueKind.True;
@@ -648,19 +624,19 @@ sealed class Bridge : IAsyncDisposable
                 messages.Add("This syncs your whole My Drive. Everything in it is downloaded to this computer unless cloud-only rules keep large files or folders online.");
             if (original is { OnDemand: true } && (!pair.OnDemand || original.Id != pair.Id))
                 messages.Add("Files on demand ends for this folder: what is on this computer stays as ordinary files, and everything that is online-only now will be downloaded.");
-            if (pair.ActiveHere && !pair.OnDemand && ManagedSyncRoot(pair.LocalFullPath) is { } root)
+            if (!pair.OnDemand && ManagedSyncRoot(pair.LocalFullPath) is { } root)
                 messages.Add($"The local folder is inside {root}, which Windows itself syncs to another server (OneDrive or your organisation's Work Folders). " +
                              "Everything Unisono downloads there ends up in that place too.");
             if (messages.Count > 0) return new { status = "confirm", messages };
         }
 
         if (!exists) await createRemote();
-        if (original is { OnDemand: true } && original.ActiveHere && (!pair.OnDemand || original.Id != pair.Id))
+        if (original is { OnDemand: true } && (!pair.OnDemand || original.Id != pair.Id))
         {
             await _host.StopAsync(); // restarted below; the state must not change under a running cycle
             CloudFiles.TurnOff(original, _log);
         }
-        if (pair.ActiveHere) Directory.CreateDirectory(pair.LocalFullPath);
+        Directory.CreateDirectory(pair.LocalFullPath);
         if (original != null)
         {
             if (original.Id != pair.Id) { try { File.Delete(SyncState.FilePathFor(original)); } catch { } }
@@ -668,7 +644,7 @@ sealed class Bridge : IAsyncDisposable
         }
         else Config.Pairs.Add(pair);
         Config.Save();
-        _log.Info($"{(original == null ? "added" : "changed")} pair {pair.Name} <-> {pair.LocalPath}{(pair.ActiveHere ? "" : " (not synced on this computer)")}");
+        _log.Info($"{(original == null ? "added" : "changed")} pair {pair.Name} <-> {pair.LocalPath}");
         await _restartHost();
         return new { status = "ok" };
     }
@@ -680,16 +656,16 @@ sealed class Bridge : IAsyncDisposable
         var mine = WithSep(p.LocalFullPath);
         if (mine.StartsWith(WithSep(AppPaths.DataDir), StringComparison.OrdinalIgnoreCase) || mine.StartsWith(WithSep(AppPaths.AuthDir), StringComparison.OrdinalIgnoreCase))
             return "The local folder cannot be inside Unisono's own data folder.";
-        foreach (var other in Config.Pairs.Where(o => !ReferenceEquals(o, original) && o.ActiveHere && p.ActiveHere))
+        foreach (var other in Config.Pairs.Where(o => !ReferenceEquals(o, original)))
         {
             // Nesting is fine (the outer pair leaves the inner folder alone); the very same folder is not.
             if (WithSep(other.LocalFullPath).Equals(mine, StringComparison.OrdinalIgnoreCase))
                 return $"The pair '{other.Name}' already syncs {other.LocalFullPath}. Each local folder can belong to one pair only.";
         }
-        if (p.OnDemand && p.ActiveHere)
+        if (p.OnDemand)
         {
             if (CloudFiles.WhyNot(p.LocalFullPath, original is { OnDemand: true } && original.Id == p.Id ? original : null) is { } why) return why;
-            foreach (var other in Config.Pairs.Where(o => !ReferenceEquals(o, original) && o.ActiveHere))
+            foreach (var other in Config.Pairs.Where(o => !ReferenceEquals(o, original)))
             {
                 var theirs = WithSep(other.LocalFullPath);
                 if (theirs.StartsWith(mine, StringComparison.OrdinalIgnoreCase) || mine.StartsWith(theirs, StringComparison.OrdinalIgnoreCase))

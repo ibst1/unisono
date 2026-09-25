@@ -21,7 +21,7 @@ static class ItemLocator
     {
         path = Path.GetFullPath(path.Trim().TrimEnd('\\'));
         var config = Config.Load();
-        var pair = config.ActivePairs
+        var pair = config.Pairs
             .Where(p => p.LocalPath.Length > 0 && IsUnder(path, p.LocalFullPath))
             .Where(p => kind switch
             {

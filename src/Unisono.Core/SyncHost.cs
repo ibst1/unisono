@@ -76,7 +76,7 @@ public sealed class SyncHost : IAsyncDisposable
         await StopAsync();
         _lock ??= SyncLock.TryAcquire()
                   ?? throw new InvalidOperationException("another Unisono is already syncing (the tray app or 'UnisonoCli run'); close it first");
-        Pairs = config.ActivePairs.Select(p => new PairStatus { Pair = p }).ToList();
+        Pairs = config.Pairs.Select(p => new PairStatus { Pair = p }).ToList();
         _options = config.Options;
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;

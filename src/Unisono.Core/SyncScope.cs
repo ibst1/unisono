@@ -23,7 +23,7 @@ public sealed class SyncScope
         var root = pair.LocalFullPath.TrimEnd('\\') + "\\";
         foreach (var o in others)
         {
-            if (ReferenceEquals(o, pair) || string.IsNullOrEmpty(o.LocalPath) || !o.ActiveHere) continue;
+            if (ReferenceEquals(o, pair) || string.IsNullOrEmpty(o.LocalPath)) continue;
             var theirs = o.LocalFullPath.TrimEnd('\\');
             if (theirs.StartsWith(root, StringComparison.OrdinalIgnoreCase))
                 yield return theirs[root.Length..].Replace('\\', '/');

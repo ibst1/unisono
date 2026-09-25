@@ -342,10 +342,11 @@ function Test-OnDemand([hashtable]$pair) {
 # ------------------------------------------------------------------ UI
 function Test-Ui {
     Section "ui: window renders"
-    $c = Computer "ui" @{ Kind = "Drive"; RemotePath = "Unisono-tests-$stamp-ui"; Machines = @("NOT-THIS-COMPUTER") }
-    # A second pair of the folder kind, also inactive here, so both kinds of card are drawn.
+    # A Drive pair on an account that is not signed in (it fails without touching any Drive) and a folder pair,
+    # so both kinds of card are drawn.
+    $c = Computer "ui" @{ Kind = "Drive"; RemotePath = "Unisono-tests-$stamp-ui"; Account = "nobody@example.invalid" }
     $cfg = Get-Content "$($c.Data)\config.json" -Raw | ConvertFrom-Json
-    $cfg.Pairs += [pscustomobject]@{ Kind = "Folder"; RemotePath = "\\server\share\ui-test"; LocalPath = "$($c.Local)-2"; Machines = @("NOT-THIS-COMPUTER") }
+    $cfg.Pairs += [pscustomobject]@{ Kind = "Folder"; RemotePath = "$($c.Local)-other"; LocalPath = "$($c.Local)-2" }
     $cfg | ConvertTo-Json -Depth 6 | Set-Content "$($c.Data)\config.json" -Encoding UTF8
     Use-Data $c.Data; $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9339"
     $p = Start-Process $app -PassThru; Start-Sleep 15

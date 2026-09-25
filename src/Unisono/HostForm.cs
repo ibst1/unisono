@@ -29,8 +29,6 @@ sealed class HostForm : Form
     private readonly List<object> _history = new();
     private readonly System.Windows.Forms.Timer _stateTimer = new() { Interval = 250 };
     private bool _webReady;
-    private FileSystemWatcher? _sharedWatcher;
-    private readonly System.Windows.Forms.Timer _reloadTimer = new() { Interval = 3000 };
 
     public HostForm(bool startHidden, EventWaitHandle showSignal)
     {
@@ -70,17 +68,6 @@ sealed class HostForm : Form
         };
         // State pushes are coalesced: a cycle over many pairs fires many small events.
         _stateTimer.Tick += (_, _) => { _stateTimer.Stop(); Post(new { @event = "state", data = _bridge.State() }); };
-
-        // The shared pair list may be changed by another computer (through whatever syncs that file).
-        _reloadTimer.Tick += async (_, _) =>
-        {
-            _reloadTimer.Stop();
-            var before = System.Text.Json.JsonSerializer.Serialize(_bridge.Config.Pairs);
-            _bridge.Reload();
-            if (System.Text.Json.JsonSerializer.Serialize(_bridge.Config.Pairs) == before) return; // our own save
-            _log.Info("the shared pair list changed; reloading");
-            await StartHostAsync();
-        };
 
         // A second start of Unisono only signals this one to show itself.
         ThreadPool.RegisterWaitForSingleObject(showSignal, (_, _) => OnUi(ShowFromTray), null, Timeout.Infinite, executeOnlyOnce: false);
@@ -189,26 +176,8 @@ sealed class HostForm : Form
         }
         // The menu entries name the synced folders, so they follow every change of the pair list.
         ExplorerMenu.Update(_bridge.Config, _log);
-        WatchSharedFile();
         UpdateTray();
         QueueState();
-    }
-
-    private void WatchSharedFile()
-    {
-        _sharedWatcher?.Dispose();
-        _sharedWatcher = null;
-        if (_bridge.Config.SharedFile is not { } file) return;
-        var full = Path.GetFullPath(file);
-        var dir = Path.GetDirectoryName(full);
-        if (dir == null || !Directory.Exists(dir)) return;
-        _sharedWatcher = new FileSystemWatcher(dir, Path.GetFileName(full))
-        {
-            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size,
-        };
-        FileSystemEventHandler kick = (_, _) => OnUi(() => { _reloadTimer.Stop(); _reloadTimer.Start(); });
-        _sharedWatcher.Changed += kick; _sharedWatcher.Created += kick; _sharedWatcher.Renamed += (_, _) => OnUi(() => { _reloadTimer.Stop(); _reloadTimer.Start(); });
-        _sharedWatcher.EnableRaisingEvents = true;
     }
 
     // ------------------------------------------------------------------ tray

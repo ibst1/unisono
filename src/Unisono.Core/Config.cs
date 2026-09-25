@@ -57,12 +57,6 @@ public sealed class SyncPair
     [JsonIgnore]
     public string RemoteFullPath => Kind != RemoteKind.Folder || string.IsNullOrWhiteSpace(RemotePath) ? "" : Path.GetFullPath(Environment.ExpandEnvironmentVariables(RemotePath)).TrimEnd('\\');
 
-    /// <summary>Computer names this pair is synced on; empty = every computer. For a pair list shared between computers.</summary>
-    public List<string> Machines { get; set; } = new();
-
-    [JsonIgnore]
-    public bool ActiveHere => Machines.Count == 0 || Machines.Contains(Environment.MachineName, StringComparer.OrdinalIgnoreCase);
-
     /// <summary>A full path written with %APPDATA%, %LOCALAPPDATA% or %USERPROFILE% where it lies inside them.</summary>
     public static string Portable(string fullPath)
     {
@@ -167,11 +161,6 @@ public sealed class AppOptions
     public List<string> IgnorePatterns { get; set; } = new() { ".DS_Store" };
     /// <summary>"Open in Google Drive" and the like in Explorer's context menu for synced folders.</summary>
     public bool ExplorerMenu { get; set; } = true;
-    /// <summary>
-    /// Keep the pair list in this file instead of this computer's config.json, e.g. in a folder synced between your
-    /// computers. Settings, sign-ins and sync state stay per computer. May contain environment variables.
-    /// </summary>
-    public string? SharedPairsFile { get; set; }
 }
 
 public sealed class Config
@@ -190,52 +179,19 @@ public sealed class Config
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    /// <summary>The pairs in a shared pair-list file (empty when it does not exist or cannot be read).</summary>
-    public static List<SyncPair> ReadPairsFile(string path)
-    {
-        try
-        {
-            var full = Environment.ExpandEnvironmentVariables(path);
-            return File.Exists(full) ? JsonSerializer.Deserialize<PairList>(File.ReadAllText(full), JsonOptions)?.Pairs ?? new() : new();
-        }
-        catch { return new(); }
-    }
-
-    private sealed class PairList
-    {
-        public List<SyncPair> Pairs { get; set; } = new();
-    }
-
-    [JsonIgnore]
-    public string? SharedFile => string.IsNullOrWhiteSpace(Options.SharedPairsFile) ? null : Environment.ExpandEnvironmentVariables(Options.SharedPairsFile);
-
-    /// <summary>The pairs that sync on this computer.</summary>
-    [JsonIgnore]
-    public List<SyncPair> ActivePairs => Pairs.Where(p => p.ActiveHere).ToList();
-
     public static Config Load()
     {
         var config = File.Exists(FilePath)
             ? JsonSerializer.Deserialize<Config>(File.ReadAllText(FilePath), JsonOptions) ?? new Config()
             : new Config();
         VersionStore.Folder = config.Options.VersionsFolder;
-        if (config.SharedFile is { } shared && File.Exists(shared))
-            config.Pairs = JsonSerializer.Deserialize<PairList>(File.ReadAllText(shared), JsonOptions)?.Pairs ?? new();
         return config;
     }
 
     public void Save()
     {
         AppPaths.EnsureDataDir();
-        if (SharedFile is { } shared)
-        {
-            // Pairs go to the shared file; this computer's config.json keeps the options (and no pairs).
-            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(shared))!);
-            WriteAtomically(shared, JsonSerializer.Serialize(new PairList { Pairs = Pairs }, JsonOptions));
-            var local = new Config { Options = Options };
-            WriteAtomically(FilePath, JsonSerializer.Serialize(local, JsonOptions));
-        }
-        else WriteAtomically(FilePath, JsonSerializer.Serialize(this, JsonOptions));
+        WriteAtomically(FilePath, JsonSerializer.Serialize(this, JsonOptions));
     }
 
     private static void WriteAtomically(string path, string text)
