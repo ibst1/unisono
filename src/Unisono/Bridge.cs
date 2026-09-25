@@ -251,7 +251,7 @@ sealed class Bridge : IAsyncDisposable
         return new
         {
             id = p.Id, kind = p.Kind.ToString(), name = p.Name, account = p.Account, server = p.Server, user = p.User,
-            onDemand = p.OnDemand, remotePath = p.RemotePath, remoteFullPath = p.RemoteFullPath, localPath = p.LocalFullPath, localPathStored = p.LocalPath, docs = p.GoogleDocs.ToString(),
+            onDemand = p.OnDemand, remotePath = p.RemotePath, remoteFullPath = p.RemoteFullPath, localPath = p.LocalFullPath, docs = p.GoogleDocs.ToString(),
             
             cloudOnlyMinMB = p.CloudOnlyMinMB, cloudOnlyFolders = p.CloudOnlyFolders, pollSeconds = p.PollSeconds,
             includeFolders = p.IncludeFolders, excludeFolders = p.ExcludeFolders,
@@ -519,11 +519,11 @@ sealed class Bridge : IAsyncDisposable
         pair.Kind = Enum.TryParse<RemoteKind>(Str(d, "kind"), out var kind) ? kind : RemoteKind.Drive;
         if (pair.Kind == RemoteKind.Folder)
         {
-            // Written like the local folder: unchanged stays as it was, new gets %USERPROFILE% and the like where they fit.
+            // Written like the local folder: unchanged stays as it was (older pairs may say %USERPROFILE%), new as a full path.
             var other = (Str(d, "remotePath") ?? "").Trim();
             var otherFull = other.Length == 0 ? "" : Path.GetFullPath(Environment.ExpandEnvironmentVariables(other)).TrimEnd('\\');
             pair.RemotePath = original is { Kind: RemoteKind.Folder } && original.RemoteFullPath.Equals(otherFull, StringComparison.OrdinalIgnoreCase)
-                ? original.RemotePath : otherFull.Length == 0 ? "" : SyncPair.Portable(otherFull);
+                ? original.RemotePath : otherFull;
         }
         else
         {
@@ -532,10 +532,10 @@ sealed class Bridge : IAsyncDisposable
         }
         var local = (Str(d, "localPath") ?? "").Trim();
         var localFull = local.Length == 0 ? "" : Path.GetFullPath(Environment.ExpandEnvironmentVariables(local));
-        // Unchanged folder: keep how it was written (the pair's identity and history depend on it). New or changed:
-        // write it with %USERPROFILE% / %APPDATA% where possible, so the pair also fits other computers.
+        // Unchanged folder: keep how it was written (the pair's identity and history depend on it; older pairs may say
+        // %USERPROFILE%). New or changed: the full path, as the window shows it.
         pair.LocalPath = original != null && original.LocalFullPath.Equals(localFull, StringComparison.OrdinalIgnoreCase)
-            ? original.LocalPath : localFull.Length == 0 ? "" : SyncPair.Portable(localFull);
+            ? original.LocalPath : localFull;
         pair.GoogleDocs = Enum.TryParse<GoogleDocsMode>(Str(d, "docs"), out var docs) ? docs : GoogleDocsMode.Export;
         pair.Direction = Enum.TryParse<SyncDirection>(Str(d, "direction"), out var dir) ? dir : SyncDirection.TwoWay;
         pair.OnDemand = d.TryGetProperty("onDemand", out var od) && od.ValueKind == JsonValueKind.True;

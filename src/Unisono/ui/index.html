@@ -497,7 +497,10 @@ function statusChip(p) {
   return `<span class="chip ${cls}">${esc(p.status)}</span>`;
 }
 function remoteLabel(p) {
-  if (p.kind === "Folder") return { what: "Folder", who: /^(\\\\|\/\/)/.test(p.remoteFullPath) ? "network" : "this computer", path: p.remotePath };
+  if (p.kind === "Folder") {
+    const f = p.remoteFullPath, drive = /^[A-Za-z]:/.exec(f);
+    return { what: "Folder", who: /^(\\\\|\/\/)/.test(f) ? "network" : drive ? "drive " + drive[0].toUpperCase() : "folder", path: f };
+  }
   if (p.kind === "Synology") {
     let host = p.server; try { host = new URL(p.server).host; } catch {}
     return { what: "Synology NAS", who: `${p.user} @ ${host}`, path: p.remotePath };
@@ -510,7 +513,7 @@ function renderPairs() {
     const r = remoteLabel(p);
     return `<div class="card">
       <div class="pair">
-        <div class="side"><div class="label">${esc(r.what)} &middot; ${esc(r.who)}</div><div class="ellipsis" title="${esc(r.path)}">${p.kind === "Folder" ? `<a class="path" data-openremote="${esc(p.id)}"><b>${esc(r.path)}</b></a>` : `<b>${esc(r.path)}</b>`}</div></div>
+        <div class="side"><div class="label">${esc(r.what)} &middot; ${esc(r.who)}</div><div class="ellipsis" title="${esc(r.path)}">${p.kind === "Folder" ? `<a class="path" data-openremote="${esc(p.id)}">${esc(r.path)}</a>` : esc(r.path)}</div></div>
         <div class="arrow">&#8646;</div>
         <div class="side"><div class="label">This computer</div><div class="ellipsis" title="${esc(p.localPath)}"><a class="path" data-openpair="${esc(p.id)}">${esc(p.localPath)}</a></div></div>
       </div>
@@ -650,8 +653,8 @@ function pairDialog(p) {
     else { const def = S.google.find(a => a.isDefault); $("#pairAcct").value = p.account || (def && def.email) || ""; }
   }
   $("#pairRoot").checked = !!p && p.kind === "Drive" && !p.remotePath;
-  $("#pairRemote").value = p ? p.remotePath : "";
-  $("#pairLocal").value = p ? p.localPathStored : "";
+  $("#pairRemote").value = p ? (p.kind === "Folder" ? p.remoteFullPath : p.remotePath) : "";
+  $("#pairLocal").value = p ? p.localPath : "";
   $("#pairCreate").checked = !p;
   $("#pairDocs").value = p ? p.docs : "Export";
   $("#pairMb").value = p ? p.cloudOnlyMinMB : 0;
