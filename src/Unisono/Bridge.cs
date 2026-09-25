@@ -81,6 +81,7 @@ sealed class Bridge : IAsyncDisposable
 
             // ----------------------------------------------------- pairs
             case "browse": return await BrowseAsync(p);
+            case "browse.mkdir": return await MakeFolderAsync(p);
             case "pickPairsFile":
             {
                 using var d = new SaveFileDialog
@@ -492,6 +493,32 @@ sealed class Bridge : IAsyncDisposable
         return children.Where(DriveClient.IsFolder)
             .OrderBy(f => f.Name, StringComparer.CurrentCultureIgnoreCase)
             .Select(f => new { name = f.Name, key = f.Id, path = PathUtil.Join(parentPath, f.Name) });
+    }
+
+    /// <summary>New folder from the folder picker, inside the folder given like for <see cref="BrowseAsync"/>. Returns the same shape as a browse item.</summary>
+    private async Task<object> MakeFolderAsync(JsonElement p)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var name = (Str(p, "name") ?? "").Trim();
+        if (name.Length == 0 || name is "." or ".." || name.IndexOfAny(@"\/:*?""<>|".ToCharArray()) >= 0)
+            throw new InvalidOperationException("That is not a usable folder name.");
+        var key = Str(p, "key");
+        if (Str(p, "kind") == "Synology")
+        {
+            if (key == null) throw new InvalidOperationException("Select the shared folder to create it in first.");
+            var nas = await NasFor(Str(p, "server")!, Str(p, "user")!, cts.Token);
+            var made = await nas.CreateFolderAsync(key, name, cts.Token);
+            return new { name = made.Name, key = made.Path, path = made.Path };
+        }
+        var drive = await DriveFor(Str(p, "account"), cts.Token);
+        var parentPath = Str(p, "path") ?? "";
+        key ??= parentPath.Length == 0 ? "root" : (await drive.ResolveFolderAsync(parentPath, cts.Token)).Id;
+        // Drive allows two folders with one name; reuse the existing one instead of making a twin.
+        var existing = (await drive.ListChildrenAsync(key, cts.Token))
+            .FirstOrDefault(f => DriveClient.IsFolder(f) && f.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        var folder = existing ?? await drive.CreateFolderAsync(name, key, cts.Token);
+        _log.Info($"Folder picker: {(existing != null ? "already there" : "created")} {PathUtil.Join(parentPath, folder.Name)} on {Str(p, "account") ?? "Google Drive"}");
+        return new { name = folder.Name, key = folder.Id, path = PathUtil.Join(parentPath, folder.Name) };
     }
 
     // ------------------------------------------------------------------ pairs

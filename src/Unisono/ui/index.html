@@ -271,8 +271,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     <div class="inline"><input type="text" id="pairLocal"><button class="btn" id="pairPickLocal">Browse...</button></div>
     <div class="help">May lie inside another pair's folder (e.g. a Drive folder inside a NAS folder); the outer pair then leaves it alone.
       Folders under your profile are stored as <span class="mono">%USERPROFILE%</span> / <span class="mono">%APPDATA%</span>, so the pair also fits your other computers.</div></div>
-  <div class="field"><label>Computers</label><input type="text" id="pairMachines" placeholder="empty = every computer">
-    <div class="help" id="pairMachinesHelp"></div></div>
+  <div class="field" id="pairMachinesRow"><label>Sync on</label>
+    <div><div class="seg" id="pairWhere"><button data-w="all">Every computer</button><button data-w="here">Only this one</button><button data-w="list">Chosen computers</button></div>
+      <input type="text" id="pairMachines" placeholder="computer names, comma-separated" style="margin-top:6px">
+      <div class="help" id="pairMachinesHelp"></div></div></div>
   <div class="field" id="pairDocsRow"><label id="pairDocsLabel">Google Docs</label>
     <select id="pairDocs"><option value="Export">Export to docx / xlsx / pptx; your edits go back into the document (Docs: needs the Google Docs API, see Accounts)</option>
       <option value="Link">Link that opens the document in the browser</option><option value="Skip">Skip</option></select></div>
@@ -291,7 +293,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <h3 id="browseTitle">Choose a folder</h3>
   <div class="tree" id="tree"></div>
   <div class="row small muted" style="margin-top:8px"><span class="grow ellipsis" id="browseSel">Nothing selected</span></div>
-  <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="browseOk" disabled>Select</button></div>
+  <div class="inline" id="browseNewRow" style="margin-top:8px" hidden><input type="text" id="browseNewName" class="grow" placeholder="Name of the new folder">
+    <button class="btn primary" id="browseNewOk">Create</button><button class="btn" id="browseNewCancel">Cancel</button></div>
+  <div class="actions"><button class="btn" id="browseNew" style="margin-right:auto">New folder</button><button class="btn" data-close>Cancel</button><button class="btn primary" id="browseOk" disabled>Select</button></div>
 </div></div>
 
 <div class="modal" id="dlgScope"><div class="dialog">
@@ -666,7 +670,7 @@ function pairDialog(p) {
   syncOnDemand();
   checkOnDemandPlace();
   $("#pairMachines").value = p ? p.machines : "";
-  $("#pairMachinesHelp").innerHTML = `Names of the computers that sync this pair, comma-separated. This computer is <b>${esc(S.machine)}</b>. Useful with a shared pair list (Settings).`;
+  setWhere(!p || !p.machines ? "all" : p.machines.toLowerCase() === S.machine.toLowerCase() ? "here" : "list");
   $("#pairIgnore").value = p ? p.ignorePatterns : "";
   scope = { include: p ? [...p.includeFolders] : [], exclude: p ? [...p.excludeFolders] : [] };
   renderScopeText();
@@ -674,6 +678,25 @@ function pairDialog(p) {
   openModal("#dlgPair");
 }
 $("#btnAddPair").onclick = () => pairDialog();
+
+// Which computers sync a pair. Only matters when the pair list is shared between computers (Settings), so the
+// row is hidden otherwise, unless the pair already names computers.
+function setWhere(w) {
+  const shared = !!S.options.sharedPairsFile, names = $("#pairMachines").value.trim();
+  $("#pairMachinesRow").hidden = !shared && !names;
+  document.querySelectorAll("#pairWhere button").forEach(b => b.classList.toggle("on", b.dataset.w === w));
+  $("#pairMachines").hidden = w !== "list";
+  if (w === "all") $("#pairMachines").value = "";
+  if (w === "here") $("#pairMachines").value = S.machine;
+  if (w === "list" && !names) $("#pairMachines").value = S.machine;
+  const known = [...new Set(S.pairs.flatMap(x => x.machines ? x.machines.split(/\s*,\s*/) : []).concat(S.machine))];
+  $("#pairMachinesHelp").innerHTML = {
+    all: "Every computer that uses the shared pair list syncs this pair.",
+    here: `Only this computer (<b>${esc(S.machine)}</b>) syncs this pair; the others see it in the list but leave it alone. For folders that exist on one computer only.`,
+    list: `Only the named computers sync this pair. Known names: ${known.map(n => `<b>${esc(n)}</b>`).join(", ")}. A computer's name is shown here when you open this dialog on it.`,
+  }[w] + (shared ? "" : " The pair list is not shared (Settings), so only this computer uses it anyway.");
+}
+document.querySelectorAll("#pairWhere button").forEach(b => b.onclick = () => setWhere(b.dataset.w));
 $("#pairPickLocal").onclick = async () => { const r = await call("pickLocal", { current: $("#pairLocal").value }); if (r) { $("#pairLocal").value = r; checkOnDemandPlace(); } };
 $("#pairBrowse").onclick = async () => {
   if (pairKind !== "Folder") return browseDialog();
@@ -834,7 +857,8 @@ function browseDialog() {
   const [server, user] = nas ? acct.split("|") : [null, null];
   const base = nas ? { kind: "Synology", server, user } : { kind: "Drive", account: acct };
   $("#browseTitle").textContent = nas ? "Choose a NAS folder" : "Choose a Google Drive folder";
-  browseSel = null; $("#browseOk").disabled = true; $("#browseSel").textContent = "Nothing selected";
+  browseSel = null; browseLi = null; $("#browseOk").disabled = true; $("#browseSel").textContent = "Nothing selected";
+  $("#browseNewRow").hidden = true; $("#browseNew").disabled = false;
   const tree = $("#tree"); tree.innerHTML = "<ul></ul>";
   const rootLi = makeNode(nas ? "Shared folders" : "My Drive", null, nas ? null : "", !nas);
   tree.firstChild.appendChild(rootLi);
@@ -850,8 +874,8 @@ function browseDialog() {
     node.querySelector(".tw").onclick = ev => { ev.stopPropagation(); toggle(li); };
     node.onclick = () => {
       tree.querySelectorAll(".node.sel").forEach(n => n.classList.remove("sel"));
-      if (!selectable) { browseSel = null; $("#browseOk").disabled = true; $("#browseSel").textContent = "Pick a shared folder or a folder inside one"; toggle(li, true); return; }
-      node.classList.add("sel"); browseSel = path;
+      if (!selectable) { browseSel = null; browseLi = null; $("#browseOk").disabled = true; $("#browseSel").textContent = "Pick a shared folder or a folder inside one"; toggle(li, true); return; }
+      node.classList.add("sel"); browseSel = path; browseLi = li;
       $("#browseSel").textContent = path === "" ? "My Drive (the whole drive)" : path;
       $("#browseOk").disabled = false;
       toggle(li, true);
@@ -863,6 +887,20 @@ function browseDialog() {
     const ul = li.querySelector("ul");
     if (open === true || ul.hidden) expand(li); else { ul.hidden = true; li.querySelector(".tw").innerHTML = "&#9656;"; }
   }
+  // New folder inside the selected one (Drive: My Drive when nothing is selected), then selected.
+  browseMkdir = async name => {
+    const parent = browseLi || (nas ? null : rootLi);
+    if (!parent) throw new Error("Select the shared folder to create it in first");
+    const made = await call("browse.mkdir", { ...base, key: parent._key, path: parent._path, name });
+    await expand(parent);
+    const ul = parent.querySelector("ul");
+    if (ul.firstChild && !ul.firstChild._loaded && ul.firstChild._key === undefined) ul.innerHTML = ""; // "(no subfolders)"
+    let li = [...ul.children].find(c => c._key === made.key);
+    if (!li) { li = makeNode(made.name, made.key, made.path, true); ul.appendChild(li); }
+    li._loaded = true; li.querySelector("ul").innerHTML = `<li class="muted small" style="padding:3px 30px">(no subfolders)</li>`;
+    li.querySelector(".node").click();
+    li.scrollIntoView({ block: "nearest" });
+  };
   async function expand(li) {
     const ul = li.querySelector("ul"); ul.hidden = false; li.querySelector(".tw").innerHTML = "&#9662;";
     if (li._loaded) return; li._loaded = true;
@@ -874,6 +912,23 @@ function browseDialog() {
     } catch (e) { li._loaded = false; ul.innerHTML = `<li class="small" style="padding:3px 30px;color:var(--red)">${esc(e.message)}</li>`; }
   }
 }
+let browseLi = null, browseMkdir = null;
+$("#browseNew").onclick = () => {
+  $("#browseNewRow").hidden = false; $("#browseNew").disabled = true;
+  $("#browseNewName").value = ""; $("#browseNewName").focus();
+  $("#browseSel").textContent = "New folder in: " + (browseSel == null ? (pairKind === "Drive" ? "My Drive" : "(select a shared folder)") : browseSel || "My Drive");
+};
+$("#browseNewCancel").onclick = () => { $("#browseNewRow").hidden = true; $("#browseNew").disabled = false; };
+$("#browseNewOk").onclick = async () => {
+  const name = $("#browseNewName").value.trim();
+  if (!name) return;
+  if (/[\\/:*?"<>|]/.test(name)) { toast("A folder name cannot contain \\ / : * ? \" < > |", true); return; }
+  $("#browseNewOk").disabled = true;
+  try { await browseMkdir(name); $("#browseNewRow").hidden = true; $("#browseNew").disabled = false; toast("Folder created"); }
+  catch (e) { toast(e.message, true); }
+  finally { $("#browseNewOk").disabled = false; }
+};
+$("#browseNewName").addEventListener("keydown", e => { if (e.key === "Enter") $("#browseNewOk").click(); if (e.key === "Escape") { e.stopPropagation(); $("#browseNewCancel").click(); } });
 $("#browseOk").onclick = () => {
   closeModal("#dlgBrowse");
   if (browseSel !== currentRemote().replace(/^\//, pairKind === "Synology" ? "/" : "")) resetScope("a different remote folder was chosen");
