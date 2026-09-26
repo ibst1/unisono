@@ -644,7 +644,7 @@ sealed class Bridge : IAsyncDisposable
         }
         else Config.Pairs.Add(pair);
         Config.Save();
-        _log.Info($"{(original == null ? "added" : "changed")} pair {pair.Name} <-> {pair.LocalPath}");
+        _log.Info($"{(original == null ? "added" : "changed")} pair {pair.Name} <-> {pair.LocalFullPath}");
         await _restartHost();
         return new { status = "ok" };
     }
