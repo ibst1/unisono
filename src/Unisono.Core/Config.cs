@@ -139,7 +139,7 @@ public sealed class SyncPair
     public string Name => Kind switch
     {
         RemoteKind.Synology => $"NAS:{RemotePath}",
-        RemoteKind.Folder => RemotePath,
+        RemoteKind.Folder => RemoteFullPath,
         _ => RemotePath.Length == 0 ? "My Drive" : RemotePath,
     };
 }

@@ -660,7 +660,8 @@ sealed class Bridge : IAsyncDisposable
         {
             // Nesting is fine (the outer pair leaves the inner folder alone); the very same folder is not.
             if (WithSep(other.LocalFullPath).Equals(mine, StringComparison.OrdinalIgnoreCase))
-                return $"The pair '{other.Name}' already syncs {other.LocalFullPath}. Each local folder can belong to one pair only.";
+                return $"{other.LocalFullPath} is already the local folder of the pair with {other.Name}. A local folder can belong to one pair only. " +
+                    "To keep several folders alike, add one pair per folder, each with the same remote or other folder.";
         }
         if (p.OnDemand)
         {
