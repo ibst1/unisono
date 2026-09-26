@@ -7,6 +7,8 @@ public sealed class PairStatus
     public SyncPair Pair { get; init; } = null!;
     public string Status { get; set; } = "waiting";
     public DateTime? LastSync { get; set; }
+    /// <summary>While this pair waits for its turn: the pair that is syncing now.</summary>
+    public string? WaitingFor { get; set; }
     public CycleStats? LastStats { get; set; }
     public string? LastError { get; set; }
 }
@@ -76,7 +78,8 @@ public sealed class SyncHost : IAsyncDisposable
         await StopAsync();
         _lock ??= SyncLock.TryAcquire()
                   ?? throw new InvalidOperationException("another Unisono is already syncing (the tray app or 'UnisonoCli run'); close it first");
-        Pairs = config.Pairs.Select(p => new PairStatus { Pair = p }).ToList();
+        var lastRuns = LoadLastRuns();
+        Pairs = config.Pairs.Select(p => new PairStatus { Pair = p, LastSync = lastRuns.TryGetValue(p.Id, out var t) ? t : null }).ToList();
         _options = config.Options;
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
@@ -159,14 +162,19 @@ public sealed class SyncHost : IAsyncDisposable
                     for (var i = 0; i < pairs.Count; i++)
                     {
                         var ps = pairs[i];
+                        for (var j = i + 1; j < pairs.Count; j++) { pairs[j].WaitingFor = ps.Pair.Name; Update(pairs[j], pairs[j].Status); }
+                        ps.WaitingFor = null;
                         try
                         {
                             Update(ps, "syncing");
                             engines[i] ??= new SyncEngine(await stores.CreateAsync(ps.Pair, ct), ps.Pair, _log, pairs.Select(x => x.Pair).ToList(), _options);
+                            // With other pairs to serve, a long job (thousands of uploads) is done in turns of a few minutes.
+                            engines[i]!.TimeBudget = pairs.Count > 1 ? TurnLength : null;
                             var stats = await engines[i]!.RunCycleAsync(ct);
                             followUp |= engines[i]!.NeedsFollowUp;
                             ps.LastStats = stats;
                             ps.LastSync = DateTime.Now;
+                            SaveLastRuns();
                             ps.LastError = stats.Errors > 0 ? $"{stats.Errors} item(s) failed, see log" : null;
                             Update(ps, stats.Errors > 0 ? "errors" : "in sync");
                             if (stats.Errors > 0) ok = false;
@@ -289,6 +297,29 @@ public sealed class SyncHost : IAsyncDisposable
             _log.Warn($"cannot watch {path}: {ex.Message}");
             return null;
         }
+    }
+
+    // UNISONO_TURN_SECONDS shortens the turns for tests.
+    private static TimeSpan TurnLength => TimeSpan.FromSeconds(int.TryParse(Environment.GetEnvironmentVariable("UNISONO_TURN_SECONDS"), out var s) && s > 0 ? s : 120);
+
+    // When each pair last finished a cycle, so the window can say so after a restart too.
+    private static string LastRunsFile => Path.Combine(AppPaths.DataDir, "lastrun.json");
+
+    private static Dictionary<string, DateTime> LoadLastRuns()
+    {
+        try { return System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, DateTime>>(File.ReadAllText(LastRunsFile)) ?? new(); }
+        catch { return new(); }
+    }
+
+    private void SaveLastRuns()
+    {
+        try
+        {
+            AppPaths.EnsureDataDir();
+            var runs = Pairs.Where(p => p.LastSync != null).ToDictionary(p => p.Pair.Id, p => p.LastSync!.Value);
+            File.WriteAllText(LastRunsFile, System.Text.Json.JsonSerializer.Serialize(runs));
+        }
+        catch (Exception ex) { _log.Debug("could not save the last run times: " + ex.Message); }
     }
 
     private void Update(PairStatus ps, string status)

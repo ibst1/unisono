@@ -495,7 +495,9 @@ $("#nasGo").onclick = async () => {
 // -------------------------------------------------------------------- pairs
 function statusChip(p) {
   const cls = p.failed || p.status === "failed" || p.status === "errors" ? "err" : p.status === "syncing" ? "busy" : p.status === "in sync" ? "ok" : "";
-  return `<span class="chip ${cls}">${esc(p.status)}</span>`;
+  // Only before a pair's first run since the start: afterwards every pair waits its turn each round anyway.
+  const wait = p.waitingFor && p.status === "waiting" ? `<span class="chip plain" title="Pairs sync one at a time">waiting for ${esc(p.waitingFor)}</span>` : "";
+  return `<span class="chip ${cls}">${esc(p.status)}</span>${wait}`;
 }
 function remoteLabel(p) {
   if (p.kind === "Folder") {

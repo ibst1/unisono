@@ -258,7 +258,8 @@ sealed class Bridge : IAsyncDisposable
             includeFolders = p.IncludeFolders, excludeFolders = p.ExcludeFolders,
             direction = p.Direction.ToString(), ignorePatterns = string.Join("\n", p.IgnorePatterns),
             nested = SyncScope.NestedPaths(p, Config.Pairs).ToList(),
-            status = st?.Status ?? "waiting", lastSync = st?.LastSync?.ToString("HH:mm:ss"),
+            status = st?.Status ?? "waiting", waitingFor = st?.Status == "syncing" ? null : st?.WaitingFor,
+            lastSync = st?.LastSync is { } ls ? ls.ToString(ls.Date == DateTime.Today ? "HH:mm:ss" : "d MMM HH:mm") : null,
             lastResult = st?.LastError ?? Summary(st?.LastStats), failed = st?.LastError != null,
         };
     }

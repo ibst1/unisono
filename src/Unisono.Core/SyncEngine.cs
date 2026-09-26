@@ -52,6 +52,20 @@ public sealed partial class SyncEngine
     public bool NeedsFollowUp { get; private set; }
 
     /// <summary>A file written to in the last seconds is left for the next cycle rather than uploaded half-saved.</summary>
+    /// <summary>
+    /// How long one cycle may keep starting file transfers; the rest waits for the next cycle. Set by the host when
+    /// there are other pairs, so one pair with hours of uploads does not keep the others from their turn. Null = no limit.
+    /// </summary>
+    public TimeSpan? TimeBudget { get; set; }
+    private DateTime _deadline = DateTime.MaxValue;
+
+    private bool OutOfTime()
+    {
+        if (DryRun || DateTime.UtcNow < _deadline) return false;
+        NeedsFollowUp = true;
+        return true;
+    }
+
     private bool Settling(LocalItem l)
     {
         if (DryRun || !LocalScanner.Unsettled(l)) return false; // a preview shows what would happen, settled or not
@@ -90,6 +104,7 @@ public sealed partial class SyncEngine
         EnsureSyncRoot();
         _doneThisCycle.Clear();
         NeedsFollowUp = false;
+        _deadline = TimeBudget is { } budget ? DateTime.UtcNow + budget : DateTime.MaxValue;
         var remoteAll = await _store.GetTreeAsync(_log, ct);
         var localAll = LocalScanner.Scan(_root, _log);
         var ignore = IgnoreRules.Build(_options, _pair, _root,
@@ -337,7 +352,7 @@ public sealed partial class SyncEngine
                 continue;
 
             var kind = Classify(node, local);
-            if (kind == EntryKind.File) await SyncFileAsync(node, remote, local, derived, stats, ct);
+            if (kind == EntryKind.File) { if (!OutOfTime()) await SyncFileAsync(node, remote, local, derived, stats, ct); }
             else if (kind != EntryKind.Folder) await SyncDerivedAsync(node, kind, remote, local, derived, stats, ct);
             // Folder here means "skip": nothing local, but a stale derived entry is cleaned up below.
         }
@@ -399,7 +414,7 @@ public sealed partial class SyncEngine
                 if (Up) _log.Warn($"[{_pair.Name}] '{rel}' was deleted remotely but changed locally; uploading it again");
             }
             if (!Up || !parentKnown) continue; // download-only: local-only files stay local
-            if (Settling(item)) continue;
+            if (Settling(item) || OutOfTime()) continue;
             uploads.Add((item, parent));
         }
         await UploadNewFilesAsync(uploads, remote, stats, ct);
@@ -422,6 +437,7 @@ public sealed partial class SyncEngine
             {
                 var (item, parent) = u;
                 var rel = item.RelPath;
+                if (OutOfTime()) return;
                 try
                 {
                     RemoteNode node;
