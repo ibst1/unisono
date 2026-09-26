@@ -7,6 +7,8 @@ public sealed class PairStatus
     public SyncPair Pair { get; init; } = null!;
     public string Status { get; set; } = "waiting";
     public DateTime? LastSync { get; set; }
+    /// <summary>Files found to change very often, waiting for the user's choice (ignore or keep syncing). Lock it.</summary>
+    public List<string> Frequent { get; } = new();
     /// <summary>While this pair waits for its turn: the pair that is syncing now.</summary>
     public string? WaitingFor { get; set; }
     public CycleStats? LastStats { get; set; }
@@ -201,6 +203,8 @@ public sealed class SyncHost : IAsyncDisposable
                             ps.LastError = stats.Errors > 0 ? $"{stats.Errors} item(s) failed, see log" : null;
                             Update(ps, stats.Errors > 0 ? "errors" : "in sync");
                             if (stats.Errors > 0) ok = false;
+                            if (stats.Frequent.Count > 0)
+                                lock (ps.Frequent) ps.Frequent.AddRange(stats.Frequent.Where(f => !ps.Frequent.Contains(f, StringComparer.OrdinalIgnoreCase)));
                             CycleCompleted?.Invoke(ps, stats);
                         }
                         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }

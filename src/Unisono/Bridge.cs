@@ -89,6 +89,7 @@ sealed class Bridge : IAsyncDisposable
                 return d.ShowDialog(_owner) == DialogResult.OK ? d.SelectedPath : null;
             }
             case "pair.save": return await SavePairAsync(p);
+            case "pair.frequent": return FrequentChoice(Str(p, "id"), Str(p, "rel") ?? "", Str(p, "action"));
             case "pair.ignoreFile": return ReadIgnoreFile(Str(p, "localPath"), Str(p, "id") is { } iid ? Config.Pairs.FirstOrDefault(x => x.Id == iid) : null);
             case "ondemand.check":
             {
@@ -261,6 +262,7 @@ sealed class Bridge : IAsyncDisposable
             status = st?.Status ?? "waiting", waitingFor = st?.Status == "syncing" ? null : st?.WaitingFor,
             lastSync = st?.LastSync is { } ls ? ls.ToString(ls.Date == DateTime.Today ? "HH:mm:ss" : "d MMM HH:mm") : null,
             lastResult = st?.LastError ?? Summary(st?.LastStats), failed = st?.LastError != null,
+            frequent = st == null ? new List<string>() : Locked(st.Frequent), frequentOk = p.FrequentOk,
         };
     }
 
@@ -544,6 +546,7 @@ sealed class Bridge : IAsyncDisposable
         var ignoreText = Str(d, "ignorePatterns"); // written to the folder's .unisonoignore below
         pair.IncludeFolders = StrList(d, "includeFolders");
         pair.ExcludeFolders = StrList(d, "excludeFolders");
+        if (d.TryGetProperty("frequentOk", out _)) pair.FrequentOk = StrList(d, "frequentOk");
         pair.PollSeconds = Math.Clamp(d.TryGetProperty("pollSeconds", out var ps) && ps.TryGetInt32(out var pv) ? pv : 60, 10, 3600);
         if (pair.Kind == RemoteKind.Folder)
         {
@@ -654,6 +657,32 @@ sealed class Bridge : IAsyncDisposable
         _log.Info($"{(original == null ? "added" : "changed")} pair {pair.Name} <-> {pair.LocalFullPath}");
         await _restartHost();
         return new { status = "ok" };
+    }
+
+    private static List<string> Locked(List<string> list) { lock (list) return list.ToList(); }
+
+    /// <summary>The user's answer to "this file changes very often": add it to the pair's .unisonoignore, or keep syncing it.</summary>
+    private object? FrequentChoice(string? id, string rel, string? action)
+    {
+        var pair = FindPair(id);
+        if (action == "ignore")
+        {
+            // Anchored to the pair's top folder; '[' would start a character class.
+            var line = "/" + rel.Replace("[", "[[]");
+            var current = ReadIgnoreFile(pair.LocalFullPath, null);
+            WriteIgnoreFile(pair.LocalFullPath, current.Length == 0 ? line : current + "\n" + line);
+            _log.Info($"[{pair.Name}] now ignored (changes very often): {rel}");
+        }
+        else
+        {
+            if (!pair.FrequentOk.Contains(rel, StringComparer.OrdinalIgnoreCase)) pair.FrequentOk.Add(rel);
+            Config.Save();
+            _log.Info($"[{pair.Name}] kept syncing although it changes very often: {rel}");
+        }
+        if (_host.Pairs.FirstOrDefault(s => s.Pair.Id == pair.Id) is { } st)
+            lock (st.Frequent) st.Frequent.RemoveAll(f => f.Equals(rel, StringComparison.OrdinalIgnoreCase));
+        _pushState();
+        return null;
     }
 
     // The pair dialog's Ignore field is the .unisonoignore file at the top of the local folder, so the patterns sync

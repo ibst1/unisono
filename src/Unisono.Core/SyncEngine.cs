@@ -7,6 +7,8 @@ public sealed class CycleStats
     public int Downloaded, Uploaded, Exported, Linked, Trashed, Recycled, Conflicts, Errors, Moved, Online;
     /// <summary>Things the user should hear about right away (the tray shows them), beyond the log.</summary>
     public List<string> Notices { get; } = new();
+    /// <summary>Files found to change very often (see <see cref="SyncEngine.FrequentTransfers"/>), each reported once.</summary>
+    public List<string> Frequent { get; } = new();
     public bool Any => Downloaded + Uploaded + Exported + Linked + Trashed + Recycled + Conflicts + Errors + Moved + Online > 0;
     public override string ToString() =>
         $"{Downloaded} down, {Uploaded} up, {Moved} moved,{(Online > 0 ? $" {Online} online-only," : "")} {Exported} exported, {Linked} linked, {Trashed} deleted remotely, {Recycled} recycled locally, {Conflicts} conflicts, {Errors} errors";
@@ -156,6 +158,29 @@ public sealed partial class SyncEngine
         }
         if (stats.Any) _log.Info($"[{_pair.Name}] {stats}");
         return stats;
+    }
+
+    // Files whose changes are transferred again and again (logs, status files) are usually better ignored: after
+    // FrequentTransfers changes within FrequentWindow the user is asked, once per file and run of the app.
+    public const int FrequentTransfers = 6;
+    public static readonly TimeSpan FrequentWindow = TimeSpan.FromHours(1);
+    private readonly Dictionary<string, List<DateTime>> _changeTimes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _frequentReported = new(StringComparer.OrdinalIgnoreCase);
+
+    private void ChangeTransferred(string rel, CycleStats stats)
+    {
+        if (DryRun || _pair.FrequentOk.Contains(rel, StringComparer.OrdinalIgnoreCase)) return;
+        var now = DateTime.UtcNow;
+        lock (_changeTimes)
+        {
+            if (!_changeTimes.TryGetValue(rel, out var times)) _changeTimes[rel] = times = new();
+            times.Add(now);
+            times.RemoveAll(t => now - t > FrequentWindow);
+            if (times.Count < FrequentTransfers || !_frequentReported.Add(rel)) return;
+        }
+        stats.Frequent.Add(rel);
+        stats.Notices.Add($"{PathUtil.NameOf(rel)} in {_pair.Name} changes very often ({FrequentTransfers} times within an hour). Open Unisono to ignore it or keep syncing it.");
+        _log.Warn($"[{_pair.Name}] '{rel}' changes very often; it is probably better ignored");
     }
 
     /// <summary>Changes whenever an item of the remote tree is added, removed or changed (within this process).</summary>
@@ -620,6 +645,7 @@ public sealed partial class SyncEngine
         RecordFile(rel, fresh, path);
         stats.Uploaded++;
         if (!DryRun) _log.Info($"[{_pair.Name}] uploaded change: {rel} ({l.Size:N0} bytes)");
+        ChangeTransferred(rel, stats);
     }
 
     private async Task DownloadAsync(RemoteNode node, string path, CycleStats stats, string why, CancellationToken ct, bool keep = false)
@@ -642,7 +668,9 @@ public sealed partial class SyncEngine
             catch (Exception ex) { _log.Warn($"[{_pair.Name}] could not keep a copy of {node.RelPath} before replacing it: {ex.Message}"); }
         }
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var replaces = File.Exists(path);
         await Tracked(SyncActivity.Direction.Down, node.RelPath, node.Size, () => _store.DownloadAsync(node, path, ct));
+        if (replaces) ChangeTransferred(node.RelPath, stats);
         Adopt(path, node.Id, pin);
         RecordFile(node.RelPath, node, path);
         _log.Info($"[{_pair.Name}] downloaded ({why}): {node.RelPath} ({node.Size:N0} bytes)");

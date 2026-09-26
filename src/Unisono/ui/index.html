@@ -277,7 +277,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="field"><label>Ignore</label>
     <textarea id="pairIgnore" rows="3" placeholder="one pattern per line, gitignore style, e.g.&#10;*.log&#10;__pycache__/&#10;renv/library/"></textarea>
     <div class="help">Kept in the file <span class="mono">.unisonoignore</span> at the top of the local folder, so the patterns sync with it and apply on every computer that syncs this folder.
-      On top of the patterns in Settings and any <span class="mono">.unisonoignore</span> in subfolders. Ignored items are never touched on either side.</div></div>  <div class="field"><label>Check remote every</label>
+      On top of the patterns in Settings and any <span class="mono">.unisonoignore</span> in subfolders. Ignored items are never touched on either side.</div>
+    <div class="help" id="pairFreqRow" hidden>Kept syncing although they change very often (no warnings): <span class="mono" id="pairFreqList"></span>
+      <a class="path" id="pairFreqClear">Warn again</a></div></div>  <div class="field"><label>Check remote every</label>
     <div class="inline"><input type="number" id="pairPoll" min="10" max="3600" style="width:110px"> <span class="muted small" id="pairPollHelp">seconds; local changes are picked up at once</span></div></div>
   <div id="pairMsg"></div>
   <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="pairSave">Save</button></div>
@@ -529,6 +531,10 @@ function renderPairs() {
         <button class="btn" data-versions="${esc(p.id)}" title="Earlier versions of files this pair replaced">Versions</button>
         <button class="btn" data-editpair="${esc(p.id)}">Edit</button>
         <button class="btn danger" data-rmpair="${esc(p.id)}">Remove</button></div>
+      ${(p.frequent || []).map(f => `<div class="note warn inline" style="margin-bottom:0">
+        <span class="grow"><span class="mono">${esc(f)}</span> changes very often (${6} times or more within an hour). Logs and status files like this are usually better left out of syncing.</span>
+        <button class="btn" data-freq="ignore" data-fpair="${esc(p.id)}" data-frel="${esc(f)}">Ignore it</button>
+        <button class="btn" data-freq="keep" data-fpair="${esc(p.id)}" data-frel="${esc(f)}" title="No more warnings for this file">Keep syncing</button></div>`).join("")}
     </div>`;
   }).join("") : `<div class="empty">No sync pairs yet. Add an account first, then a pair.</div>`;
   document.querySelectorAll("[data-openpair]").forEach(a => a.onclick = () => call("open", { what: "pair", id: a.dataset.openpair }));
@@ -536,6 +542,9 @@ function renderPairs() {
   document.querySelectorAll("[data-editpair]").forEach(b => b.onclick = () => pairDialog(S.pairs.find(p => p.id === b.dataset.editpair)));
   document.querySelectorAll("[data-versions]").forEach(b => b.onclick = () => versionsDialog(S.pairs.find(p => p.id === b.dataset.versions)));
   document.querySelectorAll("[data-preview]").forEach(b => b.onclick = () => preview(S.pairs.find(p => p.id === b.dataset.preview), b));
+  document.querySelectorAll("[data-freq]").forEach(b => b.onclick = () =>
+    call("pair.frequent", { id: b.dataset.fpair, rel: b.dataset.frel, action: b.dataset.freq })
+      .then(() => toast(b.dataset.freq === "ignore" ? "Added to .unisonoignore" : "Kept syncing; no more warnings for it")).catch(e => toast(e.message, true)));
   document.querySelectorAll("[data-rmpair]").forEach(b => b.onclick = async () => {
     const p = S.pairs.find(x => x.id === b.dataset.rmpair);
     if (!await confirmBox("Remove sync pair", [`Stop syncing ${remoteLabel(p).path} with ${p.localPath}? No files are deleted on either side.`])) return;
@@ -668,6 +677,7 @@ function pairDialog(p) {
   syncOnDemand();
   checkOnDemandPlace();
   $("#pairIgnore").value = ""; delete $("#pairIgnore").dataset.dirty;
+  frequentOk = p ? [...(p.frequentOk || [])] : []; renderFrequentOk();
   if (p) loadIgnoreFile(p.localPath, p.id);
   scope = { include: p ? [...p.includeFolders] : [], exclude: p ? [...p.excludeFolders] : [] };
   renderScopeText();
@@ -675,6 +685,9 @@ function pairDialog(p) {
   openModal("#dlgPair");
 }
 $("#btnAddPair").onclick = () => pairDialog();
+let frequentOk = [];
+function renderFrequentOk() { $("#pairFreqRow").hidden = !frequentOk.length; $("#pairFreqList").textContent = frequentOk.join(", "); }
+$("#pairFreqClear").onclick = () => { frequentOk = []; renderFrequentOk(); };
 $("#pairPickLocal").onclick = async () => { const r = await call("pickLocal", { current: $("#pairLocal").value }); if (r) { $("#pairLocal").value = r; checkOnDemandPlace(); loadIgnoreFile(r); } };
 $("#pairLocal").addEventListener("change", () => loadIgnoreFile($("#pairLocal").value));
 $("#pairIgnore").addEventListener("input", () => $("#pairIgnore").dataset.dirty = "1");
@@ -803,7 +816,7 @@ function pairFromForm() {
   const [server, user] = nas ? ($("#pairAcct").value || "|").split("|") : [null, null];
   return {
     includeFolders: scope.include, excludeFolders: scope.exclude,
-    direction: $("#pairDirection").value, onDemand: $("#pairOnDemand").checked, ignorePatterns: $("#pairIgnore").value,
+    direction: $("#pairDirection").value, onDemand: $("#pairOnDemand").checked, ignorePatterns: $("#pairIgnore").value, frequentOk,
     kind: pairKind, account: nas || folder ? null : $("#pairAcct").value, server, user,
     remotePath: nas || folder ? $("#pairRemote").value : ($("#pairRoot").checked ? "" : $("#pairRemote").value),
     localPath: $("#pairLocal").value, docs: $("#pairDocs").value,
