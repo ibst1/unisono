@@ -133,16 +133,22 @@ public sealed class SyncHost : IAsyncDisposable
             if (current is { } c && c.Status != "syncing" && active.Any(t => t.Pair == c.Pair.Name)) Update(c, "syncing");
         };
         SyncActivity.Changed += onActivity;
+        // Per pair: the watchers saw something since its last cycle (1), so the next one scans the local folder.
+        var changed = new int[pairs.Count];
+        Array.Fill(changed, 1);
         try
         {
-            foreach (var p in pairs)
+            for (var i = 0; i < pairs.Count; i++)
             {
+                var p = pairs[i];
+                var index = i;
+                Action mark = () => Interlocked.Exchange(ref changed[index], 1);
                 if (p.Pair.OnDemand) ServeOnDemand(p, stores, providers);
-                var w = TryWatch(p.Pair.LocalFullPath, attributes: p.Pair.OnDemand);
+                var w = TryWatch(p.Pair.LocalFullPath, attributes: p.Pair.OnDemand, mark);
                 if (w != null) watchers.Add(w);
                 // A folder pair's other side is a folder too: watch it as well, so its changes come across at once.
-                // Network shares usually deliver these events; polling covers the ones that do not.
-                if (p.Pair.Kind == RemoteKind.Folder && TryWatch(p.Pair.RemoteFullPath, attributes: false) is { } rw) watchers.Add(rw);
+                // Network shares usually deliver these events; the full pass every few minutes covers the ones that do not.
+                if (p.Pair.Kind == RemoteKind.Folder && TryWatch(p.Pair.RemoteFullPath, attributes: false, mark) is { } rw) watchers.Add(rw);
             }
             var poll = TimeSpan.FromSeconds(pairs.Count == 0 ? 60 : Math.Max(5, pairs.Min(p => p.Pair.PollSeconds)));
             if (pairs.Count > 0)
@@ -186,6 +192,7 @@ public sealed class SyncHost : IAsyncDisposable
                             engines[i] ??= new SyncEngine(await stores.CreateAsync(ps.Pair, ct), ps.Pair, _log, pairs.Select(x => x.Pair).ToList(), _options);
                             // With other pairs to serve, a long job (thousands of uploads) is done in turns of a few minutes.
                             engines[i]!.TimeBudget = pairs.Count > 1 ? TurnLength : null;
+                            engines[i]!.LocalChanged = Interlocked.Exchange(ref changed[i], 0) == 1;
                             var stats = await engines[i]!.RunCycleAsync(ct);
                             followUp |= engines[i]!.NeedsFollowUp;
                             ps.LastStats = stats;
@@ -200,6 +207,7 @@ public sealed class SyncHost : IAsyncDisposable
                         catch (Exception ex)
                         {
                             ok = false;
+                            Interlocked.Exchange(ref changed[i], 1); // scan again next time
                             if (ps.Pair.Kind == RemoteKind.Synology) { engines[i] = null; stores.Forget(ps.Pair); }
                             ps.LastError = ex.Message;
                             Update(ps, "failed");
@@ -286,7 +294,7 @@ public sealed class SyncHost : IAsyncDisposable
 
     /// <param name="attributes">Also react to attribute changes: in a files-on-demand folder that is how Explorer's
     /// "Always keep on this device" and "Free up space" arrive.</param>
-    private FileSystemWatcher? TryWatch(string path, bool attributes)
+    private FileSystemWatcher? TryWatch(string path, bool attributes, Action changed)
     {
         if (!Directory.Exists(path)) return null;
         try
@@ -303,11 +311,12 @@ public sealed class SyncHost : IAsyncDisposable
             FileSystemEventHandler onChange = (_, ev) =>
             {
                 var name = Path.GetFileName(ev.FullPath);
-                if (!LocalScanner.IsIgnored(name) || (ev.ChangeType == WatcherChangeTypes.Deleted && name.StartsWith("~$", StringComparison.Ordinal))) Nudge();
+                if (!LocalScanner.IsIgnored(name) || (ev.ChangeType == WatcherChangeTypes.Deleted && name.StartsWith("~$", StringComparison.Ordinal))) { changed(); Nudge(); }
             };
             w.Created += onChange; w.Changed += onChange; w.Deleted += onChange;
-            w.Renamed += (_, _) => Nudge();
-            w.Error += (_, ev) => { _log.Warn($"watcher: {ev.GetException().Message}"); Nudge(); };
+            w.Renamed += (_, _) => { changed(); Nudge(); };
+            // Events were lost (buffer overflow): only a scan can tell what happened.
+            w.Error += (_, ev) => { _log.Warn($"watcher: {ev.GetException().Message}"); changed(); Nudge(); };
             w.EnableRaisingEvents = true;
             return w;
         }

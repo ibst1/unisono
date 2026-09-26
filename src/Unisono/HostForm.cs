@@ -21,7 +21,11 @@ sealed class HostForm : Form
     private readonly SyncHost _host;
     private readonly AppSettings _settings = AppSettings.Load();
     private readonly Bridge _bridge;
-    private readonly WebView2 _web = new() { Dock = DockStyle.Fill };
+    // The page lives only while the window is open: hidden in the tray, WebView2's browser processes (some 400 MB)
+    // are closed a little while after the window is, and started again when it is shown.
+    private WebView2? _web;
+    private bool _webFailed;
+    private readonly System.Windows.Forms.Timer _webIdleTimer = new() { Interval = 30_000 };
     private readonly NotifyIcon _tray = new();
     private readonly ToolStripMenuItem _trayPause = new("Pause");
     private readonly Dictionary<(Color, string), Icon> _icons = new();
@@ -43,8 +47,8 @@ sealed class HostForm : Form
         MinimumSize = new Size(760, 520);
         ApplySavedBounds();
         BackColor = Color.FromArgb(32, 32, 32);
-        Controls.Add(_web);
         BuildTray();
+        _webIdleTimer.Tick += (_, _) => { _webIdleTimer.Stop(); if (!Visible) CloseWeb(); };
 
         _log.Written += (level, line) =>
         {
@@ -81,15 +85,24 @@ sealed class HostForm : Form
         _log.Info($"Unisono {Ui.Version} started; settings in {AppPaths.DataDir}");
         await StartHostAsync();
         _ = _bridge.RefreshGoogleInfoAsync();
+        if (!_startHidden) await OpenWebAsync();
+    }
+
+    private async Task OpenWebAsync()
+    {
+        if (_web != null || _webFailed) return;
+        _web = new WebView2 { Dock = DockStyle.Fill };
+        Controls.Add(_web);
         try
         {
-            await InitWebAsync();
+            await InitWebAsync(_web);
         }
         catch (Exception ex)
         {
             // Without the WebView2 runtime there is no window, but syncing still runs from the tray.
             _log.Error("the window could not start: " + ex.Message);
-            Controls.Remove(_web);
+            _webFailed = true;
+            CloseWeb();
             Controls.Add(new Label
             {
                 Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.White,
@@ -99,11 +112,21 @@ sealed class HostForm : Form
         }
     }
 
-    private async Task InitWebAsync()
+    private void CloseWeb()
+    {
+        _webReady = false;
+        if (_web == null) return;
+        Controls.Remove(_web);
+        _web.Dispose();
+        _web = null;
+    }
+
+    private async Task InitWebAsync(WebView2 web)
     {
         var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(AppPaths.DataDir, "WebView2"));
-        await _web.EnsureCoreWebView2Async(env);
-        var core = _web.CoreWebView2;
+        await web.EnsureCoreWebView2Async(env);
+        if (web != _web) return; // closed again meanwhile
+        var core = web.CoreWebView2;
         core.Settings.AreDefaultContextMenusEnabled = Environment.GetEnvironmentVariable("UNISONO_DEVTOOLS") == "1";
         core.Settings.AreDevToolsEnabled = Environment.GetEnvironmentVariable("UNISONO_DEVTOOLS") == "1";
         core.Settings.IsStatusBarEnabled = false;
@@ -120,7 +143,9 @@ sealed class HostForm : Form
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Unisono.ui.index.html")
                            ?? throw new InvalidOperationException("ui/index.html missing from the build");
         using var reader = new StreamReader(stream);
-        _web.NavigateToString(await reader.ReadToEndAsync());
+        var html = await reader.ReadToEndAsync();
+        if (web != _web) return;
+        web.NavigateToString(html);
         _webReady = true;
     }
 
@@ -155,7 +180,7 @@ sealed class HostForm : Form
 
     private void Post(object message)
     {
-        if (!_webReady || _web.CoreWebView2 == null || IsDisposed) return;
+        if (!_webReady || _web?.CoreWebView2 == null || IsDisposed) return;
         try { _web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(message, Json)); } catch { }
     }
 
@@ -300,7 +325,9 @@ sealed class HostForm : Form
     private void ShowFromTray()
     {
         _allowShow = true;
+        _webIdleTimer.Stop();
         Show();
+        _ = OpenWebAsync();
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
         Activate();
         _ = _bridge.RefreshGoogleInfoAsync(); // retries accounts whose last check failed
@@ -313,6 +340,7 @@ sealed class HostForm : Form
         {
             e.Cancel = true;
             Hide();
+            _webIdleTimer.Stop(); _webIdleTimer.Start();
             if (!_toldAboutTray)
             {
                 _toldAboutTray = true;

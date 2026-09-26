@@ -57,6 +57,18 @@ public sealed partial class SyncEngine
     /// there are other pairs, so one pair with hours of uploads does not keep the others from their turn. Null = no limit.
     /// </summary>
     public TimeSpan? TimeBudget { get; set; }
+
+    /// <summary>
+    /// Set by the host from its file watchers: something changed in the local folder (for folder pairs also in the
+    /// other folder) since the last cycle. Without that, with the remote tree as it was and no work left over, a cycle
+    /// stops after the remote check: no local scan, no file passes, no state written. A full pass still runs every
+    /// <see cref="FullCycleInterval"/>, for anything a watcher missed.
+    /// </summary>
+    public bool LocalChanged { get; set; } = true;
+    public TimeSpan FullCycleInterval { get; set; } = TimeSpan.FromMinutes(10);
+    private DateTime _lastFullCycleUtc = DateTime.MinValue;
+    private long _lastRemoteFingerprint;
+    private bool _docsChecked;
     private DateTime _deadline = DateTime.MaxValue;
 
     private bool OutOfTime()
@@ -103,9 +115,20 @@ public sealed partial class SyncEngine
         _scope = new SyncScope(_pair, _others);
         EnsureSyncRoot();
         _doneThisCycle.Clear();
+        var workLeft = NeedsFollowUp;
         NeedsFollowUp = false;
         _deadline = TimeBudget is { } budget ? DateTime.UtcNow + budget : DateTime.MaxValue;
         var remoteAll = await _store.GetTreeAsync(_log, ct);
+        var fingerprint = Fingerprint(remoteAll);
+        _docsChecked = false;
+        if (!DryRun && !LocalChanged && !workLeft && fingerprint == _lastRemoteFingerprint && DateTime.UtcNow - _lastFullCycleUtc < FullCycleInterval)
+        {
+            // Nothing seen on either side. Only Google Docs edits, which Drive reports late, need a look of their own.
+            if (!await FreshenExportedDocsAsync(remoteAll, ct)) return stats;
+            _docsChecked = true;
+        }
+        _lastRemoteFingerprint = fingerprint;
+        _lastFullCycleUtc = DateTime.UtcNow;
         var localAll = LocalScanner.Scan(_root, _log);
         var ignore = IgnoreRules.Build(_options, _pair, _root,
             localAll.Values.Where(i => !i.IsDir && PathUtil.NameOf(i.RelPath).Equals(IgnoreRules.FileName, StringComparison.OrdinalIgnoreCase)).Select(i => i.RelPath),
@@ -133,6 +156,15 @@ public sealed partial class SyncEngine
         }
         if (stats.Any) _log.Info($"[{_pair.Name}] {stats}");
         return stats;
+    }
+
+    /// <summary>Changes whenever an item of the remote tree is added, removed or changed (within this process).</summary>
+    private static long Fingerprint(Dictionary<string, RemoteNode> tree)
+    {
+        long h = tree.Count;
+        foreach (var (rel, n) in tree) // a sum: the order of the dictionary does not matter
+            h += HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(rel), n.Id, n.Size, n.ModifiedUtc, n.Md5);
+        return h;
     }
 
     /// <summary>The in-scope, not-ignored part of one side; records which folders hold ignored content.</summary>
@@ -338,7 +370,7 @@ public sealed partial class SyncEngine
     {
         // Local paths that are derived from the remote (exports, links) and must not be treated as new local files.
         var derived = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        await FreshenExportedDocsAsync(remote, ct);
+        if (!_docsChecked) await FreshenExportedDocsAsync(remote, ct);
 
         foreach (var node in remote.Values.Where(n => !n.IsFolder).OrderBy(n => n.RelPath, StringComparer.OrdinalIgnoreCase).ToList())
         {
@@ -801,14 +833,16 @@ public sealed partial class SyncEngine
     /// document itself is always current. So the exported documents are asked directly: the 10 most recently changed
     /// every cycle, and 10 more of the rest in turn, which keeps it cheap with many documents.
     /// </summary>
-    private async Task FreshenExportedDocsAsync(Dictionary<string, RemoteNode> remote, CancellationToken ct)
+    /// <summary>Returns true when a checked document changed (modified time or revision).</summary>
+    private async Task<bool> FreshenExportedDocsAsync(Dictionary<string, RemoteNode> remote, CancellationToken ct)
     {
         _revisions.Clear();
         _staleExports.Clear();
-        if (_store.Kind != "Drive" || !Down) return;
+        var changed = false;
+        if (_store.Kind != "Drive" || !Down) return false;
         var docs = _state.Entries.Values.Where(e => e.Kind == EntryKind.Export && remote.ContainsKey(e.Path))
             .OrderByDescending(e => e.DriveModifiedUtc).Select(e => e.Path).ToList();
-        if (docs.Count == 0) return;
+        if (docs.Count == 0) return false;
         var rest = docs.Skip(10).ToList();
         var pick = docs.Take(10).ToList();
         if (rest.Count > 0)
@@ -823,17 +857,18 @@ public sealed partial class SyncEngine
             {
                 var fresh = await _store.RefreshAsync(remote[rel], ct);
                 if (fresh == null) continue;
-                if (fresh.ModifiedUtc != remote[rel].ModifiedUtc) remote[rel] = fresh;
+                if (fresh.ModifiedUtc != remote[rel].ModifiedUtc) { remote[rel] = fresh; changed = true; }
                 // Google Docs: the revision changes with the edit itself, the modified time only a minute or two later.
                 if (await _store.RevisionAsync(fresh, ct) is { } rev)
                 {
                     _revisions[rel] = rev;
-                    if (_state.Entries.TryGetValue(rel, out var e) && e.Revision != null && e.Revision != rev) _staleExports.Add(rel);
+                    if (_state.Entries.TryGetValue(rel, out var e) && e.Revision != null && e.Revision != rev) { _staleExports.Add(rel); changed = true; }
                 }
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { _log.Debug($"[{_pair.Name}] {rel}: {ex.Message}"); }
         }
+        return changed;
     }
 
     /// <summary>
