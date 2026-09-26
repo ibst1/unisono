@@ -667,11 +667,8 @@ sealed class Bridge : IAsyncDisposable
         var pair = FindPair(id);
         if (action == "ignore")
         {
-            // Anchored to the pair's top folder; '[' would start a character class.
-            var line = "/" + rel.Replace("[", "[[]");
-            var current = ReadIgnoreFile(pair.LocalFullPath, null);
-            WriteIgnoreFile(pair.LocalFullPath, current.Length == 0 ? line : current + "\n" + line);
-            _log.Info($"[{pair.Name}] now ignored (changes very often): {rel}");
+            var pattern = IgnoreFile.AddItem(pair.LocalFullPath, rel, isDir: false);
+            _log.Info($"[{pair.Name}] now ignored (changes very often): {pattern}");
         }
         else
         {
@@ -693,9 +690,9 @@ sealed class Bridge : IAsyncDisposable
         var lines = new List<string>();
         if (!string.IsNullOrWhiteSpace(localPath))
         {
-            var file = Path.Combine(Path.GetFullPath(Environment.ExpandEnvironmentVariables(localPath.Trim())), IgnoreRules.FileName);
-            try { if (File.Exists(file)) lines.AddRange(File.ReadAllText(file).Replace("\r\n", "\n").TrimEnd('\n').Split('\n')); }
-            catch (Exception ex) { _log.Warn($"could not read {file}: {ex.Message}"); }
+            var root = Path.GetFullPath(Environment.ExpandEnvironmentVariables(localPath.Trim()));
+            try { if (IgnoreFile.Read(root) is { Length: > 0 } text) lines.AddRange(text.Split('\n')); }
+            catch (Exception ex) { _log.Warn($"could not read {IgnoreFile.PathFor(root)}: {ex.Message}"); }
         }
         // Earlier versions kept the pair's patterns in the config; they are shown here and move into the file on save.
         if (pair != null) lines.AddRange(pair.IgnorePatterns.Where(x => !lines.Contains(x)));
@@ -704,17 +701,7 @@ sealed class Bridge : IAsyncDisposable
 
     private void WriteIgnoreFile(string localFullPath, string text)
     {
-        var file = Path.Combine(localFullPath, IgnoreRules.FileName);
-        var wanted = text.Replace("\r\n", "\n").Trim('\n');
-        var current = File.Exists(file) ? File.ReadAllText(file).Replace("\r\n", "\n").Trim('\n') : "";
-        if (wanted == current) return;
-        if (wanted.Trim().Length == 0)
-        {
-            _log.Info($"removed {file} (no ignore patterns left): {RecycleBin.Delete(file)}");
-            return;
-        }
-        File.WriteAllText(file, wanted.Replace("\n", "\r\n") + "\r\n", new System.Text.UTF8Encoding(false));
-        _log.Info($"wrote ignore patterns to {file}");
+        if (IgnoreFile.Write(localFullPath, text) is { } done) _log.Info(done);
     }
 
     private string? CheckLocal(SyncPair p, SyncPair? original)

@@ -10,6 +10,7 @@ namespace Unisono.App;
 ///   .docx/.xlsx/.pptx in a Drive pair:           "Open in Google Docs / Sheets / Slides"
 ///   files and folders in a Drive / NAS pair:     "Share on Google Drive..." / "Share via Synology..."
 ///   the background of any folder, Shift only:    "Open this folder online (Unisono)"
+///   files and folders inside any pair:          "Don't sync this (Unisono)" (adds it to the pair's .unisonoignore)
 /// Explorer ignores AppliesTo for background entries (tested: with a condition they never show), so that one cannot be
 /// limited to synced folders; it is an extended verb (Shift+right-click) and says so when the folder is not synced.
 /// Each runs "Unisono.exe --open &lt;mode&gt; &lt;path&gt;". Windows 11 lists them under "Show more options": its compact menu
@@ -24,6 +25,7 @@ static class ExplorerMenu
     private const string BackgroundVerb = "Unisono.OpenFolderOnline";
     private const string DriveShareVerb = "Unisono.ShareGoogleDrive";
     private const string NasShareVerb = "Unisono.ShareSynology";
+    private const string IgnoreVerb = "Unisono.DontSync";
     private const string BackgroundKey = @"Directory\Background\shell";
 
     private static readonly (string Ext, string Label)[] OfficeTypes =
@@ -47,12 +49,14 @@ static class ExplorerMenu
 
             var drive = AppliesTo(pairs.Where(p => p.Kind == RemoteKind.Drive));
             var nas = AppliesTo(pairs.Where(p => p.Kind == RemoteKind.Synology));
+            var inside = AppliesTo(pairs, includeRoot: false);
             foreach (var key in Targets)
             {
                 if (drive != null) Add($@"{key}\{DriveVerb}", "Open in Google Drive", drive, $"\"{exe}\" --open drive \"%1\"", exe);
                 if (nas != null) Add($@"{key}\{NasVerb}", "Open in Synology Drive", nas, $"\"{exe}\" --open nas \"%1\"", exe);
                 if (drive != null) Add($@"{key}\{DriveShareVerb}", "Share on Google Drive...", drive, $"\"{exe}\" --share drive \"%1\"", exe);
                 if (nas != null) Add($@"{key}\{NasShareVerb}", "Share via Synology...", nas, $"\"{exe}\" --share nas \"%1\"", exe);
+                if (inside != null) Add($@"{key}\{IgnoreVerb}", "Don't sync this (Unisono)", inside, $"\"{exe}\" --ignore \"%1\"", exe);
             }
             if (drive != null || nas != null)
             {
@@ -77,11 +81,11 @@ static class ExplorerMenu
     /// An Advanced Query Syntax condition matching the pair folders themselves and everything below them.
     /// Null when there are no such folders (then the verb is not registered at all).
     /// </summary>
-    private static string? AppliesTo(IEnumerable<SyncPair> pairs)
+    private static string? AppliesTo(IEnumerable<SyncPair> pairs, bool includeRoot = true)
     {
         var parts = pairs.Select(p => p.LocalFullPath.TrimEnd('\\'))
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(p => $"System.ItemPathDisplay:=\"{p}\" OR System.ItemPathDisplay:~<\"{p}\\\"")
+            .Select(p => (includeRoot ? $"System.ItemPathDisplay:=\"{p}\" OR " : "") + $"System.ItemPathDisplay:~<\"{p}\\\"")
             .ToList();
         return parts.Count == 0 ? null : string.Join(" OR ", parts);
     }
@@ -99,7 +103,7 @@ static class ExplorerMenu
     public static void Remove()
     {
         foreach (var key in Targets.Append(BackgroundKey))
-            foreach (var verb in new[] { DriveVerb, NasVerb, BackgroundVerb, DriveShareVerb, NasShareVerb })
+            foreach (var verb in new[] { DriveVerb, NasVerb, BackgroundVerb, DriveShareVerb, NasShareVerb, IgnoreVerb })
                 Registry.CurrentUser.DeleteSubKeyTree($@"{Classes}\{key}\{verb}", throwOnMissingSubKey: false);
         foreach (var (ext, _) in OfficeTypes)
             Registry.CurrentUser.DeleteSubKeyTree($@"{Classes}\SystemFileAssociations\{ext}\shell\{DocsVerb}", throwOnMissingSubKey: false);

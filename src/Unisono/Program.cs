@@ -13,6 +13,11 @@ static class Program
             ApplicationConfiguration.Initialize();
             return OpenOnline.Run(args[1], args[2]);
         }
+        if (args.Length >= 2 && args[0] == "--ignore")
+        {
+            ApplicationConfiguration.Initialize();
+            return DontSync.Run(args[1]);
+        }
         if (args.Length >= 3 && args[0] == "--share")
         {
             ApplicationConfiguration.Initialize();
