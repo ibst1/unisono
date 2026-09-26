@@ -70,6 +70,8 @@ sealed class HostForm : Form
                     $"{stats.Conflicts} file(s) in {ps.Pair.Name} changed on both sides. Both versions were kept (look for 'conflict' in the name).",
                     ToolTipIcon.Warning));
         };
+        _host.HealthProblem += ps => OnUi(() =>
+            _tray.ShowBalloonTip(15000, $"Unisono: {ps.Pair.Name} is not syncing", ps.Health ?? "", ToolTipIcon.Warning));
         // State pushes are coalesced: a cycle over many pairs fires many small events.
         _stateTimer.Tick += (_, _) => { _stateTimer.Stop(); Post(new { @event = "state", data = _bridge.State() }); };
 

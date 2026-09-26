@@ -262,7 +262,7 @@ sealed class Bridge : IAsyncDisposable
             status = st?.Status ?? "waiting", waitingFor = st?.Status == "syncing" ? null : st?.WaitingFor,
             lastSync = st?.LastSync is { } ls ? ls.ToString(ls.Date == DateTime.Today ? "HH:mm:ss" : "d MMM HH:mm") : null,
             lastResult = st?.LastError ?? Summary(st?.LastStats), failed = st?.LastError != null,
-            frequent = st == null ? new List<string>() : Locked(st.Frequent), frequentOk = p.FrequentOk,
+            frequent = st == null ? new List<string>() : Locked(st.Frequent), frequentOk = p.FrequentOk, health = st?.Health,
         };
     }
 

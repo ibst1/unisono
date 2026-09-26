@@ -9,6 +9,11 @@ public sealed class PairStatus
     public DateTime? LastSync { get; set; }
     /// <summary>Files found to change very often, waiting for the user's choice (ignore or keep syncing). Lock it.</summary>
     public List<string> Frequent { get; } = new();
+    /// <summary>Since when cycles of this pair fail or leave items unsynced (null = the last one went through).</summary>
+    public DateTime? TroubleSince { get; set; }
+    public int TroubleCycles { get; set; }
+    /// <summary>Set once the trouble has lasted long enough to tell the user; cleared by the next clean cycle.</summary>
+    public string? Health { get; set; }
     /// <summary>While this pair waits for its turn: the pair that is syncing now.</summary>
     public string? WaitingFor { get; set; }
     public CycleStats? LastStats { get; set; }
@@ -34,6 +39,8 @@ public sealed class SyncHost : IAsyncDisposable
     public event Action? StateChanged;
     public event Action<PairStatus>? PairChanged;
     public event Action<PairStatus, CycleStats>? CycleCompleted;
+    /// <summary>A pair has not synced cleanly for a while (<see cref="PairStatus.Health"/> says why). Once per episode.</summary>
+    public event Action<PairStatus>? HealthProblem;
 
     public HostState State { get; private set; } = HostState.Stopped;
 
@@ -203,6 +210,7 @@ public sealed class SyncHost : IAsyncDisposable
                             ps.LastError = stats.Errors > 0 ? $"{stats.Errors} item(s) failed, see log" : null;
                             Update(ps, stats.Errors > 0 ? "errors" : "in sync");
                             if (stats.Errors > 0) ok = false;
+                            TrackHealth(ps, stats.Errors > 0 ? $"{stats.Errors} item(s) could not be synced, e.g. {stats.LastErrorText}" : null);
                             if (stats.Frequent.Count > 0)
                                 lock (ps.Frequent) ps.Frequent.AddRange(stats.Frequent.Where(f => !ps.Frequent.Contains(f, StringComparer.OrdinalIgnoreCase)));
                             CycleCompleted?.Invoke(ps, stats);
@@ -214,6 +222,7 @@ public sealed class SyncHost : IAsyncDisposable
                             Interlocked.Exchange(ref changed[i], 1); // scan again next time
                             if (ps.Pair.Kind == RemoteKind.Synology) { engines[i] = null; stores.Forget(ps.Pair); }
                             ps.LastError = ex.Message;
+                            TrackHealth(ps, ex.Message);
                             Update(ps, "failed");
                             _log.Error($"[{ps.Pair.Name}] {ex.Message}");
                         }
@@ -333,6 +342,26 @@ public sealed class SyncHost : IAsyncDisposable
 
     // UNISONO_TURN_SECONDS shortens the turns for tests.
     private static TimeSpan TurnLength => TimeSpan.FromSeconds(int.TryParse(Environment.GetEnvironmentVariable("UNISONO_TURN_SECONDS"), out var s) && s > 0 ? s : 120);
+
+    // A few failed cycles are normal (network, sleep); a pair that has not synced cleanly for HealthDelay and at least
+    // 3 cycles is worth a warning. UNISONO_HEALTH_MINUTES shortens the delay for tests.
+    private static TimeSpan HealthDelay => TimeSpan.FromMinutes(int.TryParse(Environment.GetEnvironmentVariable("UNISONO_HEALTH_MINUTES"), out var m) && m >= 0 ? m : 30);
+
+    private void TrackHealth(PairStatus ps, string? problem)
+    {
+        if (problem == null)
+        {
+            if (ps.Health != null) _log.Info($"[{ps.Pair.Name}] syncing normally again");
+            ps.TroubleSince = null; ps.TroubleCycles = 0; ps.Health = null;
+            return;
+        }
+        ps.TroubleSince ??= DateTime.Now;
+        ps.TroubleCycles++;
+        if (ps.Health != null || ps.TroubleCycles < 3 || DateTime.Now - ps.TroubleSince < HealthDelay) return;
+        ps.Health = $"Not fully synced since {ps.TroubleSince:HH:mm}{(ps.TroubleSince.Value.Date != DateTime.Today ? ps.TroubleSince.Value.ToString(" (d MMM)") : "")}: {problem}";
+        _log.Warn($"[{ps.Pair.Name}] {ps.Health}");
+        try { HealthProblem?.Invoke(ps); } catch { }
+    }
 
     // When each pair last finished a cycle, so the window can say so after a restart too.
     private static string LastRunsFile => Path.Combine(AppPaths.DataDir, "lastrun.json");

@@ -531,6 +531,7 @@ function renderPairs() {
         <button class="btn" data-versions="${esc(p.id)}" title="Earlier versions of files this pair replaced">Versions</button>
         <button class="btn" data-editpair="${esc(p.id)}">Edit</button>
         <button class="btn danger" data-rmpair="${esc(p.id)}">Remove</button></div>
+      ${p.health ? `<div class="note err" style="margin-bottom:0">${esc(p.health)} <a class="path" data-showlog>Show the log</a></div>` : ""}
       ${(p.frequent || []).map(f => `<div class="note warn inline" style="margin-bottom:0">
         <span class="grow"><span class="mono">${esc(f)}</span> changes very often (${6} times or more within an hour). Logs and status files like this are usually better left out of syncing.</span>
         <button class="btn" data-freq="ignore" data-fpair="${esc(p.id)}" data-frel="${esc(f)}">Ignore it</button>
@@ -542,6 +543,7 @@ function renderPairs() {
   document.querySelectorAll("[data-editpair]").forEach(b => b.onclick = () => pairDialog(S.pairs.find(p => p.id === b.dataset.editpair)));
   document.querySelectorAll("[data-versions]").forEach(b => b.onclick = () => versionsDialog(S.pairs.find(p => p.id === b.dataset.versions)));
   document.querySelectorAll("[data-preview]").forEach(b => b.onclick = () => preview(S.pairs.find(p => p.id === b.dataset.preview), b));
+  document.querySelectorAll("[data-showlog]").forEach(a => a.onclick = () => showTab("log"));
   document.querySelectorAll("[data-freq]").forEach(b => b.onclick = () =>
     call("pair.frequent", { id: b.dataset.fpair, rel: b.dataset.frel, action: b.dataset.freq })
       .then(() => toast(b.dataset.freq === "ignore" ? "Added to .unisonoignore" : "Kept syncing; no more warnings for it")).catch(e => toast(e.message, true)));

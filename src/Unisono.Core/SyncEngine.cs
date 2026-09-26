@@ -9,6 +9,8 @@ public sealed class CycleStats
     public List<string> Notices { get; } = new();
     /// <summary>Files found to change very often (see <see cref="SyncEngine.FrequentTransfers"/>), each reported once.</summary>
     public List<string> Frequent { get; } = new();
+    /// <summary>The last item error of the cycle ("path: message"), for the health warning.</summary>
+    public string? LastErrorText { get; set; }
     public bool Any => Downloaded + Uploaded + Exported + Linked + Trashed + Recycled + Conflicts + Errors + Moved + Online > 0;
     public override string ToString() =>
         $"{Downloaded} down, {Uploaded} up, {Moved} moved,{(Online > 0 ? $" {Online} online-only," : "")} {Exported} exported, {Linked} linked, {Trashed} deleted remotely, {Recycled} recycled locally, {Conflicts} conflicts, {Errors} errors";
@@ -71,6 +73,7 @@ public sealed partial class SyncEngine
     private DateTime _lastFullCycleUtc = DateTime.MinValue;
     private long _lastRemoteFingerprint;
     private bool _docsChecked;
+    private bool _lastHadErrors; // failed items are retried every cycle, not only in the next full pass
     private DateTime _deadline = DateTime.MaxValue;
 
     private bool OutOfTime()
@@ -123,7 +126,7 @@ public sealed partial class SyncEngine
         var remoteAll = await _store.GetTreeAsync(_log, ct);
         var fingerprint = Fingerprint(remoteAll);
         _docsChecked = false;
-        if (!DryRun && !LocalChanged && !workLeft && fingerprint == _lastRemoteFingerprint && DateTime.UtcNow - _lastFullCycleUtc < FullCycleInterval)
+        if (!DryRun && !LocalChanged && !workLeft && !_lastHadErrors && fingerprint == _lastRemoteFingerprint && DateTime.UtcNow - _lastFullCycleUtc < FullCycleInterval)
         {
             // Nothing seen on either side. Only Google Docs edits, which Drive reports late, need a look of their own.
             if (!await FreshenExportedDocsAsync(remoteAll, ct)) return stats;
@@ -157,6 +160,7 @@ public sealed partial class SyncEngine
             }
         }
         if (stats.Any) _log.Info($"[{_pair.Name}] {stats}");
+        _lastHadErrors = stats.Errors > 0;
         return stats;
     }
 
@@ -512,7 +516,7 @@ public sealed partial class SyncEngine
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
                 {
-                    lock (gate) { stats.Errors++; _log.Error($"[{_pair.Name}] {rel}: {ex.Message}"); }
+                    lock (gate) { stats.Errors++; stats.LastErrorText = $"{rel}: {ex.Message}"; _log.Error($"[{_pair.Name}] {rel}: {ex.Message}"); }
                 }
             });
     }
@@ -1118,6 +1122,7 @@ public sealed partial class SyncEngine
         catch (Exception ex)
         {
             stats.Errors++;
+            stats.LastErrorText = $"{rel}: {ex.Message}";
             _log.Error($"[{_pair.Name}] {rel}: {ex.Message}");
         }
     }
