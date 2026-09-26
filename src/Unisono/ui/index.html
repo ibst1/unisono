@@ -271,7 +271,13 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <option value="UploadOnly">Upload only: changes here go up; nothing remote comes down</option>
       <option value="Backup">Backup: like upload only, and replaced or deleted files are kept on the other side</option></select>
     <div class="help">One-way pairs apply the source side's changes, deletions included, and never undo anything done on the other side.
-      A backup keeps what it replaces or deletes over there in the folder <span class="mono">.unisono-versions</span>, pruned by the version settings (Settings); restore from Versions.</div></div>  <div class="field"><label>Local folder</label>
+      A backup keeps what it replaces or deletes over there in the folder <span class="mono">.unisono-versions</span>, pruned by the version settings (Settings); restore from Versions.</div></div>  <div class="field" id="pairCryptRow"><label>Encryption</label>
+    <div><label class="check"><input type="checkbox" id="pairEncrypt"> Encrypt on the other side: names and content, before they leave this computer</label>
+      <div id="pairCryptFields" hidden style="margin-top:6px">
+        <div class="inline"><input type="password" id="pairPass" class="grow" placeholder="passphrase, at least 10 characters" autocomplete="new-password">
+          <input type="password" id="pairPass2" class="grow" placeholder="the same again" autocomplete="new-password"></div>
+        <div class="help" id="pairCryptHelp"></div></div></div></div>
+  <div class="field"><label>Local folder</label>
     <div class="inline"><input type="text" id="pairLocal"><button class="btn" id="pairPickLocal">Browse...</button></div>
     <div class="help">May lie inside another pair's folder (e.g. a Drive folder inside a NAS folder); the outer pair then leaves it alone.</div></div>
   <div class="field" id="pairDocsRow"><label id="pairDocsLabel">Google Docs</label>
@@ -542,6 +548,7 @@ function renderPairs() {
         <span class="small muted">${p.lastSync ? "last run " + esc(p.lastSync) : "not run yet"}</span>
         <span class="small muted" title="Reads every synced file and compares it with what was synced, to find damage">${p.checking ? "checking content..." : `content checked ${esc(p.lastChecked || "never")} &middot; <a class="path" data-check="${esc(p.id)}">check now</a>`}</span>
         ${p.onDemand ? `<span class="chip plain" title="Files on demand: online-only until opened or kept">on demand</span>` : ""}
+        ${p.encrypted ? `<span class="chip ${p.keyHere ? "plain" : "err"}" title="${p.keyHere ? "The other side holds only ciphertext" : "The passphrase is not on this computer yet: Edit and enter it"}">encrypted${p.keyHere ? "" : ", passphrase missing"}</span>` : ""}
         ${p.direction !== "TwoWay" ? `<span class="chip plain">${{ DownloadOnly: "download only", UploadOnly: "upload only", Backup: "backup" }[p.direction] || esc(p.direction)}</span>` : ""}
         <span class="small grow ellipsis" style="${p.failed ? "color:var(--red)" : ""}" title="${esc(p.lastResult)}">${esc(p.lastResult)}</span>
         <button class="btn" data-preview="${esc(p.id)}" title="Show what the next sync would do, without doing it">Preview</button>
@@ -650,7 +657,7 @@ function setKind(k) {
   pairKind = k;
   document.querySelectorAll("#pairKind button").forEach(b => b.classList.toggle("on", b.dataset.k === k));
   const nas = k === "Synology", folder = k === "Folder";
-  $("#pairAcctRow").hidden = folder; $("#pairDocsRow").hidden = folder;
+  $("#pairAcctRow").hidden = folder; $("#pairDocsRow").hidden = folder || $("#pairEncrypt").checked;
   $("#pairRemoteLabel").textContent = folder ? "Other folder" : "Remote folder";
   $("#pairPollHelp").textContent = folder ? "seconds; changes in either folder are usually picked up at once" : "seconds; local changes are picked up at once";
   $("#pairAcctLabel").textContent = nas ? "NAS login" : "Google account";
@@ -726,6 +733,9 @@ function pairDialog(p) {
   syncOnDemand();
   checkOnDemandPlace();
   $("#pairIgnore").value = ""; delete $("#pairIgnore").dataset.dirty;
+  $("#pairEncrypt").checked = !!(p && p.encrypted); $("#pairEncrypt").disabled = !!p;
+  $("#pairPass").value = ""; $("#pairPass2").value = "";
+  syncCrypt();
   frequentOk = p ? [...(p.frequentOk || [])] : []; renderFrequentOk();
   if (p) loadIgnoreFile(p.localPath, p.id);
   scope = { include: p ? [...p.includeFolders] : [], exclude: p ? [...p.excludeFolders] : [] };
@@ -734,6 +744,19 @@ function pairDialog(p) {
   openModal("#dlgPair");
 }
 $("#btnAddPair").onclick = () => pairDialog();
+// Encryption: chosen for a new pair (passphrase twice); an encrypted pair whose key this computer lacks asks for it once.
+function syncCrypt() {
+  const on = $("#pairEncrypt").checked, needKey = editing && editing.encrypted && !editing.keyHere;
+  $("#pairCryptFields").hidden = !(on && (!editing || needKey));
+  $("#pairPass2").hidden = !!editing;
+  $("#pairCryptHelp").innerHTML = editing
+    ? "This computer does not have the passphrase yet. Enter it once; it is then kept for your Windows user on this computer."
+    : "The other side only ever sees scrambled names and content, so the web view, sharing and Google Docs do not work in this pair. " +
+      "The same passphrase opens the folder on your other computers. <b>Without it the files cannot be recovered</b>: keep it somewhere safe. " +
+      "The remote folder must be empty or new (or already encrypted by Unisono, then its passphrase is asked for).";
+  $("#pairDocsRow").hidden = on || pairKind === "Folder";
+}
+$("#pairEncrypt").onchange = syncCrypt;
 async function conflictsDialog() {
   openModal("#dlgConflicts");
   $("#conflictList").innerHTML = `<div class="muted">Looking through the synced folders...</div>`;
@@ -890,6 +913,7 @@ function pairFromForm() {
   return {
     includeFolders: scope.include, excludeFolders: scope.exclude,
     direction: $("#pairDirection").value, onDemand: $("#pairOnDemand").checked, ignorePatterns: $("#pairIgnore").value, frequentOk,
+    encrypted: $("#pairEncrypt").checked, passphrase: $("#pairPass").value,
     kind: pairKind, account: nas || folder ? null : $("#pairAcct").value, server, user,
     remotePath: nas || folder ? $("#pairRemote").value : ($("#pairRoot").checked ? "" : $("#pairRemote").value),
     localPath: $("#pairLocal").value, docs: $("#pairDocs").value,
@@ -904,6 +928,9 @@ $("#pairSave").onclick = async () => {
   }
   if (pairKind === "Drive" && !$("#pairRoot").checked && !$("#pairRemote").value.trim()) {
     $("#pairMsg").innerHTML = `<div class="note err">Choose a remote folder, or tick "Whole My Drive" to sync the root.</div>`; return;
+  }
+  if (!editing && $("#pairEncrypt").checked && ($("#pairPass").value.length < 10 || $("#pairPass").value !== $("#pairPass2").value)) {
+    $("#pairMsg").innerHTML = `<div class="note err">${$("#pairPass").value.length < 10 ? "The passphrase needs at least 10 characters." : "The two passphrases differ."}</div>`; return;
   }
   const req = { pair: pairFromForm(), originalId: editing ? editing.id : null, create: $("#pairCreate").checked, confirmed: false };
   busy(btn, true, "Checking...");

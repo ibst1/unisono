@@ -40,11 +40,16 @@ public sealed class StoreFactory : IAsyncDisposable
 
     private async Task<IRemoteStore> CreateCoreAsync(SyncPair pair, CancellationToken ct)
     {
-        if (pair.Kind == RemoteKind.Folder)
-            return new FolderStore(pair);
-        if (pair.Kind == RemoteKind.Drive)
-            return new DriveStore(await DriveAsync(pair.Account, ct), pair);
-        return new SynologyStore(await NasAsync(pair, ct), pair);
+        IRemoteStore store = pair.Kind switch
+        {
+            RemoteKind.Folder => new FolderStore(pair),
+            RemoteKind.Drive => new DriveStore(await DriveAsync(pair.Account, ct), pair),
+            _ => new SynologyStore(await NasAsync(pair, ct), pair),
+        };
+        if (!pair.Encrypted) return store;
+        var key = CryptoVault.LoadKey(pair.VaultId)
+                  ?? throw new InvalidOperationException("the passphrase of this encrypted pair is not stored on this computer: open the pair (Edit) and enter it");
+        return new EncryptedStore(store, new CryptoVault(key), pair.Name);
     }
 
     public async Task<SynologyClient> NasAsync(SyncPair pair, CancellationToken ct)

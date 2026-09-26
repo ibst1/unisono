@@ -308,6 +308,7 @@ sealed class Bridge : IAsyncDisposable
             lastSync = st?.LastSync is { } ls ? ls.ToString(ls.Date == DateTime.Today ? "HH:mm:ss" : "d MMM HH:mm") : null,
             lastResult = st?.LastError ?? Summary(st?.LastStats), failed = st?.LastError != null,
             frequent = st == null ? new List<string>() : Locked(st.Frequent), frequentOk = p.FrequentOk, health = st?.Health,
+            encrypted = p.Encrypted, keyHere = !p.Encrypted || CryptoVault.LoadKey(p.VaultId) != null,
             checking = st?.Checking ?? false,
             lastChecked = st?.LastChecked is { } lc ? lc.ToString(lc.Date == DateTime.Today ? "HH:mm" : "d MMM") : null,
             checkProblems = st?.LastCheck?.Problems.Select(x => new { rel = x.Rel, side = x.Side, detail = x.Detail }).ToList(),
@@ -569,6 +570,13 @@ sealed class Bridge : IAsyncDisposable
 
         var pair = original == null ? new SyncPair() : JsonSerializer.Deserialize<SyncPair>(JsonSerializer.Serialize(original))!;
         pair.Kind = Enum.TryParse<RemoteKind>(Str(d, "kind"), out var kind) ? kind : RemoteKind.Drive;
+        var encrypt = d.TryGetProperty("encrypted", out var en) && en.ValueKind == JsonValueKind.True;
+        var passphrase = Str(d, "passphrase");
+        if (original != null && original.Encrypted != encrypt)
+            throw new InvalidOperationException("Encryption is chosen when a pair is added. For an encrypted copy, add a new pair with an empty or new remote folder.");
+        if (encrypt && original == null && string.IsNullOrEmpty(passphrase))
+            throw new InvalidOperationException("Choose a passphrase for the encryption.");
+        pair.Encrypted = encrypt;
         if (pair.Kind == RemoteKind.Folder)
         {
             // Written like the local folder: unchanged stays as it was (older pairs may say %USERPROFILE%), new as a full path.
@@ -684,6 +692,7 @@ sealed class Bridge : IAsyncDisposable
         }
 
         if (!exists) await createRemote();
+        if (encrypt && (original == null || original.Id != pair.Id || !string.IsNullOrEmpty(passphrase))) await SetUpVaultAsync(pair, passphrase, ct);
         if (original is { OnDemand: true } && (!pair.OnDemand || original.Id != pair.Id))
         {
             await _host.StopAsync(); // restarted below; the state must not change under a running cycle
@@ -750,6 +759,54 @@ sealed class Bridge : IAsyncDisposable
     private void WriteIgnoreFile(string localFullPath, string text)
     {
         if (IgnoreFile.Write(localFullPath, text) is { } done) _log.Info(done);
+    }
+
+    /// <summary>
+    /// An encrypted pair's vault on the other side: joins an existing one (the passphrase must fit) or, in an empty
+    /// folder, creates one. Either way the key is stored for this Windows user and <see cref="SyncPair.VaultId"/> set.
+    /// </summary>
+    private async Task SetUpVaultAsync(SyncPair pair, string? passphrase, CancellationToken ct)
+    {
+        var plain = JsonSerializer.Deserialize<SyncPair>(JsonSerializer.Serialize(pair))!;
+        plain.Encrypted = false;
+        await using var stores = new StoreFactory(_log, interactive: false);
+        var inner = await stores.CreateAsync(plain, ct);
+        var tree = await inner.GetTreeAsync(_log, ct);
+        var dir = Path.Combine(AppPaths.DataDir, "crypt-tmp");
+        Directory.CreateDirectory(dir);
+        var file = Path.Combine(dir, Guid.NewGuid().ToString("N"));
+        try
+        {
+            if (tree.TryGetValue(CryptoVault.VaultFile, out var node))
+            {
+                await inner.DownloadAsync(node, file, ct);
+                var info = CryptoVault.Parse(await File.ReadAllTextAsync(file, ct));
+                if (string.IsNullOrEmpty(passphrase))
+                {
+                    if (CryptoVault.LoadKey(info.Id) == null) throw new InvalidOperationException("This remote folder is encrypted: enter its passphrase.");
+                }
+                else
+                {
+                    var master = CryptoVault.Unlock(info, passphrase) ?? throw new InvalidOperationException("That is not the passphrase of this encrypted folder.");
+                    CryptoVault.SaveKey(info.Id, master);
+                }
+                pair.VaultId = info.Id;
+                _log.Info($"[{pair.Name}] joined the encrypted folder (vault {info.Id})");
+                return;
+            }
+            if (tree.Count > 0) throw new InvalidOperationException("The remote folder already holds unencrypted files. An encrypted pair needs an empty or new folder.");
+            if (string.IsNullOrEmpty(passphrase) || passphrase.Length < 10) throw new InvalidOperationException("The passphrase needs at least 10 characters.");
+            var (key, created) = CryptoVault.Create(passphrase);
+            await File.WriteAllTextAsync(file, CryptoVault.Serialize(created), ct);
+            await inner.UploadNewAsync(file, CryptoVault.VaultFile, null, ct);
+            CryptoVault.SaveKey(created.Id, key);
+            pair.VaultId = created.Id;
+            _log.Info($"[{pair.Name}] created the encrypted folder (vault {created.Id})");
+        }
+        finally
+        {
+            try { File.Delete(file); } catch { }
+        }
     }
 
     private string? CheckLocal(SyncPair p, SyncPair? original)

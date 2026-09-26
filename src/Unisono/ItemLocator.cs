@@ -22,7 +22,7 @@ static class ItemLocator
         path = Path.GetFullPath(path.Trim().TrimEnd('\\'));
         var config = Config.Load();
         var pair = config.Pairs
-            .Where(p => p.LocalPath.Length > 0 && IsUnder(path, p.LocalFullPath))
+            .Where(p => p.LocalPath.Length > 0 && IsUnder(path, p.LocalFullPath) && !p.Encrypted) // nothing readable online
             .Where(p => kind switch
             {
                 "drive" or "docs" => p.Kind == RemoteKind.Drive,

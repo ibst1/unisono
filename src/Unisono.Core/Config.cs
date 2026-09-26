@@ -114,6 +114,11 @@ public sealed class SyncPair
     public List<string> IncludeFolders { get; set; } = new();
     public List<string> ExcludeFolders { get; set; } = new();
 
+    /// <summary>The other side holds only ciphertext (see <see cref="CryptoVault"/>). Chosen when the pair is added.</summary>
+    public bool Encrypted { get; set; }
+    /// <summary>Encrypted pairs: which vault, i.e. which stored key on this computer (<see cref="CryptoVault.LoadKey"/>).</summary>
+    public string? VaultId { get; set; }
+
     /// <summary>Files (paths relative to the pair) the user keeps syncing although they change very often: no warning.</summary>
     public List<string> FrequentOk { get; set; } = new();
 

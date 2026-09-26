@@ -46,7 +46,7 @@ public sealed class ContentCheck
 
                 if (!remote.TryGetValue(e.Path, out var node)) continue;
                 var remoteMd5 = node.Md5;
-                if (remoteMd5 == null && pair.Kind == RemoteKind.Folder)
+                if (remoteMd5 == null && pair.Kind == RemoteKind.Folder && !pair.Encrypted) // encrypted: the other file is ciphertext
                 {
                     var other = Path.Combine(pair.RemoteFullPath, e.Path.Replace('/', '\\'));
                     var oi = new FileInfo(other);

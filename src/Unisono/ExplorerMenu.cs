@@ -47,8 +47,9 @@ static class ExplorerMenu
             var exe = Environment.ProcessPath ?? throw new InvalidOperationException("unknown exe path");
             var pairs = config.Pairs.Where(p => p.LocalPath.Length > 0).ToList();
 
-            var drive = AppliesTo(pairs.Where(p => p.Kind == RemoteKind.Drive));
-            var nas = AppliesTo(pairs.Where(p => p.Kind == RemoteKind.Synology));
+            // Encrypted pairs have nothing readable online to open or share.
+            var drive = AppliesTo(pairs.Where(p => p.Kind == RemoteKind.Drive && !p.Encrypted));
+            var nas = AppliesTo(pairs.Where(p => p.Kind == RemoteKind.Synology && !p.Encrypted));
             var inside = AppliesTo(pairs, includeRoot: false);
             foreach (var key in Targets)
             {
