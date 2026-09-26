@@ -121,6 +121,18 @@ public sealed class SyncHost : IAsyncDisposable
         System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += onAddr;
         try { Microsoft.Win32.SystemEvents.PowerModeChanged += onPower; } catch { /* no session events (service) */ }
         await using var stores = new StoreFactory(_log, _interactive);
+        // Transfers during a round switch the display to "syncing" (the host and the pair that is transferring).
+        var roundRunning = false;
+        PairStatus? current = null;
+        Action onActivity = () =>
+        {
+            if (!roundRunning) return; // an online-only file opened between rounds
+            var active = SyncActivity.Now().Active;
+            if (active.Count == 0) return;
+            SetState(HostState.Syncing);
+            if (current is { } c && c.Status != "syncing" && active.Any(t => t.Pair == c.Pair.Name)) Update(c, "syncing");
+        };
+        SyncActivity.Changed += onActivity;
         try
         {
             foreach (var p in pairs)
@@ -156,7 +168,10 @@ public sealed class SyncHost : IAsyncDisposable
                 else if (pairs.Count > 0 && (!_paused || _forceOnce))
                 {
                     _forceOnce = false;
-                    SetState(HostState.Syncing);
+                    // A routine check keeps showing "up to date"; "syncing" comes with the first transfer (below) and
+                    // stays while work is left over for the next round.
+                    if (State != HostState.Idle) SetState(HostState.Syncing);
+                    roundRunning = true;
                     var ok = true;
                     followUp = false;
                     for (var i = 0; i < pairs.Count; i++)
@@ -164,9 +179,10 @@ public sealed class SyncHost : IAsyncDisposable
                         var ps = pairs[i];
                         for (var j = i + 1; j < pairs.Count; j++) { pairs[j].WaitingFor = ps.Pair.Name; Update(pairs[j], pairs[j].Status); }
                         ps.WaitingFor = null;
+                        current = ps;
                         try
                         {
-                            Update(ps, "syncing");
+                            if (ps.Status != "in sync") Update(ps, "syncing");
                             engines[i] ??= new SyncEngine(await stores.CreateAsync(ps.Pair, ct), ps.Pair, _log, pairs.Select(x => x.Pair).ToList(), _options);
                             // With other pairs to serve, a long job (thousands of uploads) is done in turns of a few minutes.
                             engines[i]!.TimeBudget = pairs.Count > 1 ? TurnLength : null;
@@ -193,7 +209,9 @@ public sealed class SyncHost : IAsyncDisposable
                     // Network trouble: back off up to 5 minutes rather than hammering the servers.
                     backoff = ok ? TimeSpan.Zero : TimeSpan.FromSeconds(Math.Min(300, Math.Max(15, backoff.TotalSeconds * 2)));
                     wait = ok ? poll : backoff;
-                    SetState(_paused ? HostState.Paused : ok ? HostState.Idle : HostState.Trouble);
+                    roundRunning = false;
+                    current = null;
+                    SetState(_paused ? HostState.Paused : !ok ? HostState.Trouble : followUp ? HostState.Syncing : HostState.Idle);
                 }
                 else
                 {
@@ -214,6 +232,7 @@ public sealed class SyncHost : IAsyncDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         finally
         {
+            SyncActivity.Changed -= onActivity;
             foreach (var w in watchers) w.Dispose();
             foreach (var p in providers) p.Dispose();
             System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged -= onNet;
