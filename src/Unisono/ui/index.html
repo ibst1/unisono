@@ -61,6 +61,12 @@ section { margin-bottom: 28px; }
 .empty { color: var(--muted); padding: 18px; text-align: center; border: 1px dashed var(--line); border-radius: var(--radius); }
 .note { background: var(--panel2); border-radius: 8px; padding: 10px 12px; font-size: 13px; color: var(--muted); margin: 8px 0; }
 .note.err { color: var(--red); } .note.warn { color: var(--amber); }
+.transfer { margin: 4px 0 8px; }
+.plan .actrow { display: flex; align-items: center; gap: 10px; }
+#tab-activity select { width: auto; }
+.transfer .bar { width: 100%; }
+.transfer .bar { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; margin-top: 4px; }
+.transfer .bar div { height: 100%; background: var(--accent); transition: width .3s; }
 .pair { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 14px; align-items: center; }
 .pair .side .label { font-size: 11.5px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
 .pair .arrow { color: var(--muted); font-size: 18px; }
@@ -138,10 +144,27 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 <nav id="tabs">
   <button data-tab="accounts">Accounts</button>
   <button data-tab="pairs">Sync pairs</button>
+  <button data-tab="activity">Activity</button>
   <button data-tab="settings">Settings</button>
   <button data-tab="log">Log</button>
 </nav>
 <main>
+  <!-- ============================================================ activity -->
+  <div class="tab" id="tab-activity">
+    <section>
+      <div class="row" style="margin-bottom:12px">
+        <div class="grow"><h2>Activity</h2><div class="sub" style="margin:0" id="actSummary"></div></div>
+        <button class="btn" id="actRefresh">Refresh</button>
+      </div>
+      <div class="row" style="margin-bottom:10px; gap:8px">
+        <select id="actDay"></select><select id="actPair"></select>
+        <select id="actKind"><option value="">Everything</option><option value="up">Uploads</option><option value="down">Downloads</option>
+          <option value="deleted">Deletions</option><option value="moved">Moves</option><option value="conflict">Conflicts</option></select>
+        <input type="text" id="actSearch" class="grow" placeholder="Filter by path...">
+      </div>
+      <div class="plan" id="actList" style="max-height:none"></div>
+    </section>
+  </div>
   <!-- ============================================================ accounts -->
   <div class="tab" id="tab-accounts">
     <section>
@@ -168,6 +191,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
         <button class="btn" id="btnConflicts" title="Files that changed on both sides, kept as conflict copies">Conflicts...</button>
         <button class="btn primary" id="btnAddPair">+ Add pair</button>
       </div>
+      <div id="transfers" hidden></div>
       <div id="pairList"></div>
     </section>
   </div>
@@ -362,6 +386,8 @@ window.chrome.webview.addEventListener("message", e => {
   const m = e.data;
   if (m.event === "state") { S = m.data; render(); return; }
   if (m.event === "log") { addLog(m.data); return; }
+  if (m.event === "transfers") { renderTransfers(m.data); return; }
+  if (m.event === "activity") { if ($("#tab-activity").classList.contains("active") && $("#actDay").value === today()) loadActivity(); return; }
   const p = pending.get(m.id); if (!p) return; pending.delete(m.id);
   m.ok ? p.resolve(m.result) : p.reject(new Error(m.error));
 });
@@ -396,6 +422,7 @@ function showTab(name, persist) {
   document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.id === "tab-" + name));
   if (persist) call("tab", { tab: name });
   if (name === "log") scrollLog();
+  if (name === "activity") loadActivity(true);
 }
 document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab, true));
 
@@ -586,9 +613,9 @@ function renderPairs() {
   });
 }
 
-async function versionsDialog(p) {
+async function versionsDialog(p, query) {
   $("#verTitle").textContent = "Previous versions: " + remoteLabel(p).path;
-  $("#verSearch").value = "";
+  $("#verSearch").value = query || "";
   $("#verFolder").onclick = () => call("open", { what: "versions", id: p.id });
   const draw = files => {
     const q = $("#verSearch").value.trim().toLowerCase();
@@ -1141,6 +1168,81 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") document.que
   hello.log.forEach(addLog);
   showTab(S.settings.tab || "accounts", false);
 })();
+// Running transfers above the pairs: large files with a progress bar, speed and time left; small ones counted.
+function renderTransfers(list) {
+  const box = $("#transfers");
+  if (!list.length) { box.hidden = true; box.innerHTML = ""; return; }
+  const big = list.filter(t => t.size >= 1048576), small = list.length - big.length;
+  const size = n => n >= 1073741824 ? (n / 1073741824).toFixed(1) + " GB" : n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+  const left = t => { if (!t.speed || !t.done) return ""; const s = Math.round((t.size - t.done) / t.speed); return s < 60 ? `, ${s} s left` : `, ${Math.round(s / 60)} min left`; };
+  box.hidden = false;
+  box.innerHTML = `<div class="card" style="padding:10px 14px">${big.slice(0, 6).map(t => {
+      const pct = t.size ? Math.min(100, Math.floor(100 * t.done / t.size)) : 0;
+      return `<div class="transfer"><div class="row small"><span>${t.dir === "up" ? "&#8593;" : "&#8595;"}</span>
+          <span class="mono grow ellipsis" title="${esc(t.pair + ": " + t.rel)}">${esc(t.rel)}</span>
+          <span class="muted">${pct}% of ${size(t.size)}${t.speed ? " &middot; " + size(t.speed) + "/s" : ""}${left(t)}</span></div>
+        <div class="bar"><div style="width:${pct}%"></div></div></div>`;
+    }).join("")}${big.length > 6 ? `<div class="small muted">and ${big.length - 6} more large file(s)</div>` : ""}${small ? `<div class="small muted">${big.length ? "and " : ""}${small} small file(s) on the way</div>` : ""}</div>`;
+}
+
+// ---------------------------------------------------------------- activity
+// What the sync did, day by day (ActivityJournal): filter by pair and text, show an item in Explorer, open its versions.
+const ACT = {
+  "uploaded": ["&#8593;", "uploaded"], "uploaded change": ["&#8593;", "uploaded change"], "downloaded": ["&#8595;", "downloaded"],
+  "deleted remotely": ["&#10005;", "deleted on the other side"], "deleted here": ["&#10005;", "deleted here"],
+  "moved remotely": ["&#8594;", "moved on the other side"], "moved here": ["&#8594;", "moved here"],
+  "conflict": ["!", "conflict"], "kept aside": ["!", "kept aside"], "exported": ["&#8595;", "exported"], "written back": ["&#8593;", "written back"],
+  "restored": ["&#8634;", "restored"], "freed up space": ["&#9729;", "online-only"],
+};
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+let activity = [];
+async function loadActivity(refreshDays) {
+  try {
+    if (refreshDays || !$("#actDay").options.length) {
+      const days = await call("activity.days");
+      const keep = $("#actDay").value;
+      if (!days.includes(today())) days.unshift(today());
+      $("#actDay").innerHTML = days.map(d => `<option value="${d}">${d === today() ? "Today" : new Date(d + "T12:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}</option>`).join("");
+      if (keep && days.includes(keep)) $("#actDay").value = keep;
+      const pk = $("#actPair").value;
+      $("#actPair").innerHTML = `<option value="">All pairs</option>` + S.pairs.map(p => `<option value="${esc(p.id)}">${esc(remoteLabel(p).path)}</option>`).join("");
+      $("#actPair").value = pk;
+    }
+    activity = await call("activity.list", { day: $("#actDay").value || today() });
+    drawActivity();
+  } catch (e) { $("#actList").innerHTML = `<div class="note err">${esc(e.message)}</div>`; }
+}
+function drawActivity() {
+  const q = $("#actSearch").value.trim().toLowerCase(), pair = $("#actPair").value, kind = $("#actKind").value;
+  const shown = activity.filter(a => (!pair || a.pairId === pair) && (!q || a.rel.toLowerCase().includes(q))
+    && (!kind || (kind === "up" ? a.action.startsWith("uploaded") || a.action === "written back" : kind === "down" ? a.action === "downloaded" || a.action === "exported"
+      : kind === "deleted" ? a.action.startsWith("deleted") : kind === "moved" ? a.action.startsWith("moved") : kind === "conflict" ? a.action === "conflict" || a.action === "kept aside" : true)));
+  const count = f => activity.filter(f).length;
+  $("#actSummary").textContent = activity.length
+    ? `${count(a => a.action.startsWith("uploaded"))} up, ${count(a => a.action === "downloaded")} down, ${count(a => a.action.startsWith("deleted"))} deleted, ${count(a => a.action.startsWith("moved"))} moved, ${count(a => a.action === "conflict")} conflicts` +
+      (shown.length !== activity.length ? ` \u00b7 ${shown.length} shown` : "")
+    : "";
+  const size = n => n < 0 ? "" : n < 1024 ? n + " bytes" : n < 1048576 ? Math.round(n / 1024) + " KB" : (n / 1048576).toFixed(1) + " MB";
+  // Only where a file was replaced or removed here is there an earlier version to look at.
+  const withVersions = a => !a.rel.endsWith("/") && (["deleted here", "conflict", "restored"].includes(a.action)
+    || (a.action === "downloaded" && !(a.detail || "").startsWith("new")));
+  $("#actList").innerHTML = shown.length ? shown.slice(0, 1500).map((a, i) => { const [icon, label] = ACT[a.action] || ["&middot;", a.action]; return `<div class="row actrow">
+      <span class="muted small" style="width:62px">${esc(a.time)}</span>
+      <span class="chip plain" style="min-width:185px">${icon} ${esc(label)}</span>
+      <span class="grow ellipsis"><span class="mono" title="${esc(a.rel)}">${esc(a.rel)}</span><br><span class="small muted" title="${esc(a.detail || "")}">${esc(a.pair)}${a.size >= 0 ? " &middot; " + size(a.size) : ""}${a.detail ? " &middot; " + esc(a.detail) : ""}</span></span>
+      ${a.pairKnown ? `<button class="btn" data-actshow="${i}" title="${a.exists ? "Show it in Explorer" : "It is no longer here: open the folder it was in"}">${a.exists ? "Show" : "Folder"}</button>` : ""}
+      ${a.pairKnown && withVersions(a) ? `<button class="btn" data-actver="${i}" title="Earlier versions of this file">Versions</button>` : ""}</div>`; }).join("")
+    + (shown.length > 1500 ? `<div class="muted small">and ${shown.length - 1500} more; narrow the list with the filters</div>` : "")
+    : `<div class="muted">${activity.length ? "Nothing matches." : "Nothing synced on this day."}</div>`;
+  document.querySelectorAll("[data-actshow]").forEach(b => b.onclick = () => { const a = shown[+b.dataset.actshow]; call("open", { what: "item", pair: a.pair, rel: a.rel.replace(/\/$/, "") }); });
+  document.querySelectorAll("[data-actver]").forEach(b => b.onclick = () => { const a = shown[+b.dataset.actver]; const p = S.pairs.find(x => x.id === a.pairId); if (p) versionsDialog(p, a.rel); });
+}
+$("#actDay").onchange = () => loadActivity();
+$("#actPair").onchange = drawActivity;
+$("#actKind").onchange = drawActivity;
+$("#actSearch").oninput = drawActivity;
+$("#actRefresh").onclick = () => loadActivity(true);
+
 </script>
 </body>
 </html>

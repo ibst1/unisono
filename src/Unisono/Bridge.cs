@@ -143,6 +143,20 @@ sealed class Bridge : IAsyncDisposable
                 var rel = await _host.RestoreAsync(pair.Id, Str(p, "versionRel")!).WaitAsync(cts.Token);
                 return new { rel };
             }
+            case "activity.days": return ActivityJournal.Days().Select(d => d.ToString("yyyy-MM-dd")).ToList();
+            case "activity.list":
+            {
+                var day = DateTime.TryParse(Str(p, "day"), out var dd) ? dd.Date : DateTime.Today;
+                var pairs = Config.Pairs.ToDictionary(x => x.Id);
+                return await Task.Run(() => ActivityJournal.Read(day).Take(5000).Select(e =>
+                {
+                    // Whether the item is still there, for "Show".
+                    var exists = pairs.TryGetValue(e.PairId, out var pair) && pair.LocalPath.Length > 0
+                                 && Path.Combine(pair.LocalFullPath, e.Rel.TrimEnd('/').Replace('/', '\\')) is var full && (File.Exists(full) || Directory.Exists(full));
+                    return new { time = e.Time.ToString("HH:mm:ss"), pairId = e.PairId, pair = e.Pair, action = e.Action, rel = e.Rel, size = e.Size, detail = e.Detail,
+                        exists, pairKnown = pair != null };
+                }).ToList());
+            }
             case "conflicts.list": return await Task.Run(() => Conflicts.Find(Config.Pairs));
             case "conflicts.resolve":
             {

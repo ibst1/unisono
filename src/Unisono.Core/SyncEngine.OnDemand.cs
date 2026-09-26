@@ -138,6 +138,7 @@ public sealed partial class SyncEngine
                     CloudFiles.Dehydrate(path);
                     stats.Online++;
                     _log.Info($"[{_pair.Name}] freed up space: {l.RelPath} ({l.Size:N0} bytes, online-only now)");
+                    Journal("freed up space", l.RelPath, l.Size, "online-only now");
                 }
                 else if (!l.IsPlaceholder && LocalUnchanged(l, s))
                 {

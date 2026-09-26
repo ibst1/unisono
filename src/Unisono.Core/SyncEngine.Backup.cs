@@ -111,6 +111,7 @@ public sealed partial class SyncEngine
         await Tracked(SyncActivity.Direction.Down, v.Rel, node.Size, () => _store.DownloadAsync(node, path, ct));
         LocalChanged = true;
         _log.Info($"[{_pair.Name}] restored {v.Rel} from the version of {v.Taken:yyyy-MM-dd HH:mm:ss}");
+        Journal("restored", v.Rel, node.Size, $"from the backup's version of {v.Taken:yyyy-MM-dd HH:mm}");
         return v.Rel;
     }
 }

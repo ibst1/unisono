@@ -120,6 +120,7 @@ public sealed class SyncHost : IAsyncDisposable
         await StopAsync();
         _lock ??= SyncLock.TryAcquire()
                   ?? throw new InvalidOperationException("another Unisono is already syncing (the tray app or 'UnisonoCli run'); close it first");
+        ActivityJournal.Prune();
         var lastRuns = LoadLastRuns();
         var lastChecks = LoadTimes(CheckedFile);
         Pairs = config.Pairs.Select(p => new PairStatus { Pair = p, LastSync = lastRuns.TryGetValue(p.Id, out var t) ? t : null,

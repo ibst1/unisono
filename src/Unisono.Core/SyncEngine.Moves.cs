@@ -56,6 +56,7 @@ public sealed partial class SyncEngine
                     newFolders.RemoveAll(n => n.RelPath.Equals(target, StringComparison.OrdinalIgnoreCase));
                     stats.Moved++;
                     if (!DryRun) _log.Info($"[{_pair.Name}] moved folder remotely (moved locally): {from} -> {target}");
+                    Journal("moved remotely", target + "/", detail: $"moved here from {from}");
                 });
             }
         }
@@ -85,6 +86,7 @@ public sealed partial class SyncEngine
                     MovedInSync(node.RelPath);
                     stats.Moved++;
                     if (!DryRun) _log.Info($"[{_pair.Name}] moved folder locally (moved remotely): {from} -> {node.RelPath}");
+                    Journal("moved here", node.RelPath + "/", detail: $"moved on the other side from {from}");
                     return Task.CompletedTask;
                 });
             }
@@ -127,6 +129,7 @@ public sealed partial class SyncEngine
                     fresh.Remove(f);
                     stats.Moved++;
                     if (!DryRun) _log.Info($"[{_pair.Name}] moved remotely (moved locally): {from} -> {f.RelPath}");
+                    Journal("moved remotely", f.RelPath, detail: $"moved here from {from}");
                 });
             }
         }
@@ -164,6 +167,7 @@ public sealed partial class SyncEngine
                     fresh.Remove(node);
                     stats.Moved++;
                     if (!DryRun) _log.Info($"[{_pair.Name}] moved locally (moved remotely): {from} -> {node.RelPath}");
+                    Journal("moved here", node.RelPath, detail: $"moved on the other side from {from}");
                     return Task.CompletedTask;
                 });
             }

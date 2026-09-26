@@ -124,7 +124,7 @@ public sealed class FolderStore : IRemoteStore
         try
         {
             // Shared read: Office keeps its documents open, and a plain File.Copy would fail on them.
-            await using (var src = PathUtil.OpenShared(from))
+            await using (var src = new ProgressStream(PathUtil.OpenShared(from)))
             await using (var dst = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true))
                 await src.CopyToAsync(dst, 1 << 16, ct);
             File.SetLastWriteTimeUtc(part, File.GetLastWriteTimeUtc(from));

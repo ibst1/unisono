@@ -308,7 +308,7 @@ public sealed class SynologyClient : IDisposable
                 using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
                 ThrowIfError("download", doc);
             }
-            await using (var fs = File.Create(tmp))
+            await using (var fs = new ProgressStream(File.Create(tmp)))
             await using (var s = await res.Content.ReadAsStreamAsync(ct))
                 await s.CopyToAsync(fs, ct);
             if (File.Exists(localPath)) File.SetAttributes(localPath, FileAttributes.Normal);
@@ -345,7 +345,7 @@ public sealed class SynologyClient : IDisposable
         Field("create_parents", "true");
         Field("overwrite", "true");
         Field("mtime", mtimeMs.ToString());
-        var fileContent = new StreamContent(fs);
+        var fileContent = new StreamContent(new ProgressStream(fs));
         fileContent.Headers.TryAddWithoutValidation("Content-Disposition", $"form-data; name=\"file\"; filename=\"{name.Replace("\"", "%22")}\"");
         fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         content.Add(fileContent); // must be the last part
@@ -479,7 +479,7 @@ public sealed class SynologyClient : IDisposable
                 ThrowIfError("SYNO.Office.Export", doc);
                 throw new IOException("Synology Office returned no document");
             }
-            await using (var fs = File.Create(tmp))
+            await using (var fs = new ProgressStream(File.Create(tmp)))
             await using (var s = await res.Content.ReadAsStreamAsync(ct))
                 await s.CopyToAsync(fs, ct);
             if (File.Exists(localPath)) File.SetAttributes(localPath, FileAttributes.Normal);

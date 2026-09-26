@@ -258,7 +258,7 @@ public sealed class DriveClient
         var tmp = localPath + ".unisono-part";
         try
         {
-            await using (var fs = System.IO.File.Create(tmp))
+            await using (var fs = new ProgressStream(System.IO.File.Create(tmp)))
             {
                 var progress = await download(fs, ct);
                 if (progress.Status != DownloadStatus.Completed)
@@ -287,7 +287,7 @@ public sealed class DriveClient
                 Parents = new[] { parentId },
                 ModifiedTimeDateTimeOffset = new DateTimeOffset(System.IO.File.GetLastWriteTimeUtc(localPath)),
             };
-            await using var fs = OpenShared(localPath);
+            await using var fs = new ProgressStream(OpenShared(localPath));
             var up = _service.Files.Create(meta, fs, OctetStream);
             up.Fields = FileFields;
             var progress = await up.UploadAsync(ct);
@@ -313,7 +313,7 @@ public sealed class DriveClient
     public async Task<File> UploadUpdateAsync(string localPath, string fileId, CancellationToken ct)
     {
         var meta = new File { ModifiedTimeDateTimeOffset = new DateTimeOffset(System.IO.File.GetLastWriteTimeUtc(localPath)) };
-        await using var fs = OpenShared(localPath);
+        await using var fs = new ProgressStream(OpenShared(localPath));
         var up = _service.Files.Update(meta, fileId, fs, OctetStream);
         up.Fields = FileFields;
         var progress = await up.UploadAsync(ct);
@@ -328,7 +328,7 @@ public sealed class DriveClient
     /// </summary>
     public async Task<File> ImportIntoAsync(string localPath, string fileId, string sourceMime, CancellationToken ct)
     {
-        await using var fs = OpenShared(localPath);
+        await using var fs = new ProgressStream(OpenShared(localPath));
         var up = _service.Files.Update(new File(), fileId, fs, sourceMime);
         up.Fields = FileFields;
         var progress = await up.UploadAsync(ct);

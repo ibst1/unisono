@@ -32,6 +32,7 @@ sealed class HostForm : Form
     private readonly System.Windows.Forms.Timer _trayTimer = new() { Interval = 300 };
     private readonly List<object> _history = new();
     private readonly System.Windows.Forms.Timer _stateTimer = new() { Interval = 250 };
+    private readonly System.Windows.Forms.Timer _activityTimer = new() { Interval = 1000 };
     private bool _webReady;
 
     public HostForm(bool startHidden, EventWaitHandle showSignal)
@@ -58,7 +59,10 @@ sealed class HostForm : Form
         };
         _host.StateChanged += () => OnUi(() => { UpdateTray(); QueueState(); });
         // Transfers start and end in bursts: redraw the tray icon at most a few times a second.
-        _trayTimer.Tick += (_, _) => { _trayTimer.Stop(); UpdateTray(); };
+        _trayTimer.Tick += (_, _) => { _trayTimer.Stop(); UpdateTray(); PostTransfers(); };
+        // New activity: the page reloads its list when it shows today (at most once a second).
+        _activityTimer.Tick += (_, _) => { _activityTimer.Stop(); Post(new { @event = "activity" }); };
+        ActivityJournal.Added += () => OnUi(() => { if (!_activityTimer.Enabled) _activityTimer.Start(); });
         SyncActivity.Changed += () => OnUi(() => { if (!_trayTimer.Enabled) _trayTimer.Start(); });
         _host.PairChanged += _ => OnUi(QueueState);
         _host.CycleCompleted += (ps, stats) =>
@@ -233,6 +237,22 @@ sealed class HostForm : Form
     /// The tray icon: arrows while files go up or down, otherwise a coloured U for the overall state. Hovering shows
     /// what is being transferred, or when the last sync ran, what has moved since start and which pair has trouble.
     /// </summary>
+    /// <summary>The running transfers for the window's list (sent with the tray updates, a few times a second at most).</summary>
+    private void PostTransfers()
+    {
+        if (!_webReady || !Visible) return;
+        var snap = SyncActivity.Now();
+        Post(new
+        {
+            @event = "transfers",
+            data = snap.Active.OrderByDescending(t => t.Size).Select(t => new
+            {
+                dir = t.Dir == SyncActivity.Direction.Up ? "up" : "down", pair = t.Pair, rel = t.Rel, size = t.Size,
+                done = Math.Min(t.Done, t.Size), speed = (long)t.Speed,
+            }).ToList(),
+        });
+    }
+
     private void UpdateTray()
     {
         var snap = SyncActivity.Now();
@@ -242,7 +262,10 @@ sealed class HostForm : Form
             var downs = snap.Active.Count - ups;
             var glyph = ups > 0 && downs > 0 ? "both" : ups > 0 ? "up" : "down";
             var lines = new List<string> { "Unisono: " + string.Join(", ", new[] { downs > 0 ? $"downloading {downs}" : null, ups > 0 ? $"uploading {ups}" : null }.Where(s => s != null)) };
-            lines.AddRange(snap.Active.Take(4).Select(t => $"{(t.Dir == SyncActivity.Direction.Up ? "\u2191" : "\u2193")} {Shorten(PathUtil.NameOf(t.Rel), 38)} ({Ui.Size(t.Size)})"));
+            // The largest first: that is where progress and speed say something.
+            lines.AddRange(snap.Active.OrderByDescending(t => t.Size).Take(4).Select(t =>
+                $"{(t.Dir == SyncActivity.Direction.Up ? "\u2191" : "\u2193")} {Shorten(PathUtil.NameOf(t.Rel), 30)} " +
+                (t.Size >= 1 << 20 && t.Done > 0 ? $"{Math.Min(100, 100 * t.Done / t.Size)}% {Ui.Size((long)t.Speed)}/s" : $"({Ui.Size(t.Size)})")));
             if (snap.Active.Count > 4) lines.Add($"and {snap.Active.Count - 4} more");
             SetTray(lines, Ui.Blue, glyph);
             return;

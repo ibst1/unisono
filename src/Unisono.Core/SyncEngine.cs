@@ -337,6 +337,7 @@ public sealed partial class SyncEngine
                     RemoveTree(remote, rel);
                     stats.Trashed++;
                     if (!DryRun && !BackupMode) _log.Info($"[{_pair.Name}] deleted folder remotely (deleted locally): {rel}");
+                    Journal("deleted remotely", rel + "/", detail: BackupMode ? "kept in the backup's versions" : "deleted here first");
                 });
                 continue;
             }
@@ -381,6 +382,7 @@ public sealed partial class SyncEngine
                         {
                             var where = RemoveLocal(item.FullPath);
                             _log.Info($"[{_pair.Name}] moved folder to {where} (deleted remotely): {rel}");
+                            Journal("deleted here", rel + "/", detail: $"deleted on the other side; moved to {where}");
                         }
                         RemoveTree(local, rel);
                         _state.RemoveUnder(rel);
@@ -496,6 +498,7 @@ public sealed partial class SyncEngine
                         {
                             var where = RemoveLocal(item.FullPath);
                             _log.Info($"[{_pair.Name}] moved to {where} (deleted remotely): {rel}");
+                            Journal("deleted here", rel, item.Size, $"deleted on the other side; moved to {where}");
                         }
                         local.Remove(rel);
                         _state.Entries.Remove(rel);
@@ -543,6 +546,7 @@ public sealed partial class SyncEngine
                         RecordFile(rel, node, item.FullPath);
                         stats.Uploaded++;
                         if (!DryRun) _log.Info($"[{_pair.Name}] uploaded: {rel} ({item.Size:N0} bytes)");
+                        Journal("uploaded", rel, item.Size, "new here");
                     }
                 }
                 catch (OperationCanceledException) { throw; }
@@ -618,6 +622,7 @@ public sealed partial class SyncEngine
                 _state.Entries.Remove(rel);
                 stats.Trashed++;
                 if (!DryRun && !BackupMode) _log.Info($"[{_pair.Name}] deleted remotely (deleted locally): {rel}");
+                Journal("deleted remotely", rel, s.Size, BackupMode ? "deleted here; kept in the backup's versions" : "deleted here first");
                 return;
             }
 
@@ -694,6 +699,7 @@ public sealed partial class SyncEngine
         RecordFile(rel, fresh, path);
         stats.Uploaded++;
         if (!DryRun) _log.Info($"[{_pair.Name}] uploaded change: {rel} ({l.Size:N0} bytes)");
+        Journal("uploaded change", rel, l.Size, BackupMode ? "changed here; the previous version is kept in the backup" : "changed here");
         ChangeTransferred(rel, stats);
     }
 
@@ -723,6 +729,7 @@ public sealed partial class SyncEngine
         Adopt(path, node.Id, pin);
         RecordFile(node.RelPath, node, path);
         _log.Info($"[{_pair.Name}] downloaded ({why}): {node.RelPath} ({node.Size:N0} bytes)");
+        Journal("downloaded", node.RelPath, node.Size, why);
     }
 
     /// <summary>Keeps both: the local version is renamed and uploaded as its own file, the remote version takes the original name.</summary>
@@ -739,6 +746,7 @@ public sealed partial class SyncEngine
         var conflictPath = Local(conflictRel);
         File.Move(path, conflictPath, overwrite: false);
         _log.Warn($"[{_pair.Name}] conflict ({why}): '{rel}' kept as '{conflictName}'");
+        Journal("conflict", rel, detail: $"{why}; this computer's version kept as '{conflictName}'");
 
         await DownloadAsync(node, path, stats, "conflict, remote version", ct);
 
@@ -803,6 +811,7 @@ public sealed partial class SyncEngine
                             RecordWriteBack(rel, derivedRel, path, fresh, revision);
                             stats.Uploaded++;
                             _log.Info($"[{_pair.Name}] wrote back into the Google document, tab by tab: {derivedRel}");
+                            Journal("written back", derivedRel, detail: "into the Google document, tab by tab");
                             return;
                         }
                         why = notPatched ?? why;
@@ -829,6 +838,7 @@ public sealed partial class SyncEngine
                         stats.Notices.Add($"Your edit of {PathUtil.NameOf(derivedRel)} was saved as \"{name}\" and uploaded next to it: the Google document was not changed, because {why}.");
                     }
                     else _log.Warn($"[{_pair.Name}] conflict (edited here, changed in Google too): '{derivedRel}' kept as '{name}'");
+                    Journal(upToDate ? "kept aside" : "conflict", derivedRel, detail: upToDate ? $"not written back ({why}); kept as '{name}'" : $"edited here and in Google; kept as '{name}'");
                 }
             }
             else if (editedLocally && kind == EntryKind.Export)
@@ -886,6 +896,7 @@ public sealed partial class SyncEngine
                 // Read-only where an edit could not go back (Synology Office); otherwise edits are written back.
                 if (!writeBack) File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly);
                 _log.Info($"[{_pair.Name}] exported: {derivedRel}");
+                Journal("exported", derivedRel, detail: "from the Google document");
             }
             Adopt(path, node.Id, pin: true); // files on demand: shown as in sync, always kept (they are made here)
             var info = new FileInfo(path);
@@ -976,6 +987,7 @@ public sealed partial class SyncEngine
         try { revision = await _store.RevisionAsync(fresh, ct); } catch { }
         RecordWriteBack(rel, derivedRel, path, fresh, revision);
         _log.Info($"[{_pair.Name}] wrote back into the Google document: {derivedRel} ({size:N0} bytes)");
+        Journal("written back", derivedRel, size, "into the Google document");
     }
 
     private static void WriteLink(string path, string url, DateTime modifiedUtc)
@@ -1170,6 +1182,12 @@ public sealed partial class SyncEngine
             stats.LastErrorText = $"{rel}: {ex.Message}";
             _log.Error($"[{_pair.Name}] {rel}: {ex.Message}");
         }
+    }
+
+    /// <summary>Records a done action for the Activity view (not in a preview).</summary>
+    private void Journal(string action, string rel, long size = -1, string? detail = null)
+    {
+        if (!DryRun) ActivityJournal.Add(_pair, action, rel, size, detail);
     }
 
     private void WarnOnce(string key, string message)
