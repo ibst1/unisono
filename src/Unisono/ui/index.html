@@ -276,7 +276,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="field drive-only"><label>Cloud-only folders</label><input type="text" id="pairFolders" placeholder="e.g. Archive, Video/Raw"></div>
   <div class="field"><label>Ignore</label>
     <textarea id="pairIgnore" rows="3" placeholder="one pattern per line, gitignore style, e.g.&#10;*.log&#10;__pycache__/&#10;renv/library/"></textarea>
-    <div class="help">On top of the patterns in Settings and any <span class="mono">.unisonoignore</span> file in the folder. Ignored items are never touched on either side.</div></div>  <div class="field"><label>Check remote every</label>
+    <div class="help">Kept in the file <span class="mono">.unisonoignore</span> at the top of the local folder, so the patterns sync with it and apply on every computer that syncs this folder.
+      On top of the patterns in Settings and any <span class="mono">.unisonoignore</span> in subfolders. Ignored items are never touched on either side.</div></div>  <div class="field"><label>Check remote every</label>
     <div class="inline"><input type="number" id="pairPoll" min="10" max="3600" style="width:110px"> <span class="muted small" id="pairPollHelp">seconds; local changes are picked up at once</span></div></div>
   <div id="pairMsg"></div>
   <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="pairSave">Save</button></div>
@@ -664,14 +665,23 @@ function pairDialog(p) {
   $("#pairOnDemand").checked = p ? p.onDemand : true; // new pairs: files on demand, where the folder allows it
   syncOnDemand();
   checkOnDemandPlace();
-  $("#pairIgnore").value = p ? p.ignorePatterns : "";
+  $("#pairIgnore").value = ""; delete $("#pairIgnore").dataset.dirty;
+  if (p) loadIgnoreFile(p.localPath, p.id);
   scope = { include: p ? [...p.includeFolders] : [], exclude: p ? [...p.excludeFolders] : [] };
   renderScopeText();
   syncRootBox();
   openModal("#dlgPair");
 }
 $("#btnAddPair").onclick = () => pairDialog();
-$("#pairPickLocal").onclick = async () => { const r = await call("pickLocal", { current: $("#pairLocal").value }); if (r) { $("#pairLocal").value = r; checkOnDemandPlace(); } };
+$("#pairPickLocal").onclick = async () => { const r = await call("pickLocal", { current: $("#pairLocal").value }); if (r) { $("#pairLocal").value = r; checkOnDemandPlace(); loadIgnoreFile(r); } };
+$("#pairLocal").addEventListener("change", () => loadIgnoreFile($("#pairLocal").value));
+$("#pairIgnore").addEventListener("input", () => $("#pairIgnore").dataset.dirty = "1");
+// The Ignore field shows the local folder's .unisonoignore (and saving writes it), unless the user already typed in it.
+async function loadIgnoreFile(localPath, id) {
+  if ($("#pairIgnore").dataset.dirty) return;
+  try { const t = await call("pair.ignoreFile", { localPath, id: id || null }); if (!$("#pairIgnore").dataset.dirty) $("#pairIgnore").value = t; }
+  catch (e) { toast(e.message, true); }
+}
 $("#pairBrowse").onclick = async () => {
   if (pairKind !== "Folder") return browseDialog();
   const r = await call("pickLocal", { current: $("#pairRemote").value, title: "The other folder (a network folder, another drive, ...)" });

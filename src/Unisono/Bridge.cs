@@ -89,6 +89,7 @@ sealed class Bridge : IAsyncDisposable
                 return d.ShowDialog(_owner) == DialogResult.OK ? d.SelectedPath : null;
             }
             case "pair.save": return await SavePairAsync(p);
+            case "pair.ignoreFile": return ReadIgnoreFile(Str(p, "localPath"), Str(p, "id") is { } iid ? Config.Pairs.FirstOrDefault(x => x.Id == iid) : null);
             case "ondemand.check":
             {
                 var raw = Str(p, "path") ?? "";
@@ -539,7 +540,7 @@ sealed class Bridge : IAsyncDisposable
         pair.GoogleDocs = Enum.TryParse<GoogleDocsMode>(Str(d, "docs"), out var docs) ? docs : GoogleDocsMode.Export;
         pair.Direction = Enum.TryParse<SyncDirection>(Str(d, "direction"), out var dir) ? dir : SyncDirection.TwoWay;
         pair.OnDemand = d.TryGetProperty("onDemand", out var od) && od.ValueKind == JsonValueKind.True;
-        pair.IgnorePatterns = Lines(Str(d, "ignorePatterns"));
+        var ignoreText = Str(d, "ignorePatterns"); // written to the folder's .unisonoignore below
         pair.IncludeFolders = StrList(d, "includeFolders");
         pair.ExcludeFolders = StrList(d, "excludeFolders");
         pair.PollSeconds = Math.Clamp(d.TryGetProperty("pollSeconds", out var ps) && ps.TryGetInt32(out var pv) ? pv : 60, 10, 3600);
@@ -637,6 +638,11 @@ sealed class Bridge : IAsyncDisposable
             CloudFiles.TurnOff(original, _log);
         }
         Directory.CreateDirectory(pair.LocalFullPath);
+        if (ignoreText != null)
+        {
+            WriteIgnoreFile(pair.LocalFullPath, ignoreText);
+            pair.IgnorePatterns = new(); // patterns kept in the config by earlier versions now live in the file
+        }
         if (original != null)
         {
             if (original.Id != pair.Id) { try { File.Delete(SyncState.FilePathFor(original)); } catch { } }
@@ -647,6 +653,38 @@ sealed class Bridge : IAsyncDisposable
         _log.Info($"{(original == null ? "added" : "changed")} pair {pair.Name} <-> {pair.LocalFullPath}");
         await _restartHost();
         return new { status = "ok" };
+    }
+
+    // The pair dialog's Ignore field is the .unisonoignore file at the top of the local folder, so the patterns sync
+    // with the folder and apply on every computer that syncs it.
+
+    private string ReadIgnoreFile(string? localPath, SyncPair? pair)
+    {
+        var lines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(localPath))
+        {
+            var file = Path.Combine(Path.GetFullPath(Environment.ExpandEnvironmentVariables(localPath.Trim())), IgnoreRules.FileName);
+            try { if (File.Exists(file)) lines.AddRange(File.ReadAllText(file).Replace("\r\n", "\n").TrimEnd('\n').Split('\n')); }
+            catch (Exception ex) { _log.Warn($"could not read {file}: {ex.Message}"); }
+        }
+        // Earlier versions kept the pair's patterns in the config; they are shown here and move into the file on save.
+        if (pair != null) lines.AddRange(pair.IgnorePatterns.Where(x => !lines.Contains(x)));
+        return string.Join("\n", lines);
+    }
+
+    private void WriteIgnoreFile(string localFullPath, string text)
+    {
+        var file = Path.Combine(localFullPath, IgnoreRules.FileName);
+        var wanted = text.Replace("\r\n", "\n").Trim('\n');
+        var current = File.Exists(file) ? File.ReadAllText(file).Replace("\r\n", "\n").Trim('\n') : "";
+        if (wanted == current) return;
+        if (wanted.Trim().Length == 0)
+        {
+            _log.Info($"removed {file} (no ignore patterns left): {RecycleBin.Delete(file)}");
+            return;
+        }
+        File.WriteAllText(file, wanted.Replace("\n", "\r\n") + "\r\n", new System.Text.UTF8Encoding(false));
+        _log.Info($"wrote ignore patterns to {file}");
     }
 
     private string? CheckLocal(SyncPair p, SyncPair? original)
