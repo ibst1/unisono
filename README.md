@@ -308,6 +308,24 @@ side are picked up at once where Windows reports them (network shares usually do
   is deleted locally.
 
 From the command line: `UnisonoCli init \\server\share\Projects C:\Work\Projects --folder`.
+## Encrypted pairs (Cryptomator vaults)
+
+Tick *Encrypt on the other side* when adding a pair: the remote folder (empty, new, or an existing vault) then holds
+a [Cryptomator](https://cryptomator.org) vault, vault format 8 with SIV_GCM, the format of Cryptomator 1.6 and later.
+Names and content are encrypted on this computer; Drive or the NAS only ever see ciphertext. The same vault opens
+in the Cryptomator apps (Windows, macOS, Linux, Android, iOS) with the same passphrase, so the files never depend on
+Unisono. Unisono can also sync a vault made by Cryptomator.
+
+- The passphrase is asked for once per computer; the two master keys are then kept DPAPI-protected for the Windows
+  user (`%LOCALAPPDATA%\Unisono\crypt`). Without the passphrase the files cannot be recovered.
+- Web view, sharing, links and Google Docs do not apply to encrypted pairs. Remote checksums say nothing about the
+  plain content, so these pairs compare size and date, as a NAS does.
+- Moving or renaming a folder moves only its small entry in the vault (directory contents live under the directory's
+  id), so on Drive it stays a cheap move. On NAS and folder pairs a moved item gets a new id, and the other computer
+  sees it as deleted and added.
+- The crypto (AES-SIV, scrypt, AES Key Wrap, AES-GCM) is in `CryptomatorPrimitives.cs`, `CryptomatorVault.cs` and
+  `CryptomatorStore.cs`; the primitives were checked against the RFC 5297, 7914 and 3394 test vectors.
+
 ## Renames and moves
 
 A file or folder renamed or moved on one side is renamed or moved on the other, instead of

@@ -296,7 +296,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <option value="Backup">Backup: like upload only, and replaced or deleted files are kept on the other side</option></select>
     <div class="help">One-way pairs apply the source side's changes, deletions included, and never undo anything done on the other side.
       A backup keeps what it replaces or deletes over there in the folder <span class="mono">.unisono-versions</span>, pruned by the version settings (Settings); restore from Versions.</div></div>  <div class="field" id="pairCryptRow"><label>Encryption</label>
-    <div><label class="check"><input type="checkbox" id="pairEncrypt"> Encrypt on the other side: names and content, before they leave this computer</label>
+    <div><label class="check"><input type="checkbox" id="pairEncrypt"> Encrypt on the other side (a Cryptomator vault): names and content, before they leave this computer</label>
       <div id="pairCryptFields" hidden style="margin-top:6px">
         <div class="inline"><input type="password" id="pairPass" class="grow" placeholder="passphrase, at least 10 characters" autocomplete="new-password">
           <input type="password" id="pairPass2" class="grow" placeholder="the same again" autocomplete="new-password"></div>
@@ -778,9 +778,9 @@ function syncCrypt() {
   $("#pairPass2").hidden = !!editing;
   $("#pairCryptHelp").innerHTML = editing
     ? "This computer does not have the passphrase yet. Enter it once; it is then kept for your Windows user on this computer."
-    : "The other side only ever sees scrambled names and content, so the web view, sharing and Google Docs do not work in this pair. " +
-      "The same passphrase opens the folder on your other computers. <b>Without it the files cannot be recovered</b>: keep it somewhere safe. " +
-      "The remote folder must be empty or new (or already encrypted by Unisono, then its passphrase is asked for).";
+    : "The other side holds a <b>Cryptomator vault</b>: open it with the Cryptomator app (Windows, Mac, Linux, Android, iPhone) and the same passphrase, " +
+      "also without Unisono. The web view, sharing and Google Docs do not work in this pair. <b>Without the passphrase the files cannot be recovered</b>: keep it somewhere safe. " +
+      "The remote folder must be empty or new, or an existing Cryptomator vault (then its passphrase is asked for).";
   $("#pairDocsRow").hidden = on || pairKind === "Folder";
 }
 $("#pairEncrypt").onchange = syncCrypt;

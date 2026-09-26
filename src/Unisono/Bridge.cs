@@ -322,7 +322,7 @@ sealed class Bridge : IAsyncDisposable
             lastSync = st?.LastSync is { } ls ? ls.ToString(ls.Date == DateTime.Today ? "HH:mm:ss" : "d MMM HH:mm") : null,
             lastResult = st?.LastError ?? Summary(st?.LastStats), failed = st?.LastError != null,
             frequent = st == null ? new List<string>() : Locked(st.Frequent), frequentOk = p.FrequentOk, health = st?.Health,
-            encrypted = p.Encrypted, keyHere = !p.Encrypted || CryptoVault.LoadKey(p.VaultId) != null,
+            encrypted = p.Encrypted, keyHere = !p.Encrypted || CryptomatorVault.LoadKey(p.VaultId) != null,
             checking = st?.Checking ?? false,
             lastChecked = st?.LastChecked is { } lc ? lc.ToString(lc.Date == DateTime.Today ? "HH:mm" : "d MMM") : null,
             checkProblems = st?.LastCheck?.Problems.Select(x => new { rel = x.Rel, side = x.Side, detail = x.Detail }).ToList(),
@@ -776,8 +776,9 @@ sealed class Bridge : IAsyncDisposable
     }
 
     /// <summary>
-    /// An encrypted pair's vault on the other side: joins an existing one (the passphrase must fit) or, in an empty
-    /// folder, creates one. Either way the key is stored for this Windows user and <see cref="SyncPair.VaultId"/> set.
+    /// An encrypted pair's Cryptomator vault on the other side: joins an existing one (made by Unisono or by Cryptomator;
+    /// the passphrase must fit) or, in an empty folder, creates one. Either way the master keys are stored for this Windows
+    /// user and <see cref="SyncPair.VaultId"/> set.
     /// </summary>
     private async Task SetUpVaultAsync(SyncPair pair, string? passphrase, CancellationToken ct)
     {
@@ -791,31 +792,50 @@ sealed class Bridge : IAsyncDisposable
         var file = Path.Combine(dir, Guid.NewGuid().ToString("N"));
         try
         {
-            if (tree.TryGetValue(CryptoVault.VaultFile, out var node))
+            async Task<string> ReadAsync(RemoteNode n)
             {
-                await inner.DownloadAsync(node, file, ct);
-                var info = CryptoVault.Parse(await File.ReadAllTextAsync(file, ct));
+                await inner.DownloadAsync(n, file, ct);
+                return await File.ReadAllTextAsync(file, ct);
+            }
+            if (tree.TryGetValue(CryptomatorVault.VaultFile, out var configNode))
+            {
+                var config = await ReadAsync(configNode);
+                var id = CryptomatorVault.IdOf(config);
+                byte[] keys;
                 if (string.IsNullOrEmpty(passphrase))
-                {
-                    if (CryptoVault.LoadKey(info.Id) == null) throw new InvalidOperationException("This remote folder is encrypted: enter its passphrase.");
-                }
+                    keys = CryptomatorVault.LoadKey(id) ?? throw new InvalidOperationException("This remote folder is an encrypted vault: enter its passphrase.");
                 else
                 {
-                    var master = CryptoVault.Unlock(info, passphrase) ?? throw new InvalidOperationException("That is not the passphrase of this encrypted folder.");
-                    CryptoVault.SaveKey(info.Id, master);
+                    if (!tree.TryGetValue(CryptomatorVault.MasterkeyFile, out var masterNode))
+                        throw new InvalidOperationException($"{CryptomatorVault.MasterkeyFile} is missing in this vault.");
+                    keys = await Task.Run(async () => CryptomatorVault.Unlock(await ReadAsync(masterNode), passphrase), ct)
+                           ?? throw new InvalidOperationException("That is not the passphrase of this vault.");
                 }
-                pair.VaultId = info.Id;
-                _log.Info($"[{pair.Name}] joined the encrypted folder (vault {info.Id})");
+                CryptomatorVault.CheckConfig(config, keys);
+                CryptomatorVault.SaveKey(id, keys);
+                pair.VaultId = id;
+                _log.Info($"[{pair.Name}] joined the Cryptomator vault {id}");
                 return;
             }
-            if (tree.Count > 0) throw new InvalidOperationException("The remote folder already holds unencrypted files. An encrypted pair needs an empty or new folder.");
+            if (tree.Count > 0) throw new InvalidOperationException("The remote folder already holds files that are not a Cryptomator vault. An encrypted pair needs an empty or new folder, or an existing vault.");
             if (string.IsNullOrEmpty(passphrase) || passphrase.Length < 10) throw new InvalidOperationException("The passphrase needs at least 10 characters.");
-            var (key, created) = CryptoVault.Create(passphrase);
-            await File.WriteAllTextAsync(file, CryptoVault.Serialize(created), ct);
-            await inner.UploadNewAsync(file, CryptoVault.VaultFile, null, ct);
-            CryptoVault.SaveKey(created.Id, key);
-            pair.VaultId = created.Id;
-            _log.Info($"[{pair.Name}] created the encrypted folder (vault {created.Id})");
+            var (newKeys, masterkey, vaultConfig, newId) = await Task.Run(() => CryptomatorVault.Create(passphrase), ct);
+            await File.WriteAllTextAsync(file, masterkey, ct);
+            await inner.UploadNewAsync(file, CryptomatorVault.MasterkeyFile, null, ct);
+            await File.WriteAllTextAsync(file, vaultConfig, ct);
+            await inner.UploadNewAsync(file, CryptomatorVault.VaultFile, null, ct);
+            // The root directory's folder, so the vault opens in Cryptomator before anything is synced.
+            RemoteNode? parent = null;
+            var rootPath = new CryptomatorVault(newKeys).DirPath("");
+            var built = "";
+            foreach (var part in rootPath.Split('/'))
+            {
+                built = PathUtil.Join(built, part);
+                parent = await inner.CreateFolderAsync(built, parent, ct);
+            }
+            CryptomatorVault.SaveKey(newId, newKeys);
+            pair.VaultId = newId;
+            _log.Info($"[{pair.Name}] created the Cryptomator vault {newId}");
         }
         finally
         {

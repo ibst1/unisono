@@ -49,6 +49,9 @@ public sealed class SyncState
     public List<RemoteNode> Index { get; set; } = new();
     public Dictionary<string, StateEntry> Entries { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Encrypted pairs: the small vault files already read (directory ids, long names), by remote id + date + size.</summary>
+    public Dictionary<string, string> VaultFiles { get; set; } = new();
+
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = false };
 
     public static string FilePathFor(SyncPair pair) => System.IO.Path.Combine(AppPaths.DataDir, "state", pair.Id + ".json");

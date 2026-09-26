@@ -47,9 +47,9 @@ public sealed class StoreFactory : IAsyncDisposable
             _ => new SynologyStore(await NasAsync(pair, ct), pair),
         };
         if (!pair.Encrypted) return store;
-        var key = CryptoVault.LoadKey(pair.VaultId)
+        var key = CryptomatorVault.LoadKey(pair.VaultId)
                   ?? throw new InvalidOperationException("the passphrase of this encrypted pair is not stored on this computer: open the pair (Edit) and enter it");
-        return new EncryptedStore(store, new CryptoVault(key), pair.Name);
+        return new CryptomatorStore(store, new CryptomatorVault(key), pair.Name, _log);
     }
 
     public async Task<SynologyClient> NasAsync(SyncPair pair, CancellationToken ct)
