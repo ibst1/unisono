@@ -705,11 +705,14 @@ sealed class Bridge : IAsyncDisposable
         if (p.OnDemand)
         {
             if (CloudFiles.WhyNot(p.LocalFullPath, original is { OnDemand: true } && original.Id == p.Id ? original : null) is { } why) return why;
-            foreach (var other in Config.Pairs.Where(o => !ReferenceEquals(o, original)))
+            // Windows cannot nest two files-on-demand folders (sync roots). An ordinary pair inside one is fine: this
+            // pair leaves that folder alone, and its files stay ordinary files.
+            foreach (var other in Config.Pairs.Where(o => !ReferenceEquals(o, original) && o.OnDemand))
             {
                 var theirs = WithSep(other.LocalFullPath);
                 if (theirs.StartsWith(mine, StringComparison.OrdinalIgnoreCase) || mine.StartsWith(theirs, StringComparison.OrdinalIgnoreCase))
-                    return $"With files on demand the folder cannot contain or lie inside another pair's folder ({other.LocalFullPath}); Windows does not allow that.";
+                    return $"Two files-on-demand folders cannot lie inside one another ({other.LocalFullPath} is one too); Windows does not allow that. " +
+                           "Use 'Everything downloaded' for one of them.";
             }
         }
         if (p.Kind == RemoteKind.Folder)
