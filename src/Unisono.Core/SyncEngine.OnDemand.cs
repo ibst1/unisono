@@ -105,6 +105,7 @@ public sealed partial class SyncEngine
         // Exports and links are kept in the state under the remote path ("Plan"), on disk they are "Plan.docx".
         var derived = _state.Entries.Values.Where(e => e.LocalName != null).GroupBy(e => e.LocalName!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var changedDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // for Explorer's folder icons
         foreach (var l in local.Values.OrderBy(i => PathUtil.Depth(i.RelPath)).ToList())
         {
             ct.ThrowIfCancellationRequested();
@@ -130,6 +131,7 @@ public sealed partial class SyncEngine
                 if (l.Dehydrated && pinned && Down)
                 {
                     await Try(l.RelPath, stats, () => DownloadAsync(node, path, stats, "kept on this device", ct, keep: true));
+                    changedDirs.Add(Path.GetDirectoryName(path)!);
                 }
                 else if (!l.Dehydrated && l.Unpinned && LocalUnchanged(l, s))
                 {
@@ -137,6 +139,7 @@ public sealed partial class SyncEngine
                     else CloudFiles.MarkInSync(path);
                     CloudFiles.Dehydrate(path);
                     stats.Online++;
+                    changedDirs.Add(Path.GetDirectoryName(path)!);
                     _log.Info($"[{_pair.Name}] freed up space: {l.RelPath} ({l.Size:N0} bytes, online-only now)");
                     Journal("freed up space", l.RelPath, l.Size, "online-only now");
                 }
@@ -148,6 +151,13 @@ public sealed partial class SyncEngine
             catch (Exception ex) { _log.Debug($"[{_pair.Name}] {l.RelPath}: {ex.Message}"); } // open elsewhere etc.: next cycle
         }
 
+        // Explorer redraws a folder's icon (online-only, available) only when told: the folders whose files were freed
+        // up or kept, and those above them, which sum up their state.
+        var notify = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var dir in changedDirs)
+            for (var d = dir; d != null && d.Length >= _root.TrimEnd('\\').Length; d = Path.GetDirectoryName(d)) notify.Add(d);
+        foreach (var dir in notify) ShellNotify.FolderChanged(dir);
+
         // Windows marks a folder out of sync whenever something in it changes (Unisono adding or downloading files
         // included). With the cycle through, the folders are in sync again: innermost first, the root last.
         if (NeedsFollowUp) return; // something is still being written; the next cycle finishes the job
@@ -157,5 +167,25 @@ public sealed partial class SyncEngine
             try { if (Directory.Exists(dir) && !CloudFiles.IsInSync(dir)) CloudFiles.MarkInSync(dir); }
             catch (Exception ex) { _log.Debug($"[{_pair.Name}] {dir}: {ex.Message}"); }
         }
+    }
+}
+
+/// <summary>Tells Explorer that a folder's items changed, so it redraws their status icons.</summary>
+internal static class ShellNotify
+{
+    [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern void SHChangeNotify(int eventId, uint flags, string item1, IntPtr item2);
+
+    private const int ShcneUpdateDir = 0x1000, ShcneUpdateItem = 0x2000;
+    private const uint ShcnfPathW = 0x0005;
+
+    public static void FolderChanged(string path)
+    {
+        try
+        {
+            SHChangeNotify(ShcneUpdateItem, ShcnfPathW, path, IntPtr.Zero); // the folder's own icon, in its parent
+            SHChangeNotify(ShcneUpdateDir, ShcnfPathW, path, IntPtr.Zero);  // the items in it
+        }
+        catch { }
     }
 }
