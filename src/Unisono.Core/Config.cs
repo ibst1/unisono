@@ -22,6 +22,11 @@ public enum SyncDirection
     DownloadOnly,
     /// <summary>Local changes (including deletions) are applied remotely; nothing done remotely is downloaded or undone.</summary>
     UploadOnly,
+    /// <summary>
+    /// Like <see cref="UploadOnly"/>, and what a local change replaces or a local deletion removes on the other side is kept
+    /// there in a versions folder (see SyncEngine.Backup.cs).
+    /// </summary>
+    Backup,
 }
 
 public enum GoogleDocsMode

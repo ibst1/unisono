@@ -131,6 +131,18 @@ sealed class Bridge : IAsyncDisposable
                 _host.SyncNow();
                 return null;
             }
+            case "backup.versions":
+            {
+                var st = _host.Pairs.FirstOrDefault(s => s.Pair.Id == Str(p, "id"));
+                return (st?.Versions ?? new()).Select(v => new { rel = v.Rel, versionRel = v.VersionRel, taken = v.Taken.ToString("yyyy-MM-dd HH:mm:ss"), size = v.Size, isFolder = v.IsFolder }).ToList();
+            }
+            case "backup.restore":
+            {
+                var pair = FindPair(Str(p, "id"));
+                using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(30));
+                var rel = await _host.RestoreAsync(pair.Id, Str(p, "versionRel")!).WaitAsync(cts.Token);
+                return new { rel };
+            }
             case "conflicts.list": return await Task.Run(() => Conflicts.Find(Config.Pairs));
             case "conflicts.resolve":
             {

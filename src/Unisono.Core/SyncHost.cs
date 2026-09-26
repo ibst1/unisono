@@ -18,6 +18,8 @@ public sealed class PairStatus
     public ContentCheck.Report? LastCheck { get; set; }
     public bool Checking { get; set; }
     public DateTime? LastChecked { get; set; }
+    /// <summary>Backup pairs: the versions kept on the other side, as of the last cycle.</summary>
+    public List<SyncEngine.BackupVersion>? Versions { get; set; }
     /// <summary>While this pair waits for its turn: the pair that is syncing now.</summary>
     public string? WaitingFor { get; set; }
     public CycleStats? LastStats { get; set; }
@@ -42,6 +44,17 @@ public sealed class SyncHost : IAsyncDisposable
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _checkRequests = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, List<string>> _forget = new();
     private Task? _checkTask;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Concurrent.ConcurrentQueue<(string Rel, TaskCompletionSource<string> Done)>> _restores = new();
+
+    /// <summary>Restores a backup pair's kept version after the pair's next cycle; returns the restored file's path in the pair.</summary>
+    public Task<string> RestoreAsync(string pairId, string versionRel)
+    {
+        var done = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _restores.GetOrAdd(pairId, _ => new()).Enqueue((versionRel, done));
+        _forceOnce = true; // even while paused
+        Nudge();
+        return done.Task;
+    }
 
     /// <summary>Check this pair's content soon (after its next cycle).</summary>
     public void RequestCheck(string pairId) { _checkRequests[pairId] = true; Nudge(); }
@@ -248,6 +261,13 @@ public sealed class SyncHost : IAsyncDisposable
                                 lock (ps.Frequent) ps.Frequent.AddRange(stats.Frequent.Where(f => !ps.Frequent.Contains(f, StringComparer.OrdinalIgnoreCase)));
                             CycleCompleted?.Invoke(ps, stats);
                             MaybeStartCheck(ps, engines[i]!, ct);
+                            ps.Versions = engines[i]!.BackupVersions();
+                            if (_restores.TryGetValue(ps.Pair.Id, out var queue))
+                                while (queue.TryDequeue(out var r))
+                                {
+                                    try { r.Done.SetResult(await engines[i]!.RestoreAsync(r.Rel, ct)); followUp = true; }
+                                    catch (Exception rex) { r.Done.SetException(rex); }
+                                }
                         }
                         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                         catch (Exception ex)

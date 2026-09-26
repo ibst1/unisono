@@ -106,7 +106,7 @@ public sealed partial class SyncEngine
         return true;
     }
 
-    private bool Down => _pair.Direction != SyncDirection.UploadOnly;   // may change the local side
+    private bool Down => _pair.Direction is not (SyncDirection.UploadOnly or SyncDirection.Backup);   // may change the local side
     private bool Up => _pair.Direction != SyncDirection.DownloadOnly;   // may change the remote side
 
     public SyncEngine(IRemoteStore store, SyncPair pair, Log log, IReadOnlyList<SyncPair>? allPairs = null, AppOptions? options = null)
@@ -141,6 +141,7 @@ public sealed partial class SyncEngine
         _deadline = TimeBudget is { } budget ? DateTime.UtcNow + budget : DateTime.MaxValue;
         var remoteAll = await _store.GetTreeAsync(_log, ct);
         _lastRemote = remoteAll;
+        _fullRemote = remoteAll;
         var fingerprint = Fingerprint(remoteAll);
         _docsChecked = false;
         if (!DryRun && !LocalChanged && !workLeft && !_lastHadErrors && fingerprint == _lastRemoteFingerprint && DateTime.UtcNow - _lastFullCycleUtc < FullCycleInterval)
@@ -156,8 +157,9 @@ public sealed partial class SyncEngine
             localAll.Values.Where(i => !i.IsDir && PathUtil.NameOf(i.RelPath).Equals(IgnoreRules.FileName, StringComparison.OrdinalIgnoreCase)).Select(i => i.RelPath),
             _log);
         _ignoredBelow = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var remote = Visible(remoteAll, n => n.IsFolder, ignore);
-        var local = Visible(localAll, i => i.IsDir, ignore);
+        // The backup's versions folder is not part of the synced content, on either side.
+        var remote = Visible(Without(remoteAll, IsInVersions), n => n.IsFolder, ignore);
+        var local = Visible(Without(localAll, IsInVersions), i => i.IsDir, ignore);
         try
         {
             // Renames and moves first, so they are carried over as such instead of as a delete plus an upload.
@@ -167,6 +169,7 @@ public sealed partial class SyncEngine
             await SyncFilesAsync(remote, local, stats, ct);
             await ApplyOnDemandAsync(remote, local, stats, ct);
             if (!DryRun) TidyBridgeFolders(local);
+            await PruneVersionsAsync(ct);
         }
         finally
         {
@@ -202,6 +205,14 @@ public sealed partial class SyncEngine
         stats.Frequent.Add(rel);
         stats.Notices.Add($"{PathUtil.NameOf(rel)} in {_pair.Name} changes very often ({FrequentTransfers} times within an hour). Open Unisono to ignore it or keep syncing it.");
         _log.Warn($"[{_pair.Name}] '{rel}' changes very often; it is probably better ignored");
+    }
+
+    private static Dictionary<string, T> Without<T>(Dictionary<string, T> all, Func<string, bool> drop)
+    {
+        if (!all.Keys.Any(drop)) return all;
+        var kept = new Dictionary<string, T>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (k, v) in all) if (!drop(k)) kept[k] = v;
+        return kept;
     }
 
     /// <summary>Changes whenever an item of the remote tree is added, removed or changed (within this process).</summary>
@@ -317,11 +328,15 @@ public sealed partial class SyncEngine
                 if (Directory.Exists(Local(rel))) { NeedsFollowUp = true; continue; } // back already (renamed away and back)
                 await Try(rel, stats, async () =>
                 {
-                    if (!Planned("delete folder remotely (deleted locally)", rel)) await _store.DeleteAsync(node, ct);
+                    if (!Planned(BackupMode ? "keep folder in the backup's versions (deleted locally)" : "delete folder remotely (deleted locally)", rel))
+                    {
+                        if (BackupMode) await KeepRemoteVersionAsync(node, rel, ct);
+                        else await _store.DeleteAsync(node, ct);
+                    }
                     _state.RemoveUnder(rel);
                     RemoveTree(remote, rel);
                     stats.Trashed++;
-                    if (!DryRun) _log.Info($"[{_pair.Name}] deleted folder remotely (deleted locally): {rel}");
+                    if (!DryRun && !BackupMode) _log.Info($"[{_pair.Name}] deleted folder remotely (deleted locally): {rel}");
                 });
                 continue;
             }
@@ -594,11 +609,15 @@ public sealed partial class SyncEngine
                 }
                 // Saving programs replace files by rename; the scan may have caught the moment it was gone.
                 if (File.Exists(path)) { NeedsFollowUp = true; return; }
-                if (!Planned("delete remotely (deleted locally)", rel)) await _store.DeleteAsync(fresh, ct);
+                if (!Planned(BackupMode ? "keep in the backup's versions (deleted locally)" : "delete remotely (deleted locally)", rel))
+                {
+                    if (BackupMode) await KeepRemoteVersionAsync(fresh, rel, ct);
+                    else await _store.DeleteAsync(fresh, ct);
+                }
                 remote.Remove(rel);
                 _state.Entries.Remove(rel);
                 stats.Trashed++;
-                if (!DryRun) _log.Info($"[{_pair.Name}] deleted remotely (deleted locally): {rel}");
+                if (!DryRun && !BackupMode) _log.Info($"[{_pair.Name}] deleted remotely (deleted locally): {rel}");
                 return;
             }
 
@@ -609,7 +628,7 @@ public sealed partial class SyncEngine
                 // Both sides have it and we have never synced it: content decides; in a one-way pair the source wins.
                 if (await SameContentAsync(node, path, ct)) { RecordFile(rel, node, path); return; }
                 if (_pair.Direction == SyncDirection.DownloadOnly) await DownloadAsync(node, path, stats, "differs; download-only pair", ct);
-                else if (_pair.Direction == SyncDirection.UploadOnly) await UploadChangeAsync(node, rel, path, l, remote, stats, ct);
+                else if (!Down) await UploadChangeAsync(node, rel, path, l, remote, stats, ct);
                 else await ConflictAsync(node, rel, path, remote, stats, "exists on both sides with different content", ct);
                 return;
             }
@@ -627,7 +646,7 @@ public sealed partial class SyncEngine
             {
                 if (await SameContentAsync(node, path, ct)) { RecordFile(rel, node, path); return; }
                 if (_pair.Direction == SyncDirection.DownloadOnly) await DownloadAsync(node, path, stats, "changed on both sides; download-only pair", ct);
-                else if (_pair.Direction == SyncDirection.UploadOnly) await UploadChangeAsync(node, rel, path, l, remote, stats, ct);
+                else if (!Down) await UploadChangeAsync(node, rel, path, l, remote, stats, ct);
                 else await ConflictAsync(node, rel, path, remote, stats, "changed on both sides", ct);
             }
             else if (remoteChanged)
@@ -660,7 +679,16 @@ public sealed partial class SyncEngine
 
     private async Task UploadChangeAsync(RemoteNode node, string rel, string path, LocalItem l, Dictionary<string, RemoteNode> remote, CycleStats stats, CancellationToken ct)
     {
-        var fresh = Planned("upload change", rel, $"{l.Size:N0} bytes") ? node : await Tracked(SyncActivity.Direction.Up, rel, l.Size, () => _store.UploadUpdateAsync(path, node, ct));
+        RemoteNode fresh;
+        if (Planned(BackupMode ? "upload change (the previous version is kept)" : "upload change", rel, $"{l.Size:N0} bytes")) fresh = node;
+        else if (BackupMode)
+        {
+            // The version on the other side moves into the versions folder; the new one is uploaded in its place.
+            TryParent(rel, remote, out var parent);
+            await KeepRemoteVersionAsync(node, rel, ct);
+            fresh = await Tracked(SyncActivity.Direction.Up, rel, l.Size, () => _store.UploadNewAsync(path, rel, parent, ct));
+        }
+        else fresh = await Tracked(SyncActivity.Direction.Up, rel, l.Size, () => _store.UploadUpdateAsync(path, node, ct));
         remote[rel] = fresh;
         if (!DryRun) Uploaded(path, fresh.Id);
         RecordFile(rel, fresh, path);

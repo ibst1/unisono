@@ -268,8 +268,10 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="field"><label>Direction</label>
     <select id="pairDirection"><option value="TwoWay">Two-way: changes on either side are applied to the other</option>
       <option value="DownloadOnly">Download only: remote changes come here; nothing here is uploaded</option>
-      <option value="UploadOnly">Upload only: changes here go up; nothing remote comes down</option></select>
-    <div class="help">One-way pairs apply the source side's changes, deletions included, and never undo anything done on the other side.</div></div>  <div class="field"><label>Local folder</label>
+      <option value="UploadOnly">Upload only: changes here go up; nothing remote comes down</option>
+      <option value="Backup">Backup: like upload only, and replaced or deleted files are kept on the other side</option></select>
+    <div class="help">One-way pairs apply the source side's changes, deletions included, and never undo anything done on the other side.
+      A backup keeps what it replaces or deletes over there in the folder <span class="mono">.unisono-versions</span>, pruned by the version settings (Settings); restore from Versions.</div></div>  <div class="field"><label>Local folder</label>
     <div class="inline"><input type="text" id="pairLocal"><button class="btn" id="pairPickLocal">Browse...</button></div>
     <div class="help">May lie inside another pair's folder (e.g. a Drive folder inside a NAS folder); the outer pair then leaves it alone.</div></div>
   <div class="field" id="pairDocsRow"><label id="pairDocsLabel">Google Docs</label>
@@ -317,6 +319,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <h3 id="verTitle">Previous versions</h3>
   <div class="row" style="margin-bottom:10px"><input type="text" id="verSearch" class="grow" placeholder="Filter by name..."><button class="btn" id="verFolder">Open folder</button></div>
   <div class="plan" id="verList"></div>
+  <div id="verBackup"></div>
   <div class="small muted" style="margin-top:8px">Restoring puts the copy back in place and keeps the file it replaces as a version, so a restore can be undone the same way. The next sync uploads it.</div>
   <div class="actions"><button class="btn" data-close>Close</button></div>
 </div></div>
@@ -539,7 +542,7 @@ function renderPairs() {
         <span class="small muted">${p.lastSync ? "last run " + esc(p.lastSync) : "not run yet"}</span>
         <span class="small muted" title="Reads every synced file and compares it with what was synced, to find damage">${p.checking ? "checking content..." : `content checked ${esc(p.lastChecked || "never")} &middot; <a class="path" data-check="${esc(p.id)}">check now</a>`}</span>
         ${p.onDemand ? `<span class="chip plain" title="Files on demand: online-only until opened or kept">on demand</span>` : ""}
-        ${p.direction !== "TwoWay" ? `<span class="chip plain">${p.direction === "DownloadOnly" ? "download only" : "upload only"}</span>` : ""}
+        ${p.direction !== "TwoWay" ? `<span class="chip plain">${{ DownloadOnly: "download only", UploadOnly: "upload only", Backup: "backup" }[p.direction] || esc(p.direction)}</span>` : ""}
         <span class="small grow ellipsis" style="${p.failed ? "color:var(--red)" : ""}" title="${esc(p.lastResult)}">${esc(p.lastResult)}</span>
         <button class="btn" data-preview="${esc(p.id)}" title="Show what the next sync would do, without doing it">Preview</button>
         <button class="btn" data-versions="${esc(p.id)}" title="Earlier versions of files this pair replaced">Versions</button>
@@ -596,10 +599,32 @@ async function versionsDialog(p) {
       catch (e) { toast(e.message, true); }
     });
   };
+  // Backup pairs also list what is kept on the other side.
+  const drawBackup = kept => {
+    const q = $("#verSearch").value.trim().toLowerCase();
+    const shown = kept.filter(v => !q || v.rel.toLowerCase().includes(q));
+    const groups = {};
+    shown.forEach(v => (groups[v.rel] = groups[v.rel] || []).push(v));
+    $("#verBackup").innerHTML = `<div class="small muted" style="margin:14px 0 6px">In the backup on the other side (${kept.length} kept):</div>` + (Object.keys(groups).length
+      ? `<div class="plan">${Object.entries(groups).map(([rel, vs]) => `<div><div class="mono ellipsis" title="${esc(rel)}">${esc(rel)}${vs[0].isFolder ? "/" : ""}</div>
+          ${vs.map(v => `<div class="row small" style="padding:3px 0 0 14px"><span class="grow muted">${esc(v.taken)}${v.isFolder ? " &middot; deleted folder" : " &middot; " + v.size.toLocaleString() + " bytes"}</span>
+            ${v.isFolder ? "" : `<button class="btn" data-brestore="${esc(v.versionRel)}" data-brel="${esc(rel)}" data-bwhen="${esc(v.taken)}">Restore</button>`}</div>`).join("")}</div>`).join("")}</div>`
+      : `<div class="muted">${kept.length ? "Nothing matches." : "Nothing kept yet: a version is kept when a changed or deleted file would replace or remove it."}</div>`);
+    document.querySelectorAll("[data-brestore]").forEach(b => b.onclick = async () => {
+      if (!await confirmBox("Restore from the backup", [`Download the version from ${b.dataset.bwhen} as ${b.dataset.brel}? The file here, if any, is kept among this computer's versions first; the backup then keeps the current version as well.`])) return;
+      busy(b, true, "Restoring...");
+      try { await call("backup.restore", { id: p.id, versionRel: b.dataset.brestore }); toast("Restored"); }
+      catch (e) { toast(e.message, true); }
+      finally { busy(b, false); }
+    });
+  };
   try {
     const files = await call("versions.list", { id: p.id });
-    $("#verSearch").oninput = () => draw(files);
-    draw(files); openModal("#dlgVersions");
+    const kept = p.direction === "Backup" ? await call("backup.versions", { id: p.id }) : null;
+    $("#verSearch").oninput = () => { draw(files); if (kept) drawBackup(kept); };
+    draw(files);
+    if (kept) drawBackup(kept); else $("#verBackup").innerHTML = "";
+    openModal("#dlgVersions");
   } catch (e) { toast(e.message, true); }
 }
 
