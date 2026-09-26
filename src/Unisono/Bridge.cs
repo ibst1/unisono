@@ -116,6 +116,23 @@ sealed class Bridge : IAsyncDisposable
                 _host.SyncNow();
                 return null;
             }
+            case "conflicts.list": return await Task.Run(() => Conflicts.Find(Config.Pairs));
+            case "conflicts.resolve":
+            {
+                var pair = FindPair(Str(p, "id"));
+                _log.Info($"[{pair.Name}] " + Conflicts.Resolve(pair, Str(p, "rel")!, Str(p, "action")!, Config.Options));
+                return null;
+            }
+            case "conflicts.open":
+            {
+                // A file of a pair, opened in its program (the conflict copy or the original).
+                var pair = FindPair(Str(p, "id"));
+                var root = pair.LocalFullPath.TrimEnd('\\');
+                var path = Path.GetFullPath(Path.Combine(root, (Str(p, "rel") ?? "").Replace('/', '\\')));
+                if (!path.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase) || !File.Exists(path)) throw new InvalidOperationException("That file is not there.");
+                Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+                return null;
+            }
             case "versions.open":
             {
                 var path = Str(p, "path")!;

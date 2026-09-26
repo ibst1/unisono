@@ -165,6 +165,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     <section>
       <div class="row" style="margin-bottom:12px">
         <div class="grow"><h2>Sync pairs</h2><div class="sub" style="margin:0">A remote folder and a local folder kept identical in both directions.</div></div>
+        <button class="btn" id="btnConflicts" title="Files that changed on both sides, kept as conflict copies">Conflicts...</button>
         <button class="btn primary" id="btnAddPair">+ Add pair</button>
       </div>
       <div id="pairList"></div>
@@ -315,6 +316,15 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="plan" id="verList"></div>
   <div class="small muted" style="margin-top:8px">Restoring puts the copy back in place and keeps the file it replaces as a version, so a restore can be undone the same way. The next sync uploads it.</div>
   <div class="actions"><button class="btn" data-close>Close</button></div>
+</div></div>
+
+<div class="modal" id="dlgConflicts"><div class="dialog" style="width:min(920px,100%)">
+  <h3>Conflicts</h3>
+  <div class="small muted" style="margin-bottom:10px">When a file changed on both sides, Unisono keeps both: the other side's version under the
+    original name and this side's as a copy named "(conflict COMPUTER date time)". Word edits of a Google document that could not go back into the
+    document are kept as "(edited ...)". Compare them and keep one; the other goes to the Recycle Bin, and the next sync carries it over to the other side.</div>
+  <div class="plan" id="conflictList"></div>
+  <div class="actions"><button class="btn" id="conflictRefresh">Refresh</button><button class="btn" data-close>Close</button></div>
 </div></div>
 
 <div class="modal" id="dlgConfirm"><div class="dialog">
@@ -687,6 +697,30 @@ function pairDialog(p) {
   openModal("#dlgPair");
 }
 $("#btnAddPair").onclick = () => pairDialog();
+async function conflictsDialog() {
+  openModal("#dlgConflicts");
+  $("#conflictList").innerHTML = `<div class="muted">Looking through the synced folders...</div>`;
+  let list;
+  try { list = await call("conflicts.list"); } catch (e) { $("#conflictList").innerHTML = `<div class="note err">${esc(e.message)}</div>`; return; }
+  const when = d => d ? new Date(d).toLocaleString() : "";
+  const kb = n => n < 1024 ? n + " bytes" : Math.round(n / 1024).toLocaleString() + " KB";
+  $("#conflictList").innerHTML = list.length ? list.map(c => `<div>
+      <div class="row"><span class="mono grow ellipsis" title="${esc(c.originalRel)}">${esc(c.originalRel)}</span><span class="chip plain">${esc(c.pairName)}</span></div>
+      <div class="row small" style="padding:3px 0 0 14px"><span class="grow muted">${c.originalExists ? `Current version: ${esc(when(c.originalModified))}, ${kb(c.originalSize)}` : "The original is gone; only the copy is left."}</span>
+        ${c.originalExists ? `<button class="btn" data-copen="${esc(c.pairId)}" data-crel="${esc(c.originalRel)}">Open</button>` : ""}</div>
+      <div class="row small" style="padding:3px 0 0 14px"><span class="grow muted">${c.kind === "edited" ? "Edited" : "Conflict"} copy from ${esc(c.machine)}, ${esc(c.when)}: ${esc(when(c.modified))}, ${kb(c.size)}</span>
+        <button class="btn" data-copen="${esc(c.pairId)}" data-crel="${esc(c.rel)}">Open</button>
+        ${c.kind === "conflict" || !c.originalExists ? `<button class="btn" data-cres="keepCopy" data-cpair="${esc(c.pairId)}" data-crel="${esc(c.rel)}" title="The copy's content replaces the current version (kept among earlier versions)">Keep the copy</button>` : ""}
+        <button class="btn" data-cres="keepOriginal" data-cpair="${esc(c.pairId)}" data-crel="${esc(c.rel)}" title="The copy goes to the Recycle Bin">${c.originalExists ? "Keep the current version" : "Delete the copy"}</button></div>
+    </div>`).join("") : `<div class="muted">No conflict copies in the synced folders.</div>`;
+  document.querySelectorAll("[data-copen]").forEach(b => b.onclick = () => call("conflicts.open", { id: b.dataset.copen, rel: b.dataset.crel }).catch(e => toast(e.message, true)));
+  document.querySelectorAll("[data-cres]").forEach(b => b.onclick = async () => {
+    try { await call("conflicts.resolve", { id: b.dataset.cpair, rel: b.dataset.crel, action: b.dataset.cres }); toast("Done; the next sync carries it over"); conflictsDialog(); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+$("#btnConflicts").onclick = conflictsDialog;
+$("#conflictRefresh").onclick = conflictsDialog;
 let frequentOk = [];
 function renderFrequentOk() { $("#pairFreqRow").hidden = !frequentOk.length; $("#pairFreqList").textContent = frequentOk.join(", "); }
 $("#pairFreqClear").onclick = () => { frequentOk = []; renderFrequentOk(); };
