@@ -14,6 +14,10 @@ public sealed class PairStatus
     public int TroubleCycles { get; set; }
     /// <summary>Set once the trouble has lasted long enough to tell the user; cleared by the next clean cycle.</summary>
     public string? Health { get; set; }
+    /// <summary>The last content check (null until one ran in this session), whether one runs now, and when the last finished.</summary>
+    public ContentCheck.Report? LastCheck { get; set; }
+    public bool Checking { get; set; }
+    public DateTime? LastChecked { get; set; }
     /// <summary>While this pair waits for its turn: the pair that is syncing now.</summary>
     public string? WaitingFor { get; set; }
     public CycleStats? LastStats { get; set; }
@@ -35,6 +39,22 @@ public sealed class SyncHost : IAsyncDisposable
     private IDisposable? _lock;
     private volatile bool _paused;
     private volatile bool _forceOnce;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _checkRequests = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, List<string>> _forget = new();
+    private Task? _checkTask;
+
+    /// <summary>Check this pair's content soon (after its next cycle).</summary>
+    public void RequestCheck(string pairId) { _checkRequests[pairId] = true; Nudge(); }
+
+    /// <summary>Forget the sync history of these files before the pair's next cycle (see <see cref="SyncEngine.Forget"/>).</summary>
+    public void ForgetHistory(string pairId, IEnumerable<string> rels)
+    {
+        _forget.AddOrUpdate(pairId, _ => rels.ToList(), (_, l) => l.Concat(rels).ToList());
+        Nudge();
+    }
+
+    /// <summary>A content check found files that changed on their own. Raised on a thread-pool thread.</summary>
+    public event Action<PairStatus>? ContentProblem;
 
     public event Action? StateChanged;
     public event Action<PairStatus>? PairChanged;
@@ -88,7 +108,15 @@ public sealed class SyncHost : IAsyncDisposable
         _lock ??= SyncLock.TryAcquire()
                   ?? throw new InvalidOperationException("another Unisono is already syncing (the tray app or 'UnisonoCli run'); close it first");
         var lastRuns = LoadLastRuns();
-        Pairs = config.Pairs.Select(p => new PairStatus { Pair = p, LastSync = lastRuns.TryGetValue(p.Id, out var t) ? t : null }).ToList();
+        var lastChecks = LoadTimes(CheckedFile);
+        Pairs = config.Pairs.Select(p => new PairStatus { Pair = p, LastSync = lastRuns.TryGetValue(p.Id, out var t) ? t : null,
+            LastChecked = lastChecks.TryGetValue(p.Id, out var c) ? c : null }).ToList();
+        // A pair never checked gets its first automatic check one interval from now, not all at once today.
+        if (Pairs.Any(p => p.LastChecked == null))
+        {
+            foreach (var p in Pairs.Where(p => p.LastChecked == null)) lastChecks[p.Pair.Id] = DateTime.Now;
+            SaveTimes(CheckedFile, lastChecks);
+        }
         _options = config.Options;
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
@@ -202,6 +230,11 @@ public sealed class SyncHost : IAsyncDisposable
                             // With other pairs to serve, a long job (thousands of uploads) is done in turns of a few minutes.
                             engines[i]!.TimeBudget = pairs.Count > 1 ? TurnLength : null;
                             engines[i]!.LocalChanged = Interlocked.Exchange(ref changed[i], 0) == 1;
+                            if (_forget.TryRemove(ps.Pair.Id, out var forget))
+                            {
+                                engines[i]!.Forget(forget);
+                                _log.Info($"[{ps.Pair.Name}] {forget.Count} file(s) will be compared afresh; differing versions are both kept");
+                            }
                             var stats = await engines[i]!.RunCycleAsync(ct);
                             followUp |= engines[i]!.NeedsFollowUp;
                             ps.LastStats = stats;
@@ -214,6 +247,7 @@ public sealed class SyncHost : IAsyncDisposable
                             if (stats.Frequent.Count > 0)
                                 lock (ps.Frequent) ps.Frequent.AddRange(stats.Frequent.Where(f => !ps.Frequent.Contains(f, StringComparer.OrdinalIgnoreCase)));
                             CycleCompleted?.Invoke(ps, stats);
+                            MaybeStartCheck(ps, engines[i]!, ct);
                         }
                         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                         catch (Exception ex)
@@ -361,6 +395,60 @@ public sealed class SyncHost : IAsyncDisposable
         ps.Health = $"Not fully synced since {ps.TroubleSince:HH:mm}{(ps.TroubleSince.Value.Date != DateTime.Today ? ps.TroubleSince.Value.ToString(" (d MMM)") : "")}: {problem}";
         _log.Warn($"[{ps.Pair.Name}] {ps.Health}");
         try { HealthProblem?.Invoke(ps); } catch { }
+    }
+
+    // ------------------------------------------------------------ content check
+
+    private static string CheckedFile => Path.Combine(AppPaths.DataDir, "checked.json");
+
+    /// <summary>After a pair's cycle: starts its content check when asked for or due. One check at a time, beside the cycles.</summary>
+    private void MaybeStartCheck(PairStatus ps, SyncEngine engine, CancellationToken ct)
+    {
+        if (_checkTask is { IsCompleted: false }) return;
+        var asked = _checkRequests.TryRemove(ps.Pair.Id, out _);
+        var due = _options.CheckContentDays > 0 && ps.LastChecked is { } last && DateTime.Now - last > TimeSpan.FromDays(_options.CheckContentDays)
+                  && !ContentCheck.OnBattery();
+        if (!asked && !due) return;
+        var (entries, remote) = engine.Snapshot();
+        ps.Checking = true;
+        Update(ps, ps.Status);
+        _log.Info($"[{ps.Pair.Name}] checking the content of {entries.Count} synced file(s){(asked ? "" : " (the regular check)")}");
+        _checkTask = Task.Run(async () =>
+        {
+            ContentCheck.Report report;
+            try { report = await ContentCheck.RunAsync(ps.Pair, entries, remote, _log, ct); }
+            catch (Exception ex) { _log.Warn($"[{ps.Pair.Name}] content check failed: {ex.Message}"); ps.Checking = false; Update(ps, ps.Status); return; }
+            ps.Checking = false;
+            if (!report.Cancelled)
+            {
+                ps.LastCheck = report;
+                ps.LastChecked = report.Finished;
+                var times = LoadTimes(CheckedFile);
+                times[ps.Pair.Id] = report.Finished;
+                SaveTimes(CheckedFile, times);
+                var summary = $"content check: {report.Checked} file(s), {report.Bytes / 1048576.0:N0} MB read, {report.Problems.Count} problem(s)";
+                if (report.Problems.Count == 0) _log.Info($"[{ps.Pair.Name}] {summary}");
+                else
+                {
+                    _log.Warn($"[{ps.Pair.Name}] {summary}");
+                    foreach (var p in report.Problems) _log.Warn($"[{ps.Pair.Name}]   {p.Rel}: {p.Detail}");
+                    try { ContentProblem?.Invoke(ps); } catch { }
+                }
+            }
+            Update(ps, ps.Status);
+        });
+    }
+
+    private static Dictionary<string, DateTime> LoadTimes(string file)
+    {
+        try { return System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, DateTime>>(File.ReadAllText(file)) ?? new(); }
+        catch { return new(); }
+    }
+
+    private void SaveTimes(string file, Dictionary<string, DateTime> times)
+    {
+        try { AppPaths.EnsureDataDir(); File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(times)); }
+        catch (Exception ex) { _log.Debug($"could not save {file}: {ex.Message}"); }
     }
 
     // When each pair last finished a cycle, so the window can say so after a restart too.

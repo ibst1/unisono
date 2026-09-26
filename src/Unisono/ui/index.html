@@ -194,6 +194,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <div class="setting"><div class="grow"><div>Previous versions folder</div>
         <div class="small muted"><span class="mono" id="verDir"></span> <span id="verDirNote"></span></div></div>
         <button class="btn" id="verDirPick">Change...</button><button class="btn" id="verDirReset">Default</button></div>
+      <div class="setting"><div class="grow"><div>Check content</div>
+        <div class="small muted">Reads every synced file and compares it with what was synced, to find damage that changes neither size nor date. On mains power only, one pair at a time. 0 = only when asked (a pair's "check now").</div></div>
+        <div class="inline"><span class="small muted">every</span><input type="number" id="optCheckDays" min="0" max="365" style="width:80px"><span class="small muted">days</span></div></div>
       <div class="setting"><label class="switch"><input type="checkbox" id="optMetered"><span></span></label>
         <div class="grow"><div>Pause on metered connections</div><div class="small muted" id="meteredNow">Mobile hotspots and networks marked as metered in Windows.</div></div></div>
       <div class="setting"><label class="switch"><input type="checkbox" id="optPresenting"><span></span></label>
@@ -534,6 +537,7 @@ function renderPairs() {
       </div>
       <div class="pairfoot">${statusChip(p)}
         <span class="small muted">${p.lastSync ? "last run " + esc(p.lastSync) : "not run yet"}</span>
+        <span class="small muted" title="Reads every synced file and compares it with what was synced, to find damage">${p.checking ? "checking content..." : `content checked ${esc(p.lastChecked || "never")} &middot; <a class="path" data-check="${esc(p.id)}">check now</a>`}</span>
         ${p.onDemand ? `<span class="chip plain" title="Files on demand: online-only until opened or kept">on demand</span>` : ""}
         ${p.direction !== "TwoWay" ? `<span class="chip plain">${p.direction === "DownloadOnly" ? "download only" : "upload only"}</span>` : ""}
         <span class="small grow ellipsis" style="${p.failed ? "color:var(--red)" : ""}" title="${esc(p.lastResult)}">${esc(p.lastResult)}</span>
@@ -541,6 +545,11 @@ function renderPairs() {
         <button class="btn" data-versions="${esc(p.id)}" title="Earlier versions of files this pair replaced">Versions</button>
         <button class="btn" data-editpair="${esc(p.id)}">Edit</button>
         <button class="btn danger" data-rmpair="${esc(p.id)}">Remove</button></div>
+      ${p.checkProblems && p.checkProblems.length ? `<div class="note warn" style="margin-bottom:0">
+        <div>The content check found ${p.checkProblems.length} file(s) whose content changed although nobody edited them (disk or transfer damage):</div>
+        <div class="mono small" style="margin:6px 0">${p.checkProblems.slice(0, 8).map(x => `${esc(x.rel)} (${x.side === "here" ? "on this computer" : "on the other side"})`).join("<br>")}${p.checkProblems.length > 8 ? "<br>..." : ""}</div>
+        <div class="inline"><span class="grow small">"Keep both versions" makes the next sync keep both sides' versions; then choose in Conflicts. Earlier versions may also help.</span>
+          <button class="btn" data-checkfix="${esc(p.id)}">Keep both versions</button><button class="btn" data-checkdismiss="${esc(p.id)}">Dismiss</button></div></div>` : ""}
       ${p.health ? `<div class="note err" style="margin-bottom:0">${esc(p.health)} <a class="path" data-showlog>Show the log</a></div>` : ""}
       ${(p.frequent || []).map(f => `<div class="note warn inline" style="margin-bottom:0">
         <span class="grow"><span class="mono">${esc(f)}</span> changes very often (${6} times or more within an hour). Logs and status files like this are usually better left out of syncing.</span>
@@ -554,6 +563,9 @@ function renderPairs() {
   document.querySelectorAll("[data-versions]").forEach(b => b.onclick = () => versionsDialog(S.pairs.find(p => p.id === b.dataset.versions)));
   document.querySelectorAll("[data-preview]").forEach(b => b.onclick = () => preview(S.pairs.find(p => p.id === b.dataset.preview), b));
   document.querySelectorAll("[data-showlog]").forEach(a => a.onclick = () => showTab("log"));
+  document.querySelectorAll("[data-check]").forEach(a => a.onclick = () => call("pair.check", { id: a.dataset.check }).then(() => toast("The content check starts after the pair's next sync")));
+  document.querySelectorAll("[data-checkfix]").forEach(b => b.onclick = () => call("pair.checkFix", { id: b.dataset.checkfix }).then(() => toast("Both versions will be kept; see Conflicts after the next sync")));
+  document.querySelectorAll("[data-checkdismiss]").forEach(b => b.onclick = () => call("pair.checkDismiss", { id: b.dataset.checkdismiss }));
   document.querySelectorAll("[data-freq]").forEach(b => b.onclick = () =>
     call("pair.frequent", { id: b.dataset.fpair, rel: b.dataset.frel, action: b.dataset.freq })
       .then(() => toast(b.dataset.freq === "ignore" ? "Added to .unisonoignore" : "Kept syncing; no more warnings for it")).catch(e => toast(e.message, true)));
@@ -984,6 +996,7 @@ function renderSettings() {
   const o = S.options;
   if (document.activeElement !== $("#optKeep")) $("#optKeep").value = o.keepVersions;
   if (document.activeElement !== $("#optDays")) $("#optDays").value = o.keepVersionsDays;
+  if (document.activeElement !== $("#optCheckDays")) $("#optCheckDays").value = o.checkContentDays;
   $("#optMetered").checked = o.pauseOnMetered; $("#optPresenting").checked = o.pauseWhilePresenting;
   $("#optExplorer").checked = o.explorerMenu;
   $("#meteredNow").textContent = "Mobile hotspots and networks marked as metered in Windows. The current connection is " + (o.metered ? "metered." : "not metered.");
@@ -1001,6 +1014,7 @@ $("#verDirPick").onclick = async () => {
 $("#verDirReset").onclick = () => setOpt({ versionsFolder: "" });
 $("#optDays").onchange = e => setOpt({ keepVersionsDays: parseInt(e.target.value || "0", 10) });
 $("#optMetered").onchange = e => setOpt({ pauseOnMetered: e.target.checked });
+$("#optCheckDays").onchange = e => setOpt({ checkContentDays: parseInt(e.target.value || "0", 10) });
 $("#optPresenting").onchange = e => setOpt({ pauseWhilePresenting: e.target.checked });
 $("#optExplorer").onchange = e => setOpt({ explorerMenu: e.target.checked });
 $("#optIgnore").oninput = () => $("#optIgnore").dataset.dirty = "1";

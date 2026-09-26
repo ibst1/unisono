@@ -154,6 +154,8 @@ public sealed class AppOptions
     public int KeepVersions { get; set; } = 5;
     /// <summary>Kept versions older than this are pruned (0 = no age limit).</summary>
     public int KeepVersionsDays { get; set; } = 30;
+    /// <summary>Every this many days each pair's content is checked (see <see cref="ContentCheck"/>); 0 = only on request.</summary>
+    public int CheckContentDays { get; set; } = 7;
     /// <summary>Where kept versions go; empty = the "versions" folder in Unisono's data folder. May contain %VARS%.</summary>
     public string? VersionsFolder { get; set; }
     /// <summary>No syncing while Windows says the connection is metered (mobile hotspot, a network set to metered).</summary>

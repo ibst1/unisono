@@ -74,6 +74,22 @@ public sealed partial class SyncEngine
     private long _lastRemoteFingerprint;
     private bool _docsChecked;
     private bool _lastHadErrors; // failed items are retried every cycle, not only in the next full pass
+    private Dictionary<string, RemoteNode>? _lastRemote;
+
+    /// <summary>The synced files' state and the last remote tree, copied for the content check. Call between cycles.</summary>
+    public (List<StateEntry> Entries, Dictionary<string, RemoteNode> Remote) Snapshot() =>
+        (_state.Entries.Values.Where(e => e.Kind == EntryKind.File).ToList(),
+         new Dictionary<string, RemoteNode>(_lastRemote ?? new(), StringComparer.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Forgets the sync history of these files. The next cycle then meets both sides without history: identical content
+    /// is simply linked up again, different content is kept twice (a conflict copy). Call between cycles.
+    /// </summary>
+    public void Forget(IEnumerable<string> rels)
+    {
+        foreach (var rel in rels) _state.Entries.Remove(rel);
+        LocalChanged = true; // a full cycle, which also writes the state
+    }
     private DateTime _deadline = DateTime.MaxValue;
 
     private bool OutOfTime()
@@ -124,6 +140,7 @@ public sealed partial class SyncEngine
         NeedsFollowUp = false;
         _deadline = TimeBudget is { } budget ? DateTime.UtcNow + budget : DateTime.MaxValue;
         var remoteAll = await _store.GetTreeAsync(_log, ct);
+        _lastRemote = remoteAll;
         var fingerprint = Fingerprint(remoteAll);
         _docsChecked = false;
         if (!DryRun && !LocalChanged && !workLeft && !_lastHadErrors && fingerprint == _lastRemoteFingerprint && DateTime.UtcNow - _lastFullCycleUtc < FullCycleInterval)

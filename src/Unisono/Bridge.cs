@@ -89,6 +89,21 @@ sealed class Bridge : IAsyncDisposable
                 return d.ShowDialog(_owner) == DialogResult.OK ? d.SelectedPath : null;
             }
             case "pair.save": return await SavePairAsync(p);
+            case "pair.check": _host.RequestCheck(FindPair(Str(p, "id")).Id); _pushState(); return null;
+            case "pair.checkFix":
+            {
+                var st = _host.Pairs.FirstOrDefault(s => s.Pair.Id == Str(p, "id")) ?? throw new InvalidOperationException("That pair no longer exists.");
+                if (st.LastCheck is { Problems.Count: > 0 } r) _host.ForgetHistory(st.Pair.Id, r.Problems.Select(x => x.Rel).Distinct());
+                if (st.LastCheck != null) st.LastCheck.Problems.Clear();
+                _pushState();
+                return null;
+            }
+            case "pair.checkDismiss":
+            {
+                if (_host.Pairs.FirstOrDefault(s => s.Pair.Id == Str(p, "id"))?.LastCheck is { } r) r.Problems.Clear();
+                _pushState();
+                return null;
+            }
             case "pair.frequent": return FrequentChoice(Str(p, "id"), Str(p, "rel") ?? "", Str(p, "action"));
             case "pair.ignoreFile": return ReadIgnoreFile(Str(p, "localPath"), Str(p, "id") is { } iid ? Config.Pairs.FirstOrDefault(x => x.Id == iid) : null);
             case "ondemand.check":
@@ -181,6 +196,7 @@ sealed class Bridge : IAsyncDisposable
                 var changed = false;
                 if (p.TryGetProperty("keepVersions", out var kv) && kv.TryGetInt32(out var kvi)) { o.KeepVersions = Math.Clamp(kvi, 0, 1000); changed = true; }
                 if (p.TryGetProperty("keepVersionsDays", out var kd) && kd.TryGetInt32(out var kdi)) { o.KeepVersionsDays = Math.Clamp(kdi, 0, 36500); changed = true; }
+                if (p.TryGetProperty("checkContentDays", out var cd) && cd.TryGetInt32(out var cdi)) { o.CheckContentDays = Math.Clamp(cdi, 0, 365); changed = true; }
                 if (p.TryGetProperty("versionsFolder", out var vf))
                 {
                     var raw = vf.ValueKind == JsonValueKind.String ? vf.GetString()?.Trim() : null;
@@ -256,7 +272,7 @@ sealed class Bridge : IAsyncDisposable
         settings = new { autostart = IsAutostart(), verbose = _settings.VerboseLog, tab = _settings.Tab },
         options = new
         {
-            keepVersions = Config.Options.KeepVersions, keepVersionsDays = Config.Options.KeepVersionsDays,
+            keepVersions = Config.Options.KeepVersions, keepVersionsDays = Config.Options.KeepVersionsDays, checkContentDays = Config.Options.CheckContentDays,
             pauseOnMetered = Config.Options.PauseOnMetered, pauseWhilePresenting = Config.Options.PauseWhilePresenting,
             ignorePatterns = string.Join("\n", Config.Options.IgnorePatterns), metered = AutoPause.IsMetered(),
             versionsDir = VersionStore.Root, versionsFolder = Config.Options.VersionsFolder ?? "", versionsDefault = string.IsNullOrWhiteSpace(Config.Options.VersionsFolder),
@@ -280,6 +296,9 @@ sealed class Bridge : IAsyncDisposable
             lastSync = st?.LastSync is { } ls ? ls.ToString(ls.Date == DateTime.Today ? "HH:mm:ss" : "d MMM HH:mm") : null,
             lastResult = st?.LastError ?? Summary(st?.LastStats), failed = st?.LastError != null,
             frequent = st == null ? new List<string>() : Locked(st.Frequent), frequentOk = p.FrequentOk, health = st?.Health,
+            checking = st?.Checking ?? false,
+            lastChecked = st?.LastChecked is { } lc ? lc.ToString(lc.Date == DateTime.Today ? "HH:mm" : "d MMM") : null,
+            checkProblems = st?.LastCheck?.Problems.Select(x => new { rel = x.Rel, side = x.Side, detail = x.Detail }).ToList(),
         };
     }
 

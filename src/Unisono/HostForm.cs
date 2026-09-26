@@ -72,6 +72,9 @@ sealed class HostForm : Form
         };
         _host.HealthProblem += ps => OnUi(() =>
             _tray.ShowBalloonTip(15000, $"Unisono: {ps.Pair.Name} is not syncing", ps.Health ?? "", ToolTipIcon.Warning));
+        _host.ContentProblem += ps => OnUi(() =>
+            _tray.ShowBalloonTip(15000, $"Unisono: content check of {ps.Pair.Name}",
+                $"{ps.LastCheck?.Problems.Count} file(s) changed without being edited (disk or transfer damage?). Open Unisono to keep both versions.", ToolTipIcon.Warning));
         // State pushes are coalesced: a cycle over many pairs fires many small events.
         _stateTimer.Tick += (_, _) => { _stateTimer.Stop(); Post(new { @event = "state", data = _bridge.State() }); };
 
