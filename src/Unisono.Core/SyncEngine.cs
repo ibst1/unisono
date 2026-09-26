@@ -365,6 +365,7 @@ public sealed partial class SyncEngine
         }
 
         // Local files the remote does not have.
+        var uploads = new List<(LocalItem Item, RemoteNode? Parent)>();
         foreach (var item in local.Values.Where(i => !i.IsDir).OrderBy(i => i.RelPath, StringComparer.OrdinalIgnoreCase).ToList())
         {
             ct.ThrowIfCancellationRequested();
@@ -399,21 +400,48 @@ public sealed partial class SyncEngine
             }
             if (!Up || !parentKnown) continue; // download-only: local-only files stay local
             if (Settling(item)) continue;
-            await Try(rel, stats, async () =>
-            {
-                var node = Planned("upload", rel, $"{item.Size:N0} bytes") ? DryNode(rel, parent, folder: false)
-                    : await Tracked(SyncActivity.Direction.Up, rel, item.Size, () => _store.UploadNewAsync(item.FullPath, rel, parent, ct));
-                remote[rel] = node;
-                if (!DryRun) Uploaded(item.FullPath, node.Id);
-                RecordFile(rel, node, item.FullPath);
-                stats.Uploaded++;
-                if (!DryRun) _log.Info($"[{_pair.Name}] uploaded: {rel} ({item.Size:N0} bytes)");
-            });
+            uploads.Add((item, parent));
         }
+        await UploadNewFilesAsync(uploads, remote, stats, ct);
 
         // Entries with neither side left.
         foreach (var key in _state.Entries.Keys.Where(k => !remote.ContainsKey(k) && !local.ContainsKey(k)).ToList())
             _state.Entries.Remove(key);
+    }
+
+    /// <summary>
+    /// New local files, uploaded several at a time where the store allows it (Drive takes a second or two per file
+    /// whatever its size, so a folder of thousands of small files would otherwise take hours). Only the transfer runs
+    /// in parallel; the bookkeeping is done one at a time.
+    /// </summary>
+    private async Task UploadNewFilesAsync(List<(LocalItem Item, RemoteNode? Parent)> uploads, Dictionary<string, RemoteNode> remote, CycleStats stats, CancellationToken ct)
+    {
+        var gate = new object();
+        await Parallel.ForEachAsync(uploads, new ParallelOptions { MaxDegreeOfParallelism = DryRun ? 1 : Math.Max(1, _store.ParallelUploads), CancellationToken = ct },
+            async (u, token) =>
+            {
+                var (item, parent) = u;
+                var rel = item.RelPath;
+                try
+                {
+                    RemoteNode node;
+                    lock (gate) node = Planned("upload", rel, $"{item.Size:N0} bytes") ? DryNode(rel, parent, folder: false) : null!;
+                    node ??= await Tracked(SyncActivity.Direction.Up, rel, item.Size, () => _store.UploadNewAsync(item.FullPath, rel, parent, token));
+                    lock (gate)
+                    {
+                        remote[rel] = node;
+                        if (!DryRun) Uploaded(item.FullPath, node.Id);
+                        RecordFile(rel, node, item.FullPath);
+                        stats.Uploaded++;
+                        if (!DryRun) _log.Info($"[{_pair.Name}] uploaded: {rel} ({item.Size:N0} bytes)");
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    lock (gate) { stats.Errors++; _log.Error($"[{_pair.Name}] {rel}: {ex.Message}"); }
+                }
+            });
     }
 
     private async Task SyncFileAsync(RemoteNode node, Dictionary<string, RemoteNode> remote, Dictionary<string, LocalItem> local, HashSet<string> derived, CycleStats stats, CancellationToken ct)

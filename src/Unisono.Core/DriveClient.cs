@@ -277,20 +277,37 @@ public sealed class DriveClient
     /// <summary>Creates a new file under <paramref name="parentId"/> with the local content and modified time.</summary>
     public async Task<File> UploadNewAsync(string localPath, string name, string parentId, CancellationToken ct)
     {
-        var meta = new File
+        // Several uploads run at once, so Drive may answer "rate limit exceeded", and a connection may drop on a long
+        // run; both are worth a few more tries after a pause. A failed attempt created no file.
+        for (var attempt = 1; ; attempt++)
         {
-            Name = name,
-            Parents = new[] { parentId },
-            ModifiedTimeDateTimeOffset = new DateTimeOffset(System.IO.File.GetLastWriteTimeUtc(localPath)),
-        };
-        await using var fs = OpenShared(localPath);
-        var up = _service.Files.Create(meta, fs, OctetStream);
-        up.Fields = FileFields;
-        var progress = await up.UploadAsync(ct);
-        if (progress.Status != UploadStatus.Completed)
+            var meta = new File
+            {
+                Name = name,
+                Parents = new[] { parentId },
+                ModifiedTimeDateTimeOffset = new DateTimeOffset(System.IO.File.GetLastWriteTimeUtc(localPath)),
+            };
+            await using var fs = OpenShared(localPath);
+            var up = _service.Files.Create(meta, fs, OctetStream);
+            up.Fields = FileFields;
+            var progress = await up.UploadAsync(ct);
+            if (progress.Status == UploadStatus.Completed) return up.ResponseBody;
+            if (attempt < 6 && IsWorthRetrying(progress.Exception))
+            {
+                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt) + Random.Shared.NextDouble()), ct);
+                continue;
+            }
             throw new IOException($"Upload of '{name}' failed: {progress.Exception?.Message ?? progress.Status.ToString()}");
-        return up.ResponseBody;
+        }
     }
+
+    private static bool IsWorthRetrying(Exception? ex) => ex switch
+    {
+        Google.GoogleApiException g => (int)g.HttpStatusCode is 429 or >= 500
+            || (g.HttpStatusCode == System.Net.HttpStatusCode.Forbidden && g.Error?.Errors?.Any(e => e.Reason is "rateLimitExceeded" or "userRateLimitExceeded") == true),
+        HttpRequestException or IOException or TaskCanceledException => true,
+        _ => false,
+    };
 
     /// <summary>Replaces the content of an existing file and stamps the local modified time on it.</summary>
     public async Task<File> UploadUpdateAsync(string localPath, string fileId, CancellationToken ct)

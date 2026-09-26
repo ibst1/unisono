@@ -31,6 +31,9 @@ public interface IRemoteStore
 
     Task<RemoteNode> UploadUpdateAsync(string localPath, RemoteNode node, CancellationToken ct);
 
+    /// <summary>How many new files <see cref="UploadNewAsync"/> may upload at once (it must then be thread-safe).</summary>
+    int ParallelUploads => 1;
+
     Task<RemoteNode> CreateFolderAsync(string relPath, RemoteNode? parent, CancellationToken ct);
 
     /// <summary>Renames and/or moves an item (a folder with everything in it) to <paramref name="newRelPath"/> under <paramref name="newParent"/> (null = root).</summary>
