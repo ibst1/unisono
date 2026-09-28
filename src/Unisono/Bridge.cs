@@ -323,7 +323,8 @@ sealed class Bridge : IAsyncDisposable
             lastResult = st?.LastError ?? Summary(st?.LastStats), failed = st?.LastError != null,
             frequent = st == null ? new List<string>() : Locked(st.Frequent), frequentOk = p.FrequentOk, health = st?.Health,
             encrypted = p.Encrypted, keyHere = !p.Encrypted || CryptomatorVault.LoadKey(p.VaultId) != null,
-            checking = st?.Checking ?? false,
+            needsPassphrase = st?.NeedsPassphrase ?? false, converting = VaultConverter.Pending(p),
+            checking = st?.Checking ?? false, running = st?.Running ?? false,
             lastChecked = st?.LastChecked is { } lc ? lc.ToString(lc.Date == DateTime.Today ? "HH:mm" : "d MMM") : null,
             checkProblems = st?.LastCheck?.Problems.Select(x => new { rel = x.Rel, side = x.Side, detail = x.Detail }).ToList(),
         };
@@ -586,9 +587,11 @@ sealed class Bridge : IAsyncDisposable
         pair.Kind = Enum.TryParse<RemoteKind>(Str(d, "kind"), out var kind) ? kind : RemoteKind.Drive;
         var encrypt = d.TryGetProperty("encrypted", out var en) && en.ValueKind == JsonValueKind.True;
         var passphrase = Str(d, "passphrase");
-        if (original != null && original.Encrypted != encrypt)
-            throw new InvalidOperationException("Encryption is chosen when a pair is added. For an encrypted copy, add a new pair with an empty or new remote folder.");
-        if (encrypt && original == null && string.IsNullOrEmpty(passphrase))
+        if (original is { Encrypted: true } && !encrypt)
+            throw new InvalidOperationException("An encrypted pair stays encrypted. For an unencrypted copy, add a new pair with another remote folder.");
+        // Turning encryption on for an existing pair works while its remote folder is still empty (checked with the vault).
+        var turningOn = original is { Encrypted: false } && encrypt;
+        if (encrypt && (original == null || turningOn) && string.IsNullOrEmpty(passphrase))
             throw new InvalidOperationException("Choose a passphrase for the encryption.");
         pair.Encrypted = encrypt;
         if (pair.Kind == RemoteKind.Folder)
@@ -653,13 +656,15 @@ sealed class Bridge : IAsyncDisposable
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var ct = cts.Token;
         bool exists, remoteHasItems;
+        var rootNames = new List<string>(); // what the remote folder holds at its top, to recognise a vault
         Func<Task> createRemote;
         if (pair.Kind == RemoteKind.Folder)
         {
             var full = pair.RemoteFullPath;
             if (File.Exists(full)) throw new InvalidOperationException($"{full} is a file, not a folder.");
             exists = Directory.Exists(full);
-            remoteHasItems = exists && Directory.EnumerateFileSystemEntries(full).Any();
+            if (exists) rootNames.AddRange(Directory.EnumerateFileSystemEntries(full).Select(Path.GetFileName)!);
+            remoteHasItems = rootNames.Count > 0;
             createRemote = () => { Directory.CreateDirectory(full); return Task.CompletedTask; };
         }
         else if (pair.Kind == RemoteKind.Synology)
@@ -668,7 +673,8 @@ sealed class Bridge : IAsyncDisposable
             var info = await nas.GetInfoAsync(pair.RemotePath, ct);
             if (info is { IsDir: false }) throw new InvalidOperationException($"{pair.RemotePath} is a file on the NAS, not a folder.");
             exists = info != null;
-            remoteHasItems = exists && (await nas.ListAsync(pair.RemotePath, ct)).Any(e => !e.Name.StartsWith('#') && e.Name != "@eaDir");
+            if (exists) rootNames.AddRange((await nas.ListAsync(pair.RemotePath, ct)).Where(e => !e.Name.StartsWith('#') && e.Name != "@eaDir").Select(e => e.Name));
+            remoteHasItems = rootNames.Count > 0;
             createRemote = () => new SynologyStore(nas, pair).EnsureRootAsync(ct);
         }
         else
@@ -678,13 +684,21 @@ sealed class Bridge : IAsyncDisposable
             {
                 var folder = await drive.ResolveFolderAsync(pair.RemotePath, ct);
                 exists = true;
-                remoteHasItems = (await drive.ListChildrenAsync(folder.Id, ct)).Count > 0;
+                rootNames.AddRange((await drive.ListChildrenAsync(folder.Id, ct)).Select(f => f.Name));
+                remoteHasItems = rootNames.Count > 0;
             }
             catch (DirectoryNotFoundException) { exists = false; remoteHasItems = false; }
             createRemote = () => drive.EnsureFolderAsync(pair.RemotePath, ct);
         }
         if (!exists && !create)
             throw new InvalidOperationException($"'{pair.RemotePath}' does not exist remotely. Tick 'Create it if missing' or pick an existing folder.");
+        var remoteIsVault = rootNames.Contains(CryptomatorVault.VaultFile, StringComparer.OrdinalIgnoreCase);
+        // An existing pair with plain files on the other side becomes encrypted by conversion (VaultConverter).
+        var converting = turningOn && remoteHasItems && !remoteIsVault;
+        if (converting && rootNames.Any(n => n.Equals(CryptomatorVault.DataFolder, StringComparison.OrdinalIgnoreCase) || n.Equals(CryptomatorVault.MasterkeyFile, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException($"The remote folder holds an item named '{CryptomatorVault.DataFolder}' or '{CryptomatorVault.MasterkeyFile}', which a Cryptomator vault needs for itself. Rename it first.");
+        if (!encrypt && remoteIsVault)
+            throw new InvalidOperationException("The remote folder is an encrypted Cryptomator vault: tick 'Encrypt on the other side' and enter its passphrase.");
 
         if (!confirmed)
         {
@@ -702,11 +716,30 @@ sealed class Bridge : IAsyncDisposable
             if (!pair.OnDemand && ManagedSyncRoot(pair.LocalFullPath) is { } root)
                 messages.Add($"The local folder is inside {root}, which Windows itself syncs to another server (OneDrive or your organisation's Work Folders). " +
                              "Everything Unisono downloads there ends up in that place too.");
+            if (converting)
+                messages.Add("The remote folder already holds unencrypted files. Unisono turns it into a Cryptomator vault: every file is encrypted " +
+                             "and uploaded into the vault (online-only files are downloaded for this and do not stay here), in turns and in the " +
+                             "background. Google documents become .docx / .xlsx / .pptx files. When everything is in the vault, the unencrypted " +
+                             "originals are moved to the trash on the other side. Unencrypted copies can stay in the trash (Google Drive's trash, " +
+                             "the NAS's recycle bin) until it is emptied: empty it there to be rid of them. Other computers that sync this " +
+                             "folder stop syncing it until you enter the passphrase there too.");
             if (messages.Count > 0) return new { status = "confirm", messages };
         }
 
         if (!exists) await createRemote();
-        if (encrypt && (original == null || original.Id != pair.Id || !string.IsNullOrEmpty(passphrase))) await SetUpVaultAsync(pair, passphrase, ct);
+        if (encrypt && (original == null || original.Id != pair.Id || !string.IsNullOrEmpty(passphrase))) await SetUpVaultAsync(pair, passphrase, converting, ct);
+        if (converting)
+        {
+            await _host.StopAsync(); // restarted below; the conversion then runs in place of the pair's cycles
+            VaultConverter.Request(pair);
+            _log.Info($"[{pair.Name}] converting the remote folder into a Cryptomator vault");
+        }
+        else if (turningOn)
+        {
+            // Start afresh: the pair's history describes the unencrypted folder, not the vault.
+            await _host.StopAsync(); // restarted below
+            try { File.Delete(SyncState.FilePathFor(original!)); } catch { }
+        }
         if (original is { OnDemand: true } && (!pair.OnDemand || original.Id != pair.Id))
         {
             await _host.StopAsync(); // restarted below; the state must not change under a running cycle
@@ -780,7 +813,7 @@ sealed class Bridge : IAsyncDisposable
     /// the passphrase must fit) or, in an empty folder, creates one. Either way the master keys are stored for this Windows
     /// user and <see cref="SyncPair.VaultId"/> set.
     /// </summary>
-    private async Task SetUpVaultAsync(SyncPair pair, string? passphrase, CancellationToken ct)
+    private async Task SetUpVaultAsync(SyncPair pair, string? passphrase, bool converting, CancellationToken ct)
     {
         var plain = JsonSerializer.Deserialize<SyncPair>(JsonSerializer.Serialize(pair))!;
         plain.Encrypted = false;
@@ -817,7 +850,8 @@ sealed class Bridge : IAsyncDisposable
                 _log.Info($"[{pair.Name}] joined the Cryptomator vault {id}");
                 return;
             }
-            if (tree.Count > 0) throw new InvalidOperationException("The remote folder already holds files that are not a Cryptomator vault. An encrypted pair needs an empty or new folder, or an existing vault.");
+            if (tree.Count > 0 && !converting) throw new InvalidOperationException("The remote folder already holds files that are not a Cryptomator vault, so it cannot become one. " +
+                "For an encrypted pair choose an empty or new remote folder (or remove this pair and add it again with one); nothing is deleted by removing a pair.");
             if (string.IsNullOrEmpty(passphrase) || passphrase.Length < 10) throw new InvalidOperationException("The passphrase needs at least 10 characters.");
             var (newKeys, masterkey, vaultConfig, newId) = await Task.Run(() => CryptomatorVault.Create(passphrase), ct);
             await File.WriteAllTextAsync(file, masterkey, ct);

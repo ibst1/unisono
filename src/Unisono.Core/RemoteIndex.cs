@@ -134,18 +134,27 @@ public sealed class RemoteIndex
         return affected;
     }
 
+    /// <summary>
+    /// Lists a folder and everything below it, level by level: up to 40 folders per request and 4 requests at a time.
+    /// A tree of thousands of folders (a program folder with git repositories) otherwise takes many minutes.
+    /// </summary>
     private async Task ListSubtreeAsync(DriveClient drive, string folderId, CancellationToken ct)
     {
-        var queue = new Queue<string>();
-        queue.Enqueue(folderId);
-        while (queue.Count > 0)
+        var level = new List<string> { folderId };
+        while (level.Count > 0)
         {
-            var id = queue.Dequeue();
-            foreach (var child in await drive.ListChildrenAsync(id, ct))
-            {
-                _nodes[child.Id] = RemoteNode.From(child, id);
-                if (DriveClient.IsFolder(child)) queue.Enqueue(child.Id);
-            }
+            var batches = level.Chunk(40).ToList();
+            var results = new List<(Google.Apis.Drive.v3.Data.File File, string ParentId)>[batches.Count];
+            await Parallel.ForEachAsync(Enumerable.Range(0, batches.Count), new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct },
+                async (i, token) => results[i] = await drive.ListChildrenOfAsync(batches[i], token));
+            var next = new List<string>();
+            foreach (var batch in results)
+                foreach (var (child, parent) in batch)
+                {
+                    _nodes[child.Id] = RemoteNode.From(child, parent);
+                    if (DriveClient.IsFolder(child)) next.Add(child.Id);
+                }
+            level = next;
         }
     }
 

@@ -38,6 +38,14 @@ public sealed class StoreFactory : IAsyncDisposable
         finally { _gate.Release(); }
     }
 
+    /// <summary>The pair's remote folder without encryption: what an encrypted pair's conversion copies from.</summary>
+    public async Task<IRemoteStore> CreatePlainAsync(SyncPair pair, CancellationToken ct)
+    {
+        var plain = System.Text.Json.JsonSerializer.Deserialize<SyncPair>(System.Text.Json.JsonSerializer.Serialize(pair))!;
+        plain.Encrypted = false;
+        return await CreateAsync(plain, ct);
+    }
+
     private async Task<IRemoteStore> CreateCoreAsync(SyncPair pair, CancellationToken ct)
     {
         IRemoteStore store = pair.Kind switch

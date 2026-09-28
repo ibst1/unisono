@@ -76,6 +76,10 @@ sealed class HostForm : Form
         };
         _host.HealthProblem += ps => OnUi(() =>
             _tray.ShowBalloonTip(15000, $"Unisono: {ps.Pair.Name} is not syncing", ps.Health ?? "", ToolTipIcon.Warning));
+        _host.Converted += ps => OnUi(() =>
+            _tray.ShowBalloonTip(20000, $"Unisono: {ps.Pair.Name} is encrypted",
+                "Everything is in the Cryptomator vault. Unencrypted copies can still be in the trash on the other side (Google Drive, the NAS's recycle bin) until it is emptied.",
+                ToolTipIcon.Info));
         _host.ContentProblem += ps => OnUi(() =>
             _tray.ShowBalloonTip(15000, $"Unisono: content check of {ps.Pair.Name}",
                 $"{ps.LastCheck?.Problems.Count} file(s) changed without being edited (disk or transfer damage?). Open Unisono to keep both versions.", ToolTipIcon.Warning));

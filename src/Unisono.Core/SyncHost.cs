@@ -20,6 +20,10 @@ public sealed class PairStatus
     public DateTime? LastChecked { get; set; }
     /// <summary>Backup pairs: the versions kept on the other side, as of the last cycle.</summary>
     public List<SyncEngine.BackupVersion>? Versions { get; set; }
+    /// <summary>The remote folder is a Cryptomator vault but this pair is not encrypted (yet): nothing is synced.</summary>
+    public bool NeedsPassphrase { get; set; }
+    /// <summary>A cycle of this pair runs right now.</summary>
+    public bool Running { get; set; }
     /// <summary>While this pair waits for its turn: the pair that is syncing now.</summary>
     public string? WaitingFor { get; set; }
     public CycleStats? LastStats { get; set; }
@@ -68,6 +72,8 @@ public sealed class SyncHost : IAsyncDisposable
 
     /// <summary>A content check found files that changed on their own. Raised on a thread-pool thread.</summary>
     public event Action<PairStatus>? ContentProblem;
+    /// <summary>A pair's conversion into a Cryptomator vault finished. Raised on the syncing thread.</summary>
+    public event Action<PairStatus>? Converted;
 
     public event Action? StateChanged;
     public event Action<PairStatus>? PairChanged;
@@ -161,6 +167,7 @@ public sealed class SyncHost : IAsyncDisposable
         SetState(HostState.Starting);
         var pairs = Pairs;
         var engines = new SyncEngine?[pairs.Count];
+        var converters = new VaultConverter?[pairs.Count];
         var watchers = new List<FileSystemWatcher>();
         var providers = new List<HydrationProvider>();
         // Missed events (sleep, no network, another computer) need no replay: every cycle compares everything. What
@@ -175,11 +182,13 @@ public sealed class SyncHost : IAsyncDisposable
         // Transfers during a round switch the display to "syncing" (the host and the pair that is transferring).
         var roundRunning = false;
         PairStatus? current = null;
+        var roundStartedIdle = false;
         Action onActivity = () =>
         {
             if (!roundRunning) return; // an online-only file opened between rounds
             var active = SyncActivity.Now().Active;
-            if (active.Count == 0) return;
+            // Transfers over while the round goes on with quiet checks: back to how the round began.
+            if (active.Count == 0) { if (roundStartedIdle && State == HostState.Syncing) SetState(HostState.Idle); return; }
             SetState(HostState.Syncing);
             if (current is { } c && c.Status != "syncing" && active.Any(t => t.Pair == c.Pair.Name)) Update(c, "syncing");
         };
@@ -227,18 +236,33 @@ public sealed class SyncHost : IAsyncDisposable
                     _forceOnce = false;
                     // A routine check keeps showing "up to date"; "syncing" comes with the first transfer (below) and
                     // stays while work is left over for the next round.
-                    if (State != HostState.Idle) SetState(HostState.Syncing);
+                    roundStartedIdle = State == HostState.Idle;
+                    if (!roundStartedIdle) SetState(HostState.Syncing);
                     roundRunning = true;
                     var ok = true;
                     followUp = false;
                     for (var i = 0; i < pairs.Count; i++)
                     {
                         var ps = pairs[i];
+                        if (i > 0 && pairs[i - 1].Running) { pairs[i - 1].Running = false; Update(pairs[i - 1], pairs[i - 1].Status); }
                         for (var j = i + 1; j < pairs.Count; j++) { pairs[j].WaitingFor = ps.Pair.Name; Update(pairs[j], pairs[j].Status); }
                         ps.WaitingFor = null;
                         current = ps;
+                        ps.Running = true;
+                        Update(ps, ps.Status);
                         try
                         {
+                            if (VaultConverter.Pending(ps.Pair))
+                            {
+                                // Turning an existing pair into an encrypted one: turns of copying instead of cycles.
+                                converters[i] ??= new VaultConverter(ps.Pair, await stores.CreatePlainAsync(ps.Pair, ct), await stores.CreateAsync(ps.Pair, ct), _log);
+                                var finished = await converters[i]!.RunAsync(pairs.Count > 1 ? TurnLength : null, s => Update(ps, s), ct);
+                                if (!finished) { followUp = true; continue; }
+                                converters[i] = null;
+                                engines[i] = null; // starts afresh from the new state
+                                Update(ps, "in sync");
+                                try { Converted?.Invoke(ps); } catch { }
+                            }
                             if (ps.Status != "in sync") Update(ps, "syncing");
                             engines[i] ??= new SyncEngine(await stores.CreateAsync(ps.Pair, ct), ps.Pair, _log, pairs.Select(x => x.Pair).ToList(), _options);
                             // With other pairs to serve, a long job (thousands of uploads) is done in turns of a few minutes.
@@ -252,6 +276,7 @@ public sealed class SyncHost : IAsyncDisposable
                             var stats = await engines[i]!.RunCycleAsync(ct);
                             followUp |= engines[i]!.NeedsFollowUp;
                             ps.LastStats = stats;
+                            ps.NeedsPassphrase = false;
                             ps.LastSync = DateTime.Now;
                             SaveLastRuns();
                             ps.LastError = stats.Errors > 0 ? $"{stats.Errors} item(s) failed, see log" : null;
@@ -277,6 +302,7 @@ public sealed class SyncHost : IAsyncDisposable
                             Interlocked.Exchange(ref changed[i], 1); // scan again next time
                             if (ps.Pair.Kind == RemoteKind.Synology) { engines[i] = null; stores.Forget(ps.Pair); }
                             ps.LastError = ex.Message;
+                            ps.NeedsPassphrase = ex is VaultFoundException;
                             TrackHealth(ps, ex.Message);
                             Update(ps, "failed");
                             _log.Error($"[{ps.Pair.Name}] {ex.Message}");
@@ -287,6 +313,7 @@ public sealed class SyncHost : IAsyncDisposable
                     wait = ok ? poll : backoff;
                     roundRunning = false;
                     current = null;
+                    foreach (var q in pairs) q.Running = false;
                     SetState(_paused ? HostState.Paused : !ok ? HostState.Trouble : followUp ? HostState.Syncing : HostState.Idle);
                 }
                 else

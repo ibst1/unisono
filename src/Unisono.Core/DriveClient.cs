@@ -214,6 +214,30 @@ public sealed class DriveClient
         return all;
     }
 
+    /// <summary>
+    /// The children of several folders in one listing ("'a' in parents or 'b' in parents ..."), with the folder each one
+    /// was found under. Far fewer requests than one listing per folder when a tree has thousands of folders.
+    /// </summary>
+    public async Task<List<(File File, string ParentId)>> ListChildrenOfAsync(IReadOnlyList<string> folderIds, CancellationToken ct)
+    {
+        var wanted = new HashSet<string>(folderIds);
+        var all = new List<(File, string)>();
+        string? pageToken = null;
+        do
+        {
+            var req = _service.Files.List();
+            req.Q = "(" + string.Join(" or ", folderIds.Select(id => $"'{id}' in parents")) + ") and trashed = false";
+            req.Fields = $"nextPageToken, files({FileFields})";
+            req.PageSize = 1000;
+            req.PageToken = pageToken;
+            var res = await req.ExecuteAsync(ct);
+            foreach (var f in res.Files)
+                if (f.Parents?.FirstOrDefault(wanted.Contains) is { } parent) all.Add((f, parent));
+            pageToken = res.NextPageToken;
+        } while (pageToken != null);
+        return all;
+    }
+
     /// <summary>All changes since <paramref name="pageToken"/>, across the whole Drive; the caller filters by tree membership.</summary>
     public async Task<(List<Google.Apis.Drive.v3.Data.Change> Changes, string NewStartToken)> ListChangesAsync(string pageToken, CancellationToken ct)
     {

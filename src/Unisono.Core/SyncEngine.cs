@@ -2,6 +2,12 @@ using System.Text;
 
 namespace Unisono;
 
+/// <summary>An unencrypted pair's remote folder turned out to be a Cryptomator vault: its passphrase is needed.</summary>
+public sealed class VaultFoundException : Exception
+{
+    public VaultFoundException() : base("The remote folder is an encrypted Cryptomator vault. Enter its passphrase (Edit, Encrypt) to sync it; nothing is synced until then.") { }
+}
+
 public sealed class CycleStats
 {
     public int Downloaded, Uploaded, Exported, Linked, Trashed, Recycled, Conflicts, Errors, Moved, Online;
@@ -142,6 +148,10 @@ public sealed partial class SyncEngine
         var remoteAll = await _store.GetTreeAsync(_log, ct);
         _lastRemote = remoteAll;
         _fullRemote = remoteAll;
+        // A remote folder that is (or is becoming) a Cryptomator vault is never synced as plain files: that would bring the
+        // ciphertext here and, once the plain originals are gone, delete them here too.
+        if (_store is not CryptomatorStore && remoteAll.ContainsKey(CryptomatorVault.VaultFile) && remoteAll.ContainsKey(CryptomatorVault.MasterkeyFile))
+            throw new VaultFoundException();
         var fingerprint = Fingerprint(remoteAll);
         _docsChecked = false;
         if (!DryRun && !LocalChanged && !workLeft && !_lastHadErrors && fingerprint == _lastRemoteFingerprint && DateTime.UtcNow - _lastFullCycleUtc < FullCycleInterval)
@@ -1029,7 +1039,7 @@ public sealed partial class SyncEngine
         return EntryKind.File;
     }
 
-    private static string? DerivedName(RemoteNode node, EntryKind kind) => kind switch
+    internal static string? DerivedName(RemoteNode node, EntryKind kind) => kind switch
     {
         EntryKind.Link => node.RelPath + ".url",
         // Google Docs have no extension ("Plan" -> "Plan.docx"); Synology Office files do ("Plan.odoc" -> "Plan.docx").
@@ -1037,7 +1047,7 @@ public sealed partial class SyncEngine
         _ => null,
     };
 
-    private static string? ExportMime(string mime) => mime switch
+    internal static string? ExportMime(string mime) => mime switch
     {
         "application/vnd.google-apps.document" or RemoteNode.SynologyDocument => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.google-apps.spreadsheet" or RemoteNode.SynologySpreadsheet => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

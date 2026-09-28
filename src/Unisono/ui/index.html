@@ -548,7 +548,8 @@ function statusChip(p) {
   const cls = p.failed || p.status === "failed" || p.status === "errors" ? "err" : p.status === "syncing" ? "busy" : p.status === "in sync" ? "ok" : "";
   // Only before a pair's first run since the start: afterwards every pair waits its turn each round anyway.
   const wait = p.waitingFor && p.status === "waiting" ? `<span class="chip plain" title="Pairs sync one at a time">waiting for ${esc(p.waitingFor)}</span>` : "";
-  return `<span class="chip ${cls}">${esc(p.status)}</span>${wait}`;
+  const run = p.running && p.status !== "syncing" ? `<span class="small muted" title="This pair's turn: comparing both sides">checking&hellip;</span>` : "";
+  return `<span class="chip ${cls}">${esc(p.status)}</span>${wait}${run}`;
 }
 function remoteLabel(p) {
   if (p.kind === "Folder") {
@@ -587,6 +588,9 @@ function renderPairs() {
         <div class="mono small" style="margin:6px 0">${p.checkProblems.slice(0, 8).map(x => `${esc(x.rel)} (${x.side === "here" ? "on this computer" : "on the other side"})`).join("<br>")}${p.checkProblems.length > 8 ? "<br>..." : ""}</div>
         <div class="inline"><span class="grow small">"Keep both versions" makes the next sync keep both sides' versions; then choose in Conflicts. Earlier versions may also help.</span>
           <button class="btn" data-checkfix="${esc(p.id)}">Keep both versions</button><button class="btn" data-checkdismiss="${esc(p.id)}">Dismiss</button></div></div>` : ""}
+      ${p.needsPassphrase ? `<div class="note warn inline" style="margin-bottom:0"><span class="grow">The remote folder is an encrypted Cryptomator vault. Nothing is synced (or downloaded) until you enter its passphrase; it is then kept for your Windows user on this computer.</span>
+        <button class="btn" data-passfor="${esc(p.id)}">Enter passphrase</button></div>` : ""}
+      ${p.converting ? `<div class="note" style="margin-bottom:0">Turning the remote folder into a Cryptomator vault: files are encrypted and uploaded in turns (see Activity and the transfers above). The unencrypted originals go to the trash on the other side at the end; empty it there to be rid of them.</div>` : ""}
       ${p.health ? `<div class="note err" style="margin-bottom:0">${esc(p.health)} <a class="path" data-showlog>Show the log</a></div>` : ""}
       ${(p.frequent || []).map(f => `<div class="note warn inline" style="margin-bottom:0">
         <span class="grow"><span class="mono">${esc(f)}</span> changes very often (${6} times or more within an hour). Logs and status files like this are usually better left out of syncing.</span>
@@ -600,6 +604,10 @@ function renderPairs() {
   document.querySelectorAll("[data-versions]").forEach(b => b.onclick = () => versionsDialog(S.pairs.find(p => p.id === b.dataset.versions)));
   document.querySelectorAll("[data-preview]").forEach(b => b.onclick = () => preview(S.pairs.find(p => p.id === b.dataset.preview), b));
   document.querySelectorAll("[data-showlog]").forEach(a => a.onclick = () => showTab("log"));
+  document.querySelectorAll("[data-passfor]").forEach(b => b.onclick = () => {
+    pairDialog(S.pairs.find(p => p.id === b.dataset.passfor));
+    $("#pairEncrypt").checked = true; syncCrypt(); $("#pairPass").focus();
+  });
   document.querySelectorAll("[data-check]").forEach(a => a.onclick = () => call("pair.check", { id: a.dataset.check }).then(() => toast("The content check starts after the pair's next sync")));
   document.querySelectorAll("[data-checkfix]").forEach(b => b.onclick = () => call("pair.checkFix", { id: b.dataset.checkfix }).then(() => toast("Both versions will be kept; see Conflicts after the next sync")));
   document.querySelectorAll("[data-checkdismiss]").forEach(b => b.onclick = () => call("pair.checkDismiss", { id: b.dataset.checkdismiss }));
@@ -760,7 +768,7 @@ function pairDialog(p) {
   syncOnDemand();
   checkOnDemandPlace();
   $("#pairIgnore").value = ""; delete $("#pairIgnore").dataset.dirty;
-  $("#pairEncrypt").checked = !!(p && p.encrypted); $("#pairEncrypt").disabled = !!p;
+  $("#pairEncrypt").checked = !!(p && p.encrypted); $("#pairEncrypt").disabled = !!(p && p.encrypted); // on can be turned on later, not off
   $("#pairPass").value = ""; $("#pairPass2").value = "";
   syncCrypt();
   frequentOk = p ? [...(p.frequentOk || [])] : []; renderFrequentOk();
@@ -774,10 +782,15 @@ $("#btnAddPair").onclick = () => pairDialog();
 // Encryption: chosen for a new pair (passphrase twice); an encrypted pair whose key this computer lacks asks for it once.
 function syncCrypt() {
   const on = $("#pairEncrypt").checked, needKey = editing && editing.encrypted && !editing.keyHere;
-  $("#pairCryptFields").hidden = !(on && (!editing || needKey));
-  $("#pairPass2").hidden = !!editing;
-  $("#pairCryptHelp").innerHTML = editing
+  const turningOn = editing && !editing.encrypted && on;
+  $("#pairCryptFields").hidden = !(on && (!editing || needKey || turningOn));
+  $("#pairPass2").hidden = !!editing && !turningOn;
+  $("#pairCryptHelp").innerHTML = needKey
     ? "This computer does not have the passphrase yet. Enter it once; it is then kept for your Windows user on this computer."
+    : turningOn
+    ? "The remote folder becomes a <b>Cryptomator vault</b> (or, if it already is one, it is joined with its passphrase). Files already there are converted: " +
+      "encrypted into the vault in the background, and the unencrypted originals then go to the trash on the other side, where copies stay until it is emptied. " +
+      "Open the vault with the Cryptomator app and the same passphrase, also without Unisono. <b>Without the passphrase the files cannot be recovered</b>: keep it somewhere safe."
     : "The other side holds a <b>Cryptomator vault</b>: open it with the Cryptomator app (Windows, Mac, Linux, Android, iPhone) and the same passphrase, " +
       "also without Unisono. The web view, sharing and Google Docs do not work in this pair. <b>Without the passphrase the files cannot be recovered</b>: keep it somewhere safe. " +
       "The remote folder must be empty or new, or an existing Cryptomator vault (then its passphrase is asked for).";
@@ -956,7 +969,7 @@ $("#pairSave").onclick = async () => {
   if (pairKind === "Drive" && !$("#pairRoot").checked && !$("#pairRemote").value.trim()) {
     $("#pairMsg").innerHTML = `<div class="note err">Choose a remote folder, or tick "Whole My Drive" to sync the root.</div>`; return;
   }
-  if (!editing && $("#pairEncrypt").checked && ($("#pairPass").value.length < 10 || $("#pairPass").value !== $("#pairPass2").value)) {
+  if ((!editing || !editing.encrypted) && $("#pairEncrypt").checked && ($("#pairPass").value.length < 10 || $("#pairPass").value !== $("#pairPass2").value)) {
     $("#pairMsg").innerHTML = `<div class="note err">${$("#pairPass").value.length < 10 ? "The passphrase needs at least 10 characters." : "The two passphrases differ."}</div>`; return;
   }
   const req = { pair: pairFromForm(), originalId: editing ? editing.id : null, create: $("#pairCreate").checked, confirmed: false };

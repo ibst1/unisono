@@ -8,6 +8,7 @@ public sealed class DriveStore : IRemoteStore
     private RemoteIndex? _index;
     private string? _rootId;
     private DateTime _lastFullIndexUtc;
+    private TimeSpan _lastIndexDuration;
 
     public DriveStore(DriveClient drive, SyncPair pair)
     {
@@ -40,7 +41,10 @@ public sealed class DriveStore : IRemoteStore
                     $"State file {SyncState.FilePathFor(_pair)} belongs to a different Drive folder. Delete it to start over (existing local files will then be matched by content).");
             _index = await RebuildAsync(folder.Id, log, ct);
         }
-        else if (_pair.FullRescanMinutes > 0 && DateTime.UtcNow - _lastFullIndexUtc > TimeSpan.FromMinutes(_pair.FullRescanMinutes))
+        // The full re-listing is a safety net behind the change feed; a tree that takes long to list gets it less often
+        // (at least 20 times its listing time apart), so large pairs do not spend their time listing.
+        else if (_pair.FullRescanMinutes > 0 && DateTime.UtcNow - _lastFullIndexUtc >
+                 TimeSpan.FromTicks(Math.Max(TimeSpan.FromMinutes(_pair.FullRescanMinutes).Ticks, _lastIndexDuration.Ticks * 20)))
         {
             _index = await RebuildAsync(_index.RootId, log, ct);
         }
@@ -61,11 +65,13 @@ public sealed class DriveStore : IRemoteStore
 
     private async Task<RemoteIndex> RebuildAsync(string rootId, Log log, CancellationToken ct)
     {
+        var started = DateTime.UtcNow;
         log.Debug($"[{_pair.Name}] indexing Drive folder...");
         var index = await RemoteIndex.BuildAsync(_drive, rootId, ct);
+        _lastIndexDuration = DateTime.UtcNow - started;
         _lastFullIndexUtc = DateTime.UtcNow;
         _rootId = rootId;
-        log.Info($"[{_pair.Name}] indexed {index.Count} items on Drive");
+        log.Info($"[{_pair.Name}] indexed {index.Count} items on Drive in {_lastIndexDuration.TotalSeconds:N0} s");
         return index;
     }
 

@@ -347,6 +347,12 @@ try
                 {
                     try
                     {
+                        if (VaultConverter.Pending(p) && !dryRun)
+                        {
+                            // Turning the pair's remote folder into a Cryptomator vault: a one-off sync does it all.
+                            var converter = new VaultConverter(p, await stores.CreatePlainAsync(p, ct), await stores.CreateAsync(p, ct), log);
+                            for (var turn = 0; turn < 5 && !await converter.RunAsync(null, s => { }, ct); turn++) { }
+                        }
                         var engine = new SyncEngine(await stores.CreateAsync(p, ct), p, log, config.Pairs, config.Options) { DryRun = dryRun };
                         var s = await engine.RunCycleAsync(ct);
                         // Files still being written were left alone: a one-off sync waits for them rather than skipping them.
