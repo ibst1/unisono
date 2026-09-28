@@ -282,6 +282,7 @@ sealed class HostForm : Form
             HostState.Idle when _bridge.Config.Pairs.Count == 0 => ("No sync pairs", Ui.Grey),
             HostState.Idle => ("Up to date", Ui.Green),
             HostState.Starting => ("Starting...", Ui.Blue),
+            HostState.Checking => ("Checking all pairs...", Ui.Green),
             _ => ("Not syncing", Ui.Grey),
         };
         if (_host.Paused && _host.State != HostState.Syncing) (text, color) = ("Paused", Ui.Amber);

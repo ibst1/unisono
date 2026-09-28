@@ -1,6 +1,7 @@
 namespace Unisono;
 
-public enum HostState { Stopped, Starting, Idle, Syncing, Paused, Trouble }
+/// <summary>Checking: the full pass over all pairs after a (re)start, nothing transferred (yet).</summary>
+public enum HostState { Stopped, Starting, Idle, Syncing, Paused, Trouble, Checking }
 
 public sealed class PairStatus
 {
@@ -185,12 +186,13 @@ public sealed class SyncHost : IAsyncDisposable
         var roundRunning = false;
         PairStatus? current = null;
         var roundStartedIdle = false;
+        var checkingRound = false;
         Action onActivity = () =>
         {
             if (!roundRunning) return; // an online-only file opened between rounds
             var active = SyncActivity.Now().Active;
             // Transfers over while the round goes on with quiet checks: back to how the round began.
-            if (active.Count == 0) { if (roundStartedIdle && State == HostState.Syncing) SetState(HostState.Idle); return; }
+            if (active.Count == 0) { if (roundStartedIdle && State == HostState.Syncing) SetState(checkingRound ? HostState.Checking : HostState.Idle); return; }
             SetState(HostState.Syncing);
             if (current is { } c && c.Status != "syncing" && active.Any(t => t.Pair == c.Pair.Name)) Update(c, "syncing");
         };
@@ -238,7 +240,10 @@ public sealed class SyncHost : IAsyncDisposable
                     _forceOnce = false;
                     // A routine check keeps showing "up to date"; "syncing" comes with the first transfer (below) and
                     // stays while work is left over for the next round.
-                    roundStartedIdle = State == HostState.Idle;
+                    // After a (re)start every pair gets a full pass: shown as checking, not as syncing, until something moves.
+                    checkingRound = State == HostState.Starting;
+                    if (checkingRound) SetState(HostState.Checking);
+                    roundStartedIdle = State is HostState.Idle or HostState.Checking;
                     if (!roundStartedIdle) SetState(HostState.Syncing);
                     roundRunning = true;
                     var ok = true;

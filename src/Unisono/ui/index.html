@@ -451,7 +451,7 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => showTab
 // ------------------------------------------------------------------- header
 const STATE = {
   Syncing: ["busy", "Syncing"], Idle: ["ok", "Up to date"], Paused: ["warn", "Paused"], Trouble: ["err", "Problems, retrying"],
-  Starting: ["busy", "Starting"], Stopped: ["", "Not syncing"],
+  Starting: ["busy", "Starting"], Stopped: ["", "Not syncing"], Checking: ["ok", "Checking all pairs"],
 };
 function renderHeader() {
   let [cls, text] = STATE[S.host.state] || ["", S.host.state];
