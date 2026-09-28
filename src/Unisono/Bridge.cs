@@ -852,7 +852,7 @@ sealed class Bridge : IAsyncDisposable
             }
             if (tree.Count > 0 && !converting) throw new InvalidOperationException("The remote folder already holds files that are not a Cryptomator vault, so it cannot become one. " +
                 "For an encrypted pair choose an empty or new remote folder (or remove this pair and add it again with one); nothing is deleted by removing a pair.");
-            if (string.IsNullOrEmpty(passphrase) || passphrase.Length < 10) throw new InvalidOperationException("The passphrase needs at least 10 characters.");
+            if (string.IsNullOrEmpty(passphrase)) throw new InvalidOperationException("Choose a passphrase for the vault.");
             var (newKeys, masterkey, vaultConfig, newId) = await Task.Run(() => CryptomatorVault.Create(passphrase), ct);
             await File.WriteAllTextAsync(file, masterkey, ct);
             await inner.UploadNewAsync(file, CryptomatorVault.MasterkeyFile, null, ct);

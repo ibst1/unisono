@@ -298,8 +298,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       A backup keeps what it replaces or deletes over there in the folder <span class="mono">.unisono-versions</span>, pruned by the version settings (Settings); restore from Versions.</div></div>  <div class="field" id="pairCryptRow"><label>Encryption</label>
     <div><label class="check"><input type="checkbox" id="pairEncrypt"> Encrypt on the other side (a Cryptomator vault): names and content, before they leave this computer</label>
       <div id="pairCryptFields" hidden style="margin-top:6px">
-        <div class="inline"><input type="password" id="pairPass" class="grow" placeholder="passphrase, at least 10 characters" autocomplete="new-password">
+        <div class="inline"><input type="password" id="pairPass" class="grow" placeholder="passphrase" autocomplete="new-password">
           <input type="password" id="pairPass2" class="grow" placeholder="the same again" autocomplete="new-password"></div>
+        <div class="help" id="pairPassHint" style="color:var(--amber)" hidden>Short passphrases are easy to guess for anyone who gets hold of the vault files; a few random words are both safer and easy to remember.</div>
         <div class="help" id="pairCryptHelp"></div></div></div></div>
   <div class="field"><label>Local folder</label>
     <div class="inline"><input type="text" id="pairLocal"><button class="btn" id="pairPickLocal">Browse...</button></div>
@@ -769,7 +770,7 @@ function pairDialog(p) {
   checkOnDemandPlace();
   $("#pairIgnore").value = ""; delete $("#pairIgnore").dataset.dirty;
   $("#pairEncrypt").checked = !!(p && p.encrypted); $("#pairEncrypt").disabled = !!(p && p.encrypted); // on can be turned on later, not off
-  $("#pairPass").value = ""; $("#pairPass2").value = "";
+  $("#pairPass").value = ""; $("#pairPass2").value = ""; $("#pairPassHint").hidden = true;
   syncCrypt();
   frequentOk = p ? [...(p.frequentOk || [])] : []; renderFrequentOk();
   if (p) loadIgnoreFile(p.localPath, p.id);
@@ -797,6 +798,7 @@ function syncCrypt() {
   $("#pairDocsRow").hidden = on || pairKind === "Folder";
 }
 $("#pairEncrypt").onchange = syncCrypt;
+$("#pairPass").addEventListener("input", () => { const n = $("#pairPass").value.length; $("#pairPassHint").hidden = n === 0 || n >= 8; });
 async function conflictsDialog() {
   openModal("#dlgConflicts");
   $("#conflictList").innerHTML = `<div class="muted">Looking through the synced folders...</div>`;
@@ -969,8 +971,8 @@ $("#pairSave").onclick = async () => {
   if (pairKind === "Drive" && !$("#pairRoot").checked && !$("#pairRemote").value.trim()) {
     $("#pairMsg").innerHTML = `<div class="note err">Choose a remote folder, or tick "Whole My Drive" to sync the root.</div>`; return;
   }
-  if ((!editing || !editing.encrypted) && $("#pairEncrypt").checked && ($("#pairPass").value.length < 10 || $("#pairPass").value !== $("#pairPass2").value)) {
-    $("#pairMsg").innerHTML = `<div class="note err">${$("#pairPass").value.length < 10 ? "The passphrase needs at least 10 characters." : "The two passphrases differ."}</div>`; return;
+  if ((!editing || !editing.encrypted) && $("#pairEncrypt").checked && (!$("#pairPass").value || $("#pairPass").value !== $("#pairPass2").value)) {
+    $("#pairMsg").innerHTML = `<div class="note err">${!$("#pairPass").value ? "Choose a passphrase." : "The two passphrases differ."}</div>`; return;
   }
   const req = { pair: pairFromForm(), originalId: editing ? editing.id : null, create: $("#pairCreate").checked, confirmed: false };
   busy(btn, true, "Checking...");
