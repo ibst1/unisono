@@ -46,6 +46,13 @@ public sealed class CryptomatorVault
     public static (byte[] Keys, string Masterkey, string VaultConfig, string Id) Create(string passphrase)
     {
         var keys = RandomNumberGenerator.GetBytes(64);
+        var (config, id) = NewConfig(keys);
+        return (keys, Masterkey(keys, passphrase), config, id);
+    }
+
+    /// <summary>masterkey.cryptomator for these keys under this passphrase (a new salt each time).</summary>
+    public static string Masterkey(byte[] keys, string passphrase)
+    {
         var salt = RandomNumberGenerator.GetBytes(8);
         const int n = 32768, r = 8;
         var kek = CryptoPrimitives.Scrypt(Passphrase(passphrase), salt, n, r, 1, 32);
@@ -61,12 +68,127 @@ public sealed class CryptomatorVault
             ["hmacMasterKey"] = Convert.ToBase64String(CryptoPrimitives.KeyWrap(kek, mac)),
             ["versionMac"] = Convert.ToBase64String(versionMac),
         }.ToJsonString(new JsonSerializerOptions { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+        return masterkey;
+    }
+
+    /// <summary>A vault.cryptomator signed with these keys, and its id.</summary>
+    public static (string Config, string Id) NewConfig(byte[] keys)
+    {
         var id = Guid.NewGuid().ToString();
         var header = new JsonObject { ["kid"] = "masterkeyfile:" + MasterkeyFile, ["typ"] = "JWT", ["alg"] = "HS256" }.ToJsonString();
         var payload = new JsonObject { ["jti"] = id, ["format"] = 8, ["cipherCombo"] = "SIV_GCM", ["shorteningThreshold"] = ShorteningThreshold }.ToJsonString();
         var signed = Jwt(header) + "." + Jwt(payload);
         var config = signed + "." + Jwt(HMACSHA256.HashData(keys, Encoding.ASCII.GetBytes(signed)));
-        return (keys, masterkey, config, id);
+        return (config, id);
+    }
+
+    // ------------------------------------------------------- recovery key
+
+    /// <summary>
+    /// The vault's master keys written out for safekeeping: 64 key bytes and the first two bytes of their CRC-32, in
+    /// base32 without look-alike letters (Crockford's alphabet), in groups of four. With it (and a new passphrase) a
+    /// vault can be opened again when masterkey.cryptomator or the passphrase is lost. It must be kept as safe as the
+    /// passphrase: it opens the vault on its own.
+    /// </summary>
+    public static string RecoveryKey(byte[] keys)
+    {
+        var data = new byte[66];
+        keys.CopyTo(data, 0);
+        var crc = Crc32(keys);
+        data[64] = (byte)(crc >> 24); data[65] = (byte)(crc >> 16);
+        var text = Crockford(data);
+        return string.Join(" ", Enumerable.Range(0, (text.Length + 3) / 4).Select(i => text.Substring(i * 4, Math.Min(4, text.Length - i * 4))));
+    }
+
+    /// <summary>The master keys from a recovery key, or null when it is mistyped (the checksum does not fit).</summary>
+    public static byte[]? FromRecoveryKey(string recoveryKey)
+    {
+        var data = FromCrockford(recoveryKey);
+        if (data == null || data.Length < 66) return null;
+        var keys = data[..64];
+        var crc = Crc32(keys);
+        return data[64] == (byte)(crc >> 24) && data[65] == (byte)(crc >> 16) ? keys : null;
+    }
+
+    private const string CrockfordAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+    private static string Crockford(byte[] data)
+    {
+        var sb = new StringBuilder();
+        int buffer = 0, bits = 0;
+        foreach (var b in data)
+        {
+            buffer = ((buffer << 8) | b) & 0xFFFF; bits += 8;
+            while (bits >= 5) { sb.Append(CrockfordAlphabet[(buffer >> (bits - 5)) & 31]); bits -= 5; }
+        }
+        if (bits > 0) sb.Append(CrockfordAlphabet[(buffer << (5 - bits)) & 31]);
+        return sb.ToString();
+    }
+
+    private static byte[]? FromCrockford(string text)
+    {
+        var output = new List<byte>();
+        int buffer = 0, bits = 0;
+        foreach (var raw in text.ToUpperInvariant())
+        {
+            if (char.IsWhiteSpace(raw) || raw == '-') continue;
+            var c = raw switch { 'O' => '0', 'I' or 'L' => '1', _ => raw }; // Crockford: read look-alikes as digits
+            var v = CrockfordAlphabet.IndexOf(c);
+            if (v < 0) return null;
+            buffer = ((buffer << 5) | v) & 0xFFFF; bits += 5;
+            if (bits >= 8) { output.Add((byte)(buffer >> (bits - 8))); bits -= 8; }
+        }
+        return output.ToArray();
+    }
+
+    private static uint Crc32(byte[] data)
+    {
+        var crc = 0xFFFFFFFFu;
+        foreach (var b in data)
+        {
+            crc ^= b;
+            for (var k = 0; k < 8; k++) crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xEDB88320u : crc >> 1;
+        }
+        return ~crc;
+    }
+
+    // ------------------------------------------ copies of the vault files
+
+    // Each computer that knows the vault keeps its two files next to the key: from these a missing or damaged file on
+    // the other side is put back. Neither holds a secret beyond what the passphrase protects.
+    private static string CopyPath(string vaultId, string file) => Path.Combine(AppPaths.AuthDir, "crypt", vaultId + "." + file);
+
+    public static void SaveVaultFiles(string vaultId, string masterkey, string vaultConfig)
+    {
+        foreach (var (file, text) in new[] { (MasterkeyFile, masterkey), (VaultFile, vaultConfig) })
+        {
+            var path = CopyPath(vaultId, file);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, text, new UTF8Encoding(false));
+        }
+    }
+
+    /// <summary>This computer's copies of the vault files, or null for those it has none of.</summary>
+    public static (string? Masterkey, string? VaultConfig) LoadVaultFiles(string vaultId)
+    {
+        string? Read(string file) => File.Exists(CopyPath(vaultId, file)) ? File.ReadAllText(CopyPath(vaultId, file)) : null;
+        return (Read(MasterkeyFile), Read(VaultFile));
+    }
+
+    /// <summary>The keys of this vault (encryption key, then MAC key), for the recovery key.</summary>
+    public byte[] Keys => _encKey.Concat(_macKey).ToArray();
+
+    /// <summary>Whether vault.cryptomator belongs to this vault's keys.</summary>
+    public bool Owns(string vaultConfig)
+    {
+        try { CheckConfig(vaultConfig, Keys); return true; } catch { return false; }
+    }
+
+    /// <summary>Whether masterkey.cryptomator is readable as one (not whether its passphrase is known).</summary>
+    public static bool LooksLikeMasterkey(string text)
+    {
+        try { return JsonNode.Parse(text) is { } m && m["primaryMasterKey"] != null && m["hmacMasterKey"] != null && m["scryptSalt"] != null; }
+        catch { return false; }
     }
 
     /// <summary>The master keys (64 bytes) from masterkey.cryptomator, or null when the passphrase is wrong.</summary>

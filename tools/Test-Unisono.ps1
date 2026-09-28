@@ -82,7 +82,8 @@ function Sync($c, [switch]$DryRun) {
     $out | Where-Object { $_ -match ' (warn|error) ' } | ForEach-Object { Write-Host "        $($c.Name): $_" -ForegroundColor DarkYellow }
     $out
 }
-function Both($a, $b) { Sync $a | Out-Null; Start-Sleep 3; Sync $b }
+# A second look on the other computer: Drive's change feed can take more than a few seconds to report a change.
+function Both($a, $b) { Sync $a | Out-Null; Start-Sleep 3; $first = Sync $b; Start-Sleep 5; @($first) + @(Sync $b) }
 function Has($c, $rel) { Test-Path -LiteralPath (Join-Path $c.Local $rel) }
 function Text($c, $rel) { (Get-Content -LiteralPath (Join-Path $c.Local $rel) -Raw).Trim() }
 function Put($c, $rel, $text) { $f = Join-Path $c.Local $rel; New-Item -ItemType Directory -Force (Split-Path $f) | Out-Null; Set-Content -LiteralPath $f $text }
@@ -107,21 +108,26 @@ function Test-Core([hashtable]$pair, [string]$label) {
     Section "${label}: conflict"
     Put $a "hello.txt" "edit on A"; Put $b "hello.txt" "edit on B"
     $null = Sync $a; Start-Sleep 3; $null = Sync $b; Start-Sleep 3; $null = Sync $a
+    # Drive's change feed can take longer than the pauses above: give it a few more rounds before judging.
+    for ($i = 0; $i -lt 3 -and @(Get-ChildItem $a.Local -Filter "hello (conflict*" -File).Count -eq 0; $i++) { Start-Sleep 5; $null = Sync $b; $null = Sync $a }
     Check "$label both edits survive as a conflict copy" { @(Get-ChildItem $a.Local -Filter "hello (conflict*" -File).Count -ge 1 }
 
     Section "${label}: renames and moves"
     Rename-Item (Join-Path $a.Local "sub\note.txt") "renamed.txt"
     $outA = Sync $a; Start-Sleep 3; $outB = Sync $b
+    for ($i = 0; $i -lt 3 -and -not (Has $b "sub\renamed.txt"); $i++) { Start-Sleep 5; $outB += Sync $b } # change feed lag
     Check "$label file rename is a remote move" { ($outA -join "`n") -match "moved remotely" }
     Check "$label ... and a local move on the other computer" { (($outB -join "`n") -match "moved locally") -and (Has $b "sub\renamed.txt") -and -not (Has $b "sub\note.txt") }
     Rename-Item (Join-Path $a.Local "sub") "folder2"
     $outA = Sync $a; Start-Sleep 3; $outB = Sync $b
+    for ($i = 0; $i -lt 3 -and -not (Has $b "folder2\renamed.txt"); $i++) { Start-Sleep 5; $outB += Sync $b } # change feed lag
     Check "$label folder rename is one remote move" { ($outA -join "`n") -match "moved folder remotely" }
-    Check "$label ... and a local folder move on the other computer" { (Has $b "folder2\renamed.txt") -and -not (Has $b "sub") -and -not (($outB -join "`n") -match "downloaded") }
+    Check "$label ... and a local folder move on the other computer" { (Has $b "folder2\renamed.txt") -and -not (Has $b "sub") -and -not (($outB -join "`n") -match "downloaded.*renamed\.txt") } # a late download from an earlier step is fine
 
     Section "${label}: deletion"
     [IO.File]::Delete((Join-Path $a.Local "folder2\renamed.txt"))
     $null = Both $a $b
+    for ($i = 0; $i -lt 3 -and (Has $b "folder2\renamed.txt"); $i++) { Start-Sleep 5; $null = Sync $b } # change feed lag
     Check "$label deletion reaches the other computer" { -not (Has $b "folder2\renamed.txt") }
 
     Section "${label}: ignore rules"
@@ -137,6 +143,7 @@ function Test-Core([hashtable]$pair, [string]$label) {
     Check "$label dry run plans the upload" { ($dry -join "`n") -match "would upload: dry.txt" }
     Check "$label dry run changes nothing" { -not (Has $b "dry.txt") }
     $null = Both $a $b
+    for ($i = 0; $i -lt 3 -and -not (Has $b "dry.txt"); $i++) { Start-Sleep 5; $null = Sync $b } # change feed lag
     Check "$label a real run afterwards does it" { Has $b "dry.txt" }
 
     Section "${label}: one-way (download only)"

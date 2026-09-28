@@ -323,6 +323,16 @@ Unisono. Unisono can also sync a vault made by Cryptomator.
 - Moving or renaming a folder moves only its small entry in the vault (directory contents live under the directory's
   id), so on Drive it stays a cheap move. On NAS and folder pairs a moved item gets a new id, and the other computer
   sees it as deleted and added.
+- Encryption can be turned on and off for an existing pair. With plain files (or a vault) on the other side the folder
+  is converted in place (`VaultConverter`), in turns and resumably; what was converted goes to the remote's trash at
+  the end, where copies stay until it is emptied. Other computers stop syncing such a folder (their card says why)
+  until their pair is switched too: a plain pair never syncs a vault as files, and an encrypted pair never reads a
+  vanished vault as "everything was deleted".
+- Every computer that knows the vault keeps copies of `vault.cryptomator` and `masterkey.cryptomator` next to the key
+  and puts them back when they go missing or are damaged on the other side (also on request: *Put back vault files*).
+- *Show recovery key* writes the vault's keys out (base32 in groups of four, with a checksum). With it, *Recover with
+  recovery key* opens the vault again with a new passphrase when the passphrase or `masterkey.cryptomator` is lost.
+  It opens the vault on its own: keep it as safe as the passphrase.
 - The crypto (AES-SIV, scrypt, AES Key Wrap, AES-GCM) is in `CryptomatorPrimitives.cs`, `CryptomatorVault.cs` and
   `CryptomatorStore.cs`; the primitives were checked against the RFC 5297, 7914 and 3394 test vectors.
 

@@ -350,7 +350,7 @@ try
                         if (VaultConverter.Pending(p) && !dryRun)
                         {
                             // Turning the pair's remote folder into a Cryptomator vault: a one-off sync does it all.
-                            var converter = new VaultConverter(p, await stores.CreatePlainAsync(p, ct), await stores.CreateAsync(p, ct), log);
+                            var converter = new VaultConverter(p, await stores.CreatePlainAsync(p, ct), await stores.CreateVaultAsync(p, ct), log, VaultConverter.PendingDecrypt(p));
                             for (var turn = 0; turn < 5 && !await converter.RunAsync(null, s => { }, ct); turn++) { }
                         }
                         var engine = new SyncEngine(await stores.CreateAsync(p, ct), p, log, config.Pairs, config.Options) { DryRun = dryRun };

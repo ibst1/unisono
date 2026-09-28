@@ -42,12 +42,15 @@ public sealed class CryptomatorStore : IRemoteStore
     private readonly ConcurrentDictionary<string, string> _smallFiles = new();
     private SyncState? _state;
     private int _foreignReported;
+    private readonly SyncPair _pair;
+    private string _vaultFilesSeen = "";
 
-    public CryptomatorStore(IRemoteStore inner, CryptomatorVault vault, string pairName, Log log)
+    public CryptomatorStore(IRemoteStore inner, CryptomatorVault vault, SyncPair pair, Log log)
     {
         _inner = inner;
         _vault = vault;
-        _pairName = pairName;
+        _pair = pair;
+        _pairName = pair.Name;
         _log = log;
     }
 
@@ -75,7 +78,7 @@ public sealed class CryptomatorStore : IRemoteStore
     public async Task<Dictionary<string, RemoteNode>> GetTreeAsync(Log log, CancellationToken ct)
     {
         var inner = await _inner.GetTreeAsync(log, ct);
-        if (!inner.ContainsKey(CryptomatorVault.VaultFile)) throw new InvalidOperationException($"{CryptomatorVault.VaultFile} is missing on the other side: this is not the encrypted folder any more");
+        await GuardVaultFilesAsync(inner, ct);
         var children = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var rel in inner.Keys)
         {
@@ -131,6 +134,70 @@ public sealed class CryptomatorStore : IRemoteStore
             log.Warn($"[{_pairName}] {foreign} item(s) in the vault could not be decrypted (another vault's or damaged) and are left alone");
         lock (_gate) { _innerTree = inner; _byId = byId; _byRel = byRel; }
         return plain;
+    }
+
+    /// <summary>
+    /// Keeps the vault's two files safe: this computer holds copies (made when the vault was joined, or taken from the
+    /// other side once it proved to belong to the keys). A file missing on the other side is put back; a damaged one is
+    /// replaced; a masterkey.cryptomator that is sound but different (the passphrase changed in Cryptomator) becomes the
+    /// new copy. The files are read only when they changed on the other side.
+    /// </summary>
+    private async Task GuardVaultFilesAsync(Dictionary<string, RemoteNode> inner, CancellationToken ct)
+    {
+        var id = _pair.VaultId;
+        if (string.IsNullOrEmpty(id)) return;
+        inner.TryGetValue(CryptomatorVault.VaultFile, out var configNode);
+        inner.TryGetValue(CryptomatorVault.MasterkeyFile, out var masterNode);
+        // No vault at all any more (decrypted or removed on another computer): never put its files back over plain
+        // files, and never read the empty vault as "everything was deleted".
+        if (configNode == null && masterNode == null && !inner.ContainsKey(CryptomatorVault.DataFolder)) throw new VaultGoneException();
+        var seen = $"{configNode?.Id}|{configNode?.ModifiedUtc.Ticks}|{configNode?.Size}|{masterNode?.Id}|{masterNode?.ModifiedUtc.Ticks}|{masterNode?.Size}";
+        if (seen == _vaultFilesSeen) return;
+        var (masterCopy, configCopy) = CryptomatorVault.LoadVaultFiles(id);
+        string? config = configNode != null ? await ReadAsync(configNode) : null;
+        string? master = masterNode != null ? await ReadAsync(masterNode) : null;
+
+        if (config == null || !_vault.Owns(config))
+        {
+            // Without (or with a foreign) vault.cryptomator Cryptomator cannot open the vault: from the copy, or a new one from the keys.
+            var text = configCopy != null && _vault.Owns(configCopy) ? configCopy : CryptomatorVault.NewConfig(_vault.Keys).Config;
+            await PutAsync(CryptomatorVault.VaultFile, text, configNode, config == null ? "was missing" : "did not belong to this vault");
+            config = text;
+        }
+        if (master == null || !CryptomatorVault.LooksLikeMasterkey(master))
+        {
+            if (masterCopy != null)
+            {
+                await PutAsync(CryptomatorVault.MasterkeyFile, masterCopy, masterNode, master == null ? "was missing" : "was damaged");
+                master = masterCopy;
+            }
+            else _log.Warn($"[{_pairName}] {CryptomatorVault.MasterkeyFile} is {(master == null ? "missing" : "damaged")} on the other side and this computer has no copy: " +
+                           "Cryptomator cannot open the vault until it is restored (Unisono still syncs with its stored key; the recovery key can make a new one)");
+        }
+        else if (masterCopy != null && master != masterCopy) _log.Info($"[{_pairName}] {CryptomatorVault.MasterkeyFile} changed on the other side (a new passphrase?); keeping the new one as this computer's copy");
+        if (master != null && CryptomatorVault.LooksLikeMasterkey(master)) CryptomatorVault.SaveVaultFiles(id, master, config);
+        _vaultFilesSeen = seen;
+
+        async Task<string> ReadAsync(RemoteNode node)
+        {
+            var tmp = TempFile();
+            try { await _inner.DownloadAsync(node, tmp, ct); return await File.ReadAllTextAsync(tmp, ct); }
+            finally { TryDelete(tmp); }
+        }
+
+        async Task PutAsync(string name, string text, RemoteNode? existing, string why)
+        {
+            var tmp = TempFile();
+            try
+            {
+                await File.WriteAllTextAsync(tmp, text, new System.Text.UTF8Encoding(false), ct);
+                var node = existing != null ? await _inner.UploadUpdateAsync(tmp, existing, ct) : await _inner.UploadNewAsync(tmp, name, null, ct);
+                inner[name] = node;
+                _log.Warn($"[{_pairName}] {name} {why} on the other side; put back from this computer's copy");
+                ActivityJournal.Add(_pair, "restored", name, text.Length, $"{why} on the other side; put back from this computer's copy");
+            }
+            finally { TryDelete(tmp); }
+        }
     }
 
     private static RemoteNode Wrap(Item item, string parentNodeId) => new()

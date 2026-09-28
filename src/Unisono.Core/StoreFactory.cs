@@ -46,6 +46,14 @@ public sealed class StoreFactory : IAsyncDisposable
         return await CreateAsync(plain, ct);
     }
 
+    /// <summary>The pair's remote folder as its Cryptomator vault: what a decryption copies from.</summary>
+    public async Task<IRemoteStore> CreateVaultAsync(SyncPair pair, CancellationToken ct)
+    {
+        var vault = System.Text.Json.JsonSerializer.Deserialize<SyncPair>(System.Text.Json.JsonSerializer.Serialize(pair))!;
+        vault.Encrypted = true;
+        return await CreateAsync(vault, ct);
+    }
+
     private async Task<IRemoteStore> CreateCoreAsync(SyncPair pair, CancellationToken ct)
     {
         IRemoteStore store = pair.Kind switch
@@ -57,7 +65,7 @@ public sealed class StoreFactory : IAsyncDisposable
         if (!pair.Encrypted) return store;
         var key = CryptomatorVault.LoadKey(pair.VaultId)
                   ?? throw new InvalidOperationException("the passphrase of this encrypted pair is not stored on this computer: open the pair (Edit) and enter it");
-        return new CryptomatorStore(store, new CryptomatorVault(key), pair.Name, _log);
+        return new CryptomatorStore(store, new CryptomatorVault(key), pair, _log);
     }
 
     public async Task<SynologyClient> NasAsync(SyncPair pair, CancellationToken ct)

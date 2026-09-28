@@ -296,10 +296,20 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <option value="Backup">Backup: like upload only, and replaced or deleted files are kept on the other side</option></select>
     <div class="help">One-way pairs apply the source side's changes, deletions included, and never undo anything done on the other side.
       A backup keeps what it replaces or deletes over there in the folder <span class="mono">.unisono-versions</span>, pruned by the version settings (Settings); restore from Versions.</div></div>  <div class="field" id="pairCryptRow"><label>Encryption</label>
-    <div><label class="check"><input type="checkbox" id="pairEncrypt"> Encrypt on the other side (a Cryptomator vault): names and content, before they leave this computer</label>
+    <div>
+      <label class="check"><input type="checkbox" id="pairEncrypt"> Encrypt on the other side (a Cryptomator vault): names and content, before they leave this computer</label>
+      <div class="inline" id="pairRecoveryShow" hidden style="margin-top:6px; flex-wrap:wrap; gap:6px">
+        <button class="btn" id="pairShowRecovery" title="The vault's keys written out, to keep safe">Show recovery key...</button>
+        <button class="btn" id="pairPutBack" title="Upload this computer's copies of vault.cryptomator and masterkey.cryptomator">Put back vault files</button>
+        <button class="btn" id="pairRecover" title="Open the vault with its recovery key and give it a new passphrase">Recover with recovery key...</button></div>
+      <div class="help" id="pairDecryptNote" hidden style="color:var(--amber)">Unticked: the vault is decrypted in place. Every file becomes an ordinary file on the other side again
+        (readable by Google Drive or the NAS), and the vault's files go to the trash there, where encrypted copies stay until it is emptied. Other computers stop syncing
+        this folder until Encrypt is unticked there too.</div>
       <div id="pairCryptFields" hidden style="margin-top:6px">
         <div class="inline"><input type="password" id="pairPass" class="grow" placeholder="passphrase" autocomplete="new-password">
           <input type="password" id="pairPass2" class="grow" placeholder="the same again" autocomplete="new-password"></div>
+        <label class="check small" style="margin-top:6px"><input type="checkbox" id="pairUseRecovery"> I have the vault's recovery key instead of its passphrase</label>
+        <textarea id="pairRecovery" rows="3" hidden placeholder="the recovery key (groups of four characters)" style="margin-top:6px"></textarea>
         <div class="help" id="pairPassHint" style="color:var(--amber)" hidden>Short passphrases are easy to guess for anyone who gets hold of the vault files; a few random words are both safer and easy to remember.</div>
         <div class="help" id="pairCryptHelp"></div></div></div></div>
   <div class="field"><label>Local folder</label>
@@ -362,6 +372,17 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     document are kept as "(edited ...)". Compare them and keep one; the other goes to the Recycle Bin, and the next sync carries it over to the other side.</div>
   <div class="plan" id="conflictList"></div>
   <div class="actions"><button class="btn" id="conflictRefresh">Refresh</button><button class="btn" data-close>Close</button></div>
+</div></div>
+
+<div class="modal" id="dlgRecover"><div class="dialog">
+  <h3>Recover with recovery key</h3>
+  <div class="small muted" style="margin-bottom:10px">For when the passphrase is forgotten or masterkey.cryptomator is lost. The vault's keys stay the same;
+    it gets a new passphrase, which from then on opens it in Cryptomator and on computers where Unisono does not have it yet. Computers where Unisono already has the vault's key simply keep syncing.</div>
+  <textarea id="recKey" rows="3" placeholder="the recovery key (groups of four characters)"></textarea>
+  <div class="inline" style="margin-top:8px"><input type="password" id="recPass" class="grow" placeholder="new passphrase" autocomplete="new-password">
+    <input type="password" id="recPass2" class="grow" placeholder="the same again" autocomplete="new-password"></div>
+  <div id="recMsg"></div>
+  <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="recOk">Recover</button></div>
 </div></div>
 
 <div class="modal" id="dlgConfirm"><div class="dialog">
@@ -591,7 +612,10 @@ function renderPairs() {
           <button class="btn" data-checkfix="${esc(p.id)}">Keep both versions</button><button class="btn" data-checkdismiss="${esc(p.id)}">Dismiss</button></div></div>` : ""}
       ${p.needsPassphrase ? `<div class="note warn inline" style="margin-bottom:0"><span class="grow">The remote folder is an encrypted Cryptomator vault. Nothing is synced (or downloaded) until you enter its passphrase; it is then kept for your Windows user on this computer.</span>
         <button class="btn" data-passfor="${esc(p.id)}">Enter passphrase</button></div>` : ""}
-      ${p.converting ? `<div class="note" style="margin-bottom:0">Turning the remote folder into a Cryptomator vault: files are encrypted and uploaded in turns (see Activity and the transfers above). The unencrypted originals go to the trash on the other side at the end; empty it there to be rid of them.</div>` : ""}
+      ${p.vaultGone ? `<div class="note warn inline" style="margin-bottom:0"><span class="grow">The remote folder is no Cryptomator vault any more (decrypted or removed on another computer). Nothing is synced until encryption is turned off here too.</span>
+        <button class="btn" data-plainfor="${esc(p.id)}">Turn off encryption</button></div>` : ""}
+      ${p.decrypting ? `<div class="note" style="margin-bottom:0">Turning the Cryptomator vault back into plain files, in turns (see Activity and the transfers above). The vault's own files go to the trash on the other side at the end.</div>` : ""}
+      ${p.converting && !p.decrypting ? `<div class="note" style="margin-bottom:0">Turning the remote folder into a Cryptomator vault: files are encrypted and uploaded in turns (see Activity and the transfers above). The unencrypted originals go to the trash on the other side at the end; empty it there to be rid of them.</div>` : ""}
       ${p.health ? `<div class="note err" style="margin-bottom:0">${esc(p.health)} <a class="path" data-showlog>Show the log</a></div>` : ""}
       ${(p.frequent || []).map(f => `<div class="note warn inline" style="margin-bottom:0">
         <span class="grow"><span class="mono">${esc(f)}</span> changes very often (${6} times or more within an hour). Logs and status files like this are usually better left out of syncing.</span>
@@ -605,6 +629,10 @@ function renderPairs() {
   document.querySelectorAll("[data-versions]").forEach(b => b.onclick = () => versionsDialog(S.pairs.find(p => p.id === b.dataset.versions)));
   document.querySelectorAll("[data-preview]").forEach(b => b.onclick = () => preview(S.pairs.find(p => p.id === b.dataset.preview), b));
   document.querySelectorAll("[data-showlog]").forEach(a => a.onclick = () => showTab("log"));
+  document.querySelectorAll("[data-plainfor]").forEach(b => b.onclick = () => {
+    pairDialog(S.pairs.find(p => p.id === b.dataset.plainfor));
+    $("#pairEncrypt").checked = false; syncCrypt();
+  });
   document.querySelectorAll("[data-passfor]").forEach(b => b.onclick = () => {
     pairDialog(S.pairs.find(p => p.id === b.dataset.passfor));
     $("#pairEncrypt").checked = true; syncCrypt(); $("#pairPass").focus();
@@ -769,8 +797,8 @@ function pairDialog(p) {
   syncOnDemand();
   checkOnDemandPlace();
   $("#pairIgnore").value = ""; delete $("#pairIgnore").dataset.dirty;
-  $("#pairEncrypt").checked = !!(p && p.encrypted); $("#pairEncrypt").disabled = !!(p && p.encrypted); // on can be turned on later, not off
-  $("#pairPass").value = ""; $("#pairPass2").value = ""; $("#pairPassHint").hidden = true;
+  $("#pairEncrypt").checked = !!(p && p.encrypted); $("#pairEncrypt").disabled = !!(p && p.converting); // not while a conversion runs
+  $("#pairPass").value = ""; $("#pairPass2").value = ""; $("#pairUseRecovery").checked = false; $("#pairRecovery").value = ""; $("#pairPassHint").hidden = true;
   syncCrypt();
   frequentOk = p ? [...(p.frequentOk || [])] : []; renderFrequentOk();
   if (p) loadIgnoreFile(p.localPath, p.id);
@@ -784,8 +812,15 @@ $("#btnAddPair").onclick = () => pairDialog();
 function syncCrypt() {
   const on = $("#pairEncrypt").checked, needKey = editing && editing.encrypted && !editing.keyHere;
   const turningOn = editing && !editing.encrypted && on;
+  const recovery = $("#pairUseRecovery").checked;
   $("#pairCryptFields").hidden = !(on && (!editing || needKey || turningOn));
-  $("#pairPass2").hidden = !!editing && !turningOn;
+  $("#pairPass2").hidden = !!editing && !turningOn && !recovery;
+  $("#pairRecovery").hidden = !recovery;
+  $("#pairPass").placeholder = recovery ? "a new passphrase" : "passphrase";
+  const turningOff = editing && editing.encrypted && !on;
+  $("#pairDecryptNote").hidden = !turningOff;
+  $("#pairRecoveryShow").hidden = !(editing && editing.encrypted) || turningOff;
+  $("#pairShowRecovery").hidden = $("#pairPutBack").hidden = !(editing && editing.keyHere);
   $("#pairCryptHelp").innerHTML = needKey
     ? "This computer does not have the passphrase yet. Enter it once; it is then kept for your Windows user on this computer."
     : turningOn
@@ -798,6 +833,37 @@ function syncCrypt() {
   $("#pairDocsRow").hidden = on || pairKind === "Folder";
 }
 $("#pairEncrypt").onchange = syncCrypt;
+$("#pairUseRecovery").onchange = syncCrypt;
+$("#pairPutBack").onclick = async () => {
+  if (!await confirmBox("Put back vault files", ["Upload this computer's copies of vault.cryptomator and masterkey.cryptomator to the other side, replacing what is there? " +
+      "Unisono also does this by itself when one of them goes missing or is damaged."])) return;
+  try { await call("vault.restoreFiles", { id: editing.id }); toast("Vault files put back"); } catch (e) { toast(e.message, true); }
+};
+$("#pairRecover").onclick = () => {
+  $("#recKey").value = ""; $("#recPass").value = ""; $("#recPass2").value = ""; $("#recMsg").innerHTML = "";
+  openModal("#dlgRecover");
+};
+$("#recOk").onclick = async () => {
+  const key = $("#recKey").value.trim(), pass = $("#recPass").value;
+  if (!key) { $("#recMsg").innerHTML = `<div class="note err">Enter the recovery key.</div>`; return; }
+  if (!pass || pass !== $("#recPass2").value) { $("#recMsg").innerHTML = `<div class="note err">${pass ? "The two passphrases differ." : "Choose a new passphrase."}</div>`; return; }
+  busy($("#recOk"), true, "Recovering...");
+  try {
+    await call("vault.recover", { id: editing.id, recoveryKey: key, passphrase: pass });
+    closeModal("#dlgRecover"); closeModal("#dlgPair");
+    toast("Vault recovered; it opens with the new passphrase now (also in Cryptomator)");
+  } catch (e) { $("#recMsg").innerHTML = `<div class="note err">${esc(e.message)}</div>`; }
+  finally { busy($("#recOk"), false); }
+};
+$("#pairShowRecovery").onclick = async () => {
+  try {
+    const key = await call("vault.recoveryKey", { id: editing.id });
+    await confirmBox("Recovery key", [
+      "With this key and a new passphrase, Unisono opens the vault again if the passphrase or masterkey.cryptomator is lost. " +
+      "It opens the vault on its own, so keep it as safe as the passphrase: printed in a safe place, or in a password manager.",
+      key]);
+  } catch (e) { toast(e.message, true); }
+};
 $("#pairPass").addEventListener("input", () => { const n = $("#pairPass").value.length; $("#pairPassHint").hidden = n === 0 || n >= 8; });
 async function conflictsDialog() {
   openModal("#dlgConflicts");
@@ -956,6 +1022,7 @@ function pairFromForm() {
     includeFolders: scope.include, excludeFolders: scope.exclude,
     direction: $("#pairDirection").value, onDemand: $("#pairOnDemand").checked, ignorePatterns: $("#pairIgnore").value, frequentOk,
     encrypted: $("#pairEncrypt").checked, passphrase: $("#pairPass").value,
+    recoveryKey: $("#pairUseRecovery").checked ? $("#pairRecovery").value : "",
     kind: pairKind, account: nas || folder ? null : $("#pairAcct").value, server, user,
     remotePath: nas || folder ? $("#pairRemote").value : ($("#pairRoot").checked ? "" : $("#pairRemote").value),
     localPath: $("#pairLocal").value, docs: $("#pairDocs").value,
@@ -971,7 +1038,7 @@ $("#pairSave").onclick = async () => {
   if (pairKind === "Drive" && !$("#pairRoot").checked && !$("#pairRemote").value.trim()) {
     $("#pairMsg").innerHTML = `<div class="note err">Choose a remote folder, or tick "Whole My Drive" to sync the root.</div>`; return;
   }
-  if ((!editing || !editing.encrypted) && $("#pairEncrypt").checked && (!$("#pairPass").value || $("#pairPass").value !== $("#pairPass2").value)) {
+  if (((!editing || !editing.encrypted) || $("#pairUseRecovery").checked) && $("#pairEncrypt").checked && (!$("#pairPass").value || $("#pairPass").value !== $("#pairPass2").value)) {
     $("#pairMsg").innerHTML = `<div class="note err">${!$("#pairPass").value ? "Choose a passphrase." : "The two passphrases differ."}</div>`; return;
   }
   const req = { pair: pairFromForm(), originalId: editing ? editing.id : null, create: $("#pairCreate").checked, confirmed: false };

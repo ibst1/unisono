@@ -22,6 +22,8 @@ public sealed class PairStatus
     public List<SyncEngine.BackupVersion>? Versions { get; set; }
     /// <summary>The remote folder is a Cryptomator vault but this pair is not encrypted (yet): nothing is synced.</summary>
     public bool NeedsPassphrase { get; set; }
+    /// <summary>The pair is encrypted but its remote folder is no vault any more: nothing is synced.</summary>
+    public bool VaultGone { get; set; }
     /// <summary>A cycle of this pair runs right now.</summary>
     public bool Running { get; set; }
     /// <summary>While this pair waits for its turn: the pair that is syncing now.</summary>
@@ -255,7 +257,8 @@ public sealed class SyncHost : IAsyncDisposable
                             if (VaultConverter.Pending(ps.Pair))
                             {
                                 // Turning an existing pair into an encrypted one: turns of copying instead of cycles.
-                                converters[i] ??= new VaultConverter(ps.Pair, await stores.CreatePlainAsync(ps.Pair, ct), await stores.CreateAsync(ps.Pair, ct), _log);
+                                var decrypt = VaultConverter.PendingDecrypt(ps.Pair);
+                                converters[i] ??= new VaultConverter(ps.Pair, await stores.CreatePlainAsync(ps.Pair, ct), await stores.CreateVaultAsync(ps.Pair, ct), _log, decrypt);
                                 var finished = await converters[i]!.RunAsync(pairs.Count > 1 ? TurnLength : null, s => Update(ps, s), ct);
                                 if (!finished) { followUp = true; continue; }
                                 converters[i] = null;
@@ -277,6 +280,7 @@ public sealed class SyncHost : IAsyncDisposable
                             followUp |= engines[i]!.NeedsFollowUp;
                             ps.LastStats = stats;
                             ps.NeedsPassphrase = false;
+                            ps.VaultGone = false;
                             ps.LastSync = DateTime.Now;
                             SaveLastRuns();
                             ps.LastError = stats.Errors > 0 ? $"{stats.Errors} item(s) failed, see log" : null;
@@ -303,6 +307,7 @@ public sealed class SyncHost : IAsyncDisposable
                             if (ps.Pair.Kind == RemoteKind.Synology) { engines[i] = null; stores.Forget(ps.Pair); }
                             ps.LastError = ex.Message;
                             ps.NeedsPassphrase = ex is VaultFoundException;
+                            ps.VaultGone = ex is VaultGoneException;
                             TrackHealth(ps, ex.Message);
                             Update(ps, "failed");
                             _log.Error($"[{ps.Pair.Name}] {ex.Message}");

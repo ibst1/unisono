@@ -8,6 +8,12 @@ public sealed class VaultFoundException : Exception
     public VaultFoundException() : base("The remote folder is an encrypted Cryptomator vault. Enter its passphrase (Edit, Encrypt) to sync it; nothing is synced until then.") { }
 }
 
+/// <summary>An encrypted pair's remote folder holds no vault any more (decrypted or removed elsewhere).</summary>
+public sealed class VaultGoneException : Exception
+{
+    public VaultGoneException() : base("The remote folder is no Cryptomator vault any more (it was decrypted or removed on another computer). Untick 'Encrypt' (Edit) to sync it as plain files; nothing is synced until then.") { }
+}
+
 public sealed class CycleStats
 {
     public int Downloaded, Uploaded, Exported, Linked, Trashed, Recycled, Conflicts, Errors, Moved, Online;

@@ -131,6 +131,23 @@ sealed class Bridge : IAsyncDisposable
                 _host.SyncNow();
                 return null;
             }
+            case "vault.restoreFiles": return await RestoreVaultFilesAsync(FindPair(Str(p, "id")));
+            case "vault.recover":
+            {
+                var pair = FindPair(Str(p, "id"));
+                using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+                await SetUpVaultAsync(pair, Str(p, "passphrase"), false, Str(p, "recoveryKey"), cts.Token);
+                Config.Save();
+                await _restartHost();
+                return null;
+            }
+            case "vault.recoveryKey":
+            {
+                var pair = FindPair(Str(p, "id"));
+                var keys = CryptomatorVault.LoadKey(pair.VaultId) ?? throw new InvalidOperationException("This computer does not have the vault's key.");
+                _log.Info($"[{pair.Name}] the recovery key was shown");
+                return CryptomatorVault.RecoveryKey(keys);
+            }
             case "backup.versions":
             {
                 var st = _host.Pairs.FirstOrDefault(s => s.Pair.Id == Str(p, "id"));
@@ -323,7 +340,8 @@ sealed class Bridge : IAsyncDisposable
             lastResult = st?.LastError ?? Summary(st?.LastStats), failed = st?.LastError != null,
             frequent = st == null ? new List<string>() : Locked(st.Frequent), frequentOk = p.FrequentOk, health = st?.Health,
             encrypted = p.Encrypted, keyHere = !p.Encrypted || CryptomatorVault.LoadKey(p.VaultId) != null,
-            needsPassphrase = st?.NeedsPassphrase ?? false, converting = VaultConverter.Pending(p),
+            needsPassphrase = st?.NeedsPassphrase ?? false, vaultGone = st?.VaultGone ?? false, converting = VaultConverter.Pending(p),
+            decrypting = VaultConverter.Pending(p) && VaultConverter.PendingDecrypt(p),
             checking = st?.Checking ?? false, running = st?.Running ?? false,
             lastChecked = st?.LastChecked is { } lc ? lc.ToString(lc.Date == DateTime.Today ? "HH:mm" : "d MMM") : null,
             checkProblems = st?.LastCheck?.Problems.Select(x => new { rel = x.Rel, side = x.Side, detail = x.Detail }).ToList(),
@@ -587,8 +605,10 @@ sealed class Bridge : IAsyncDisposable
         pair.Kind = Enum.TryParse<RemoteKind>(Str(d, "kind"), out var kind) ? kind : RemoteKind.Drive;
         var encrypt = d.TryGetProperty("encrypted", out var en) && en.ValueKind == JsonValueKind.True;
         var passphrase = Str(d, "passphrase");
-        if (original is { Encrypted: true } && !encrypt)
-            throw new InvalidOperationException("An encrypted pair stays encrypted. For an unencrypted copy, add a new pair with another remote folder.");
+        var recoveryKey = Str(d, "recoveryKey");
+        // Turning encryption off: the vault is decrypted in place (VaultConverter), or, if it is gone already, the pair
+        // simply syncs the plain folder.
+        var turningOff = original is { Encrypted: true } && !encrypt;
         // Turning encryption on for an existing pair works while its remote folder is still empty (checked with the vault).
         var turningOn = original is { Encrypted: false } && encrypt;
         if (encrypt && (original == null || turningOn) && string.IsNullOrEmpty(passphrase))
@@ -697,8 +717,11 @@ sealed class Bridge : IAsyncDisposable
         var converting = turningOn && remoteHasItems && !remoteIsVault;
         if (converting && rootNames.Any(n => n.Equals(CryptomatorVault.DataFolder, StringComparison.OrdinalIgnoreCase) || n.Equals(CryptomatorVault.MasterkeyFile, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"The remote folder holds an item named '{CryptomatorVault.DataFolder}' or '{CryptomatorVault.MasterkeyFile}', which a Cryptomator vault needs for itself. Rename it first.");
-        if (!encrypt && remoteIsVault)
+        if (!encrypt && remoteIsVault && !turningOff)
             throw new InvalidOperationException("The remote folder is an encrypted Cryptomator vault: tick 'Encrypt on the other side' and enter its passphrase.");
+        var decrypting = turningOff && remoteIsVault;
+        if (decrypting && CryptomatorVault.LoadKey(original!.VaultId) == null)
+            throw new InvalidOperationException("This computer does not have the vault's key, so it cannot decrypt it. Enter the passphrase first (Edit, with Encrypt ticked), then untick.");
 
         if (!confirmed)
         {
@@ -716,6 +739,12 @@ sealed class Bridge : IAsyncDisposable
             if (!pair.OnDemand && ManagedSyncRoot(pair.LocalFullPath) is { } root)
                 messages.Add($"The local folder is inside {root}, which Windows itself syncs to another server (OneDrive or your organisation's Work Folders). " +
                              "Everything Unisono downloads there ends up in that place too.");
+            if (decrypting)
+                messages.Add("Unisono turns the vault back into plain files: every file is decrypted and uploaded as an ordinary file next to the vault " +
+                             "(online-only files are downloaded for this and do not stay here), in turns and in the background. Then the vault's own " +
+                             "files go to the trash on the other side. From then on Google Drive (or whoever runs the NAS) can read the files. " +
+                             "Encrypted copies stay in the trash until it is emptied. Other computers that sync this folder stop syncing it until you " +
+                             "untick Encrypt there too.");
             if (converting)
                 messages.Add("The remote folder already holds unencrypted files. Unisono turns it into a Cryptomator vault: every file is encrypted " +
                              "and uploaded into the vault (online-only files are downloaded for this and do not stay here), in turns and in the " +
@@ -727,7 +756,19 @@ sealed class Bridge : IAsyncDisposable
         }
 
         if (!exists) await createRemote();
-        if (encrypt && (original == null || original.Id != pair.Id || !string.IsNullOrEmpty(passphrase))) await SetUpVaultAsync(pair, passphrase, converting, ct);
+        if (encrypt && (original == null || original.Id != pair.Id || !string.IsNullOrEmpty(passphrase))) await SetUpVaultAsync(pair, passphrase, converting, recoveryKey, ct);
+        if (decrypting)
+        {
+            await _host.StopAsync(); // restarted below; the decryption then runs in place of the pair's cycles
+            VaultConverter.Request(pair, decrypt: true);
+            _log.Info($"[{pair.Name}] turning the Cryptomator vault back into plain files");
+        }
+        else if (turningOff)
+        {
+            // No vault on the other side any more: sync the plain folder from a fresh start.
+            await _host.StopAsync();
+            try { File.Delete(SyncState.FilePathFor(original!)); } catch { }
+        }
         if (converting)
         {
             await _host.StopAsync(); // restarted below; the conversion then runs in place of the pair's cycles
@@ -813,7 +854,7 @@ sealed class Bridge : IAsyncDisposable
     /// the passphrase must fit) or, in an empty folder, creates one. Either way the master keys are stored for this Windows
     /// user and <see cref="SyncPair.VaultId"/> set.
     /// </summary>
-    private async Task SetUpVaultAsync(SyncPair pair, string? passphrase, bool converting, CancellationToken ct)
+    private async Task SetUpVaultAsync(SyncPair pair, string? passphrase, bool converting, string? recoveryKey, CancellationToken ct)
     {
         var plain = JsonSerializer.Deserialize<SyncPair>(JsonSerializer.Serialize(pair))!;
         plain.Encrypted = false;
@@ -830,6 +871,37 @@ sealed class Bridge : IAsyncDisposable
                 await inner.DownloadAsync(n, file, ct);
                 return await File.ReadAllTextAsync(file, ct);
             }
+            if (!string.IsNullOrWhiteSpace(recoveryKey))
+            {
+                // With the recovery key: the vault's keys under a new passphrase (a new masterkey.cryptomator), and a new
+                // vault.cryptomator if that is missing too.
+                var keys = CryptomatorVault.FromRecoveryKey(recoveryKey) ?? throw new InvalidOperationException("That recovery key is mistyped (its checksum does not fit).");
+                if (string.IsNullOrEmpty(passphrase)) throw new InvalidOperationException("Choose a new passphrase for the vault.");
+                var vault = new CryptomatorVault(keys);
+                string config, id;
+                if (tree.TryGetValue(CryptomatorVault.VaultFile, out var existingConfig))
+                {
+                    config = await ReadAsync(existingConfig);
+                    if (!vault.Owns(config)) throw new InvalidOperationException("That recovery key does not belong to the vault in this folder.");
+                    id = CryptomatorVault.IdOf(config);
+                }
+                else
+                {
+                    if (tree.Keys.Any(k => !VaultConverter.IsVaultItem(k))) throw new InvalidOperationException("This folder holds files that are not a vault; the recovery key is for a vault folder.");
+                    (config, id) = CryptomatorVault.NewConfig(keys);
+                    await File.WriteAllTextAsync(file, config, ct);
+                    await inner.UploadNewAsync(file, CryptomatorVault.VaultFile, null, ct);
+                }
+                var master = await Task.Run(() => CryptomatorVault.Masterkey(keys, passphrase), ct);
+                await File.WriteAllTextAsync(file, master, ct);
+                if (tree.TryGetValue(CryptomatorVault.MasterkeyFile, out var oldMaster)) await inner.UploadUpdateAsync(file, oldMaster, ct);
+                else await inner.UploadNewAsync(file, CryptomatorVault.MasterkeyFile, null, ct);
+                CryptomatorVault.SaveKey(id, keys);
+                CryptomatorVault.SaveVaultFiles(id, master, config);
+                pair.VaultId = id;
+                _log.Info($"[{pair.Name}] vault {id} opened with the recovery key; it has a new passphrase now");
+                return;
+            }
             if (tree.TryGetValue(CryptomatorVault.VaultFile, out var configNode))
             {
                 var config = await ReadAsync(configNode);
@@ -841,8 +913,10 @@ sealed class Bridge : IAsyncDisposable
                 {
                     if (!tree.TryGetValue(CryptomatorVault.MasterkeyFile, out var masterNode))
                         throw new InvalidOperationException($"{CryptomatorVault.MasterkeyFile} is missing in this vault.");
-                    keys = await Task.Run(async () => CryptomatorVault.Unlock(await ReadAsync(masterNode), passphrase), ct)
+                    var master = await ReadAsync(masterNode);
+                    keys = await Task.Run(() => CryptomatorVault.Unlock(master, passphrase), ct)
                            ?? throw new InvalidOperationException("That is not the passphrase of this vault.");
+                    CryptomatorVault.SaveVaultFiles(id, master, config); // this computer's copies, to put back what goes missing
                 }
                 CryptomatorVault.CheckConfig(config, keys);
                 CryptomatorVault.SaveKey(id, keys);
@@ -868,6 +942,7 @@ sealed class Bridge : IAsyncDisposable
                 parent = await inner.CreateFolderAsync(built, parent, ct);
             }
             CryptomatorVault.SaveKey(newId, newKeys);
+            CryptomatorVault.SaveVaultFiles(newId, masterkey, vaultConfig);
             pair.VaultId = newId;
             _log.Info($"[{pair.Name}] created the Cryptomator vault {newId}");
         }
@@ -875,6 +950,36 @@ sealed class Bridge : IAsyncDisposable
         {
             try { File.Delete(file); } catch { }
         }
+    }
+
+    /// <summary>"Put back vault files": this computer's copies of vault.cryptomator and masterkey.cryptomator go to the other side.</summary>
+    private async Task<object> RestoreVaultFilesAsync(SyncPair pair)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var ct = cts.Token;
+        var keys = CryptomatorVault.LoadKey(pair.VaultId) ?? throw new InvalidOperationException("This computer does not have the vault's key.");
+        var vault = new CryptomatorVault(keys);
+        var (master, config) = CryptomatorVault.LoadVaultFiles(pair.VaultId!);
+        if (master == null) throw new InvalidOperationException($"This computer has no copy of {CryptomatorVault.MasterkeyFile}. Use 'Recover with recovery key' instead (it makes a new one, with a new passphrase).");
+        if (config == null || !vault.Owns(config)) config = CryptomatorVault.NewConfig(keys).Config;
+        await using var stores = new StoreFactory(_log, interactive: false);
+        var inner = await stores.CreatePlainAsync(pair, ct);
+        var tree = await inner.GetTreeAsync(_log, ct);
+        var file = Path.Combine(AppPaths.DataDir, "crypt-tmp", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        try
+        {
+            foreach (var (name, text) in new[] { (CryptomatorVault.MasterkeyFile, master), (CryptomatorVault.VaultFile, config) })
+            {
+                await File.WriteAllTextAsync(file, text, new System.Text.UTF8Encoding(false), ct);
+                if (tree.TryGetValue(name, out var node)) await inner.UploadUpdateAsync(file, node, ct);
+                else await inner.UploadNewAsync(file, name, null, ct);
+            }
+        }
+        finally { try { File.Delete(file); } catch { } }
+        _log.Info($"[{pair.Name}] put the vault files back on the other side from this computer's copies");
+        ActivityJournal.Add(pair, "restored", CryptomatorVault.MasterkeyFile + ", " + CryptomatorVault.VaultFile, -1, "put back from this computer's copies");
+        return new { ok = true };
     }
 
     private string? CheckLocal(SyncPair p, SyncPair? original)
