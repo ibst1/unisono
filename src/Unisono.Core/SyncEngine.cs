@@ -53,7 +53,10 @@ public sealed partial class SyncEngine
     private readonly string _root;
     private readonly SyncState _state;
     private readonly AppOptions _options;
-    private readonly IReadOnlyList<SyncPair> _others;
+    private IReadOnlyList<SyncPair> _others;
+
+    /// <summary>All pairs (for nested folders): replaced when the pair list changes while this engine keeps running.</summary>
+    public void SetOtherPairs(IReadOnlyList<SyncPair> pairs) => _others = pairs;
     private readonly HashSet<string> _warnedOnce = new(StringComparer.OrdinalIgnoreCase);
     private SyncScope _scope = null!;
     private HashSet<string> _ignoredBelow = new(StringComparer.OrdinalIgnoreCase);

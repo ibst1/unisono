@@ -48,6 +48,29 @@ public sealed class SyncHost : IAsyncDisposable
     private IDisposable? _lock;
     private volatile bool _paused;
     private volatile bool _forceOnce;
+    private volatile Config? _pendingConfig;
+
+    /// <summary>A pair's running parts: its engine, conversion, watchers and on-demand provider, kept across pair-list changes.</summary>
+    private sealed class Runtime
+    {
+        public PairStatus Status = null!;
+        public string Definition = "";
+        public SyncEngine? Engine;
+        public VaultConverter? Converter;
+        public readonly List<FileSystemWatcher> Watchers = new();
+        public HydrationProvider? Provider;
+        public int Changed = 1; // the watchers saw something since the pair's last cycle: scan the local folder
+
+        public void Dispose()
+        {
+            foreach (var w in Watchers) w.Dispose();
+            Watchers.Clear();
+            Provider?.Dispose();
+            Provider = null;
+        }
+    }
+
+    private static string DefinitionOf(SyncPair pair) => System.Text.Json.JsonSerializer.Serialize(pair);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _checkRequests = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, List<string>> _forget = new();
     private Task? _checkTask;
@@ -124,8 +147,19 @@ public sealed class SyncHost : IAsyncDisposable
     }
 
     /// <summary>(Re)starts with the given pairs. Throws when another process is already syncing this data dir.</summary>
+    /// <summary>
+    /// (Re)starts with the given pairs. While running and with the same settings, only what changed is restarted: new
+    /// and changed pairs start afresh (with a full pass), removed ones stop, the others keep their engines, watchers and
+    /// quiet cycles. Settings that apply to all pairs restart everything.
+    /// </summary>
     public async Task StartAsync(Config config)
     {
+        if (_loop is { IsCompleted: false } && System.Text.Json.JsonSerializer.Serialize(config.Options) == System.Text.Json.JsonSerializer.Serialize(_options))
+        {
+            _pendingConfig = config;
+            Nudge();
+            return;
+        }
         await StopAsync();
         _lock ??= SyncLock.TryAcquire()
                   ?? throw new InvalidOperationException("another Unisono is already syncing (the tray app or 'UnisonoCli run'); close it first");
@@ -168,11 +202,7 @@ public sealed class SyncHost : IAsyncDisposable
     private async Task LoopAsync(CancellationToken ct)
     {
         SetState(HostState.Starting);
-        var pairs = Pairs;
-        var engines = new SyncEngine?[pairs.Count];
-        var converters = new VaultConverter?[pairs.Count];
-        var watchers = new List<FileSystemWatcher>();
-        var providers = new List<HydrationProvider>();
+        var runtimes = new List<Runtime>();
         // Missed events (sleep, no network, another computer) need no replay: every cycle compares everything. What
         // matters is running one soon: at start (below), when the network is back and when Windows wakes up.
         System.Net.NetworkInformation.NetworkAvailabilityChangedEventHandler onNet = (_, e) => { if (e.IsAvailable) { _log.Debug("network available: syncing"); Nudge(); } };
@@ -197,31 +227,36 @@ public sealed class SyncHost : IAsyncDisposable
             if (current is { } c && c.Status != "syncing" && active.Any(t => t.Pair == c.Pair.Name)) Update(c, "syncing");
         };
         SyncActivity.Changed += onActivity;
-        // Per pair: the watchers saw something since its last cycle (1), so the next one scans the local folder.
-        var changed = new int[pairs.Count];
-        Array.Fill(changed, 1);
+        Runtime NewRuntime(PairStatus ps)
+        {
+            var rt = new Runtime { Status = ps, Definition = DefinitionOf(ps.Pair) };
+            Action mark = () => Interlocked.Exchange(ref rt.Changed, 1);
+            if (ps.Pair.OnDemand) rt.Provider = ServeOnDemand(ps, stores);
+            if (TryWatch(ps.Pair.LocalFullPath, attributes: ps.Pair.OnDemand, mark) is { } w) rt.Watchers.Add(w);
+            // A folder pair's other side is a folder too: watch it as well, so its changes come across at once.
+            // Network shares usually deliver these events; the full pass every few minutes covers the ones that do not.
+            if (ps.Pair.Kind == RemoteKind.Folder && TryWatch(ps.Pair.RemoteFullPath, attributes: false, mark) is { } rw) rt.Watchers.Add(rw);
+            return rt;
+        }
+        TimeSpan PollOf(List<Runtime> list) => TimeSpan.FromSeconds(list.Count == 0 ? 60 : Math.Max(5, list.Min(r => r.Status.Pair.PollSeconds)));
         try
         {
-            for (var i = 0; i < pairs.Count; i++)
-            {
-                var p = pairs[i];
-                var index = i;
-                Action mark = () => Interlocked.Exchange(ref changed[index], 1);
-                if (p.Pair.OnDemand) ServeOnDemand(p, stores, providers);
-                var w = TryWatch(p.Pair.LocalFullPath, attributes: p.Pair.OnDemand, mark);
-                if (w != null) watchers.Add(w);
-                // A folder pair's other side is a folder too: watch it as well, so its changes come across at once.
-                // Network shares usually deliver these events; the full pass every few minutes covers the ones that do not.
-                if (p.Pair.Kind == RemoteKind.Folder && TryWatch(p.Pair.RemoteFullPath, attributes: false, mark) is { } rw) watchers.Add(rw);
-            }
-            var poll = TimeSpan.FromSeconds(pairs.Count == 0 ? 60 : Math.Max(5, pairs.Min(p => p.Pair.PollSeconds)));
-            if (pairs.Count > 0)
-                _log.Info($"syncing {pairs.Count} pair(s), watching {watchers.Count} folder(s), polling every {poll.TotalSeconds:0}s");
+            foreach (var ps in Pairs) runtimes.Add(NewRuntime(ps));
+            var poll = PollOf(runtimes);
+            if (runtimes.Count > 0)
+                _log.Info($"syncing {runtimes.Count} pair(s), watching {runtimes.Sum(r => r.Watchers.Count)} folder(s), polling every {poll.TotalSeconds:0}s");
 
             var backoff = TimeSpan.Zero;
             var followUp = false; // files still being written were skipped: look again shortly
             while (!ct.IsCancellationRequested)
             {
+                // The pair list changed (a pair was added, edited or removed): keep what is unchanged.
+                if (Interlocked.Exchange(ref _pendingConfig, null) is { } config)
+                {
+                    runtimes = Reconcile(runtimes, config, NewRuntime);
+                    poll = PollOf(runtimes);
+                }
+                var pairs = runtimes.Select(r => r.Status).ToList();
                 TimeSpan wait;
                 var autoPause = _paused || _forceOnce ? null : SafeAutoPause();
                 if (autoPause != PausedBecause)
@@ -250,7 +285,9 @@ public sealed class SyncHost : IAsyncDisposable
                     followUp = false;
                     for (var i = 0; i < pairs.Count; i++)
                     {
+                        if (_pendingConfig != null) { followUp = true; break; } // the pair list changed: take it in first
                         var ps = pairs[i];
+                        var rt = runtimes[i];
                         if (i > 0 && pairs[i - 1].Running) { pairs[i - 1].Running = false; Update(pairs[i - 1], pairs[i - 1].Status); }
                         for (var j = i + 1; j < pairs.Count; j++) { pairs[j].WaitingFor = ps.Pair.Name; Update(pairs[j], pairs[j].Status); }
                         ps.WaitingFor = null;
@@ -263,26 +300,27 @@ public sealed class SyncHost : IAsyncDisposable
                             {
                                 // Turning an existing pair into an encrypted one: turns of copying instead of cycles.
                                 var decrypt = VaultConverter.PendingDecrypt(ps.Pair);
-                                converters[i] ??= new VaultConverter(ps.Pair, await stores.CreatePlainAsync(ps.Pair, ct), await stores.CreateVaultAsync(ps.Pair, ct), _log, decrypt);
-                                var finished = await converters[i]!.RunAsync(pairs.Count > 1 ? TurnLength : null, s => Update(ps, s), ct);
+                                rt.Converter ??= new VaultConverter(ps.Pair, await stores.CreatePlainAsync(ps.Pair, ct), await stores.CreateVaultAsync(ps.Pair, ct), _log, decrypt);
+                                var finished = await rt.Converter.RunAsync(pairs.Count > 1 ? TurnLength : null, s => Update(ps, s), ct);
                                 if (!finished) { followUp = true; continue; }
-                                converters[i] = null;
-                                engines[i] = null; // starts afresh from the new state
+                                rt.Converter = null;
+                                rt.Engine = null; // starts afresh from the new state
                                 Update(ps, "in sync");
                                 try { Converted?.Invoke(ps); } catch { }
                             }
                             if (ps.Status != "in sync") Update(ps, "syncing");
-                            engines[i] ??= new SyncEngine(await stores.CreateAsync(ps.Pair, ct), ps.Pair, _log, pairs.Select(x => x.Pair).ToList(), _options);
+                            rt.Engine ??= new SyncEngine(await stores.CreateAsync(ps.Pair, ct), ps.Pair, _log, pairs.Select(x => x.Pair).ToList(), _options);
+                            var engine = rt.Engine;
                             // With other pairs to serve, a long job (thousands of uploads) is done in turns of a few minutes.
-                            engines[i]!.TimeBudget = pairs.Count > 1 ? TurnLength : null;
-                            engines[i]!.LocalChanged = Interlocked.Exchange(ref changed[i], 0) == 1;
+                            engine.TimeBudget = pairs.Count > 1 ? TurnLength : null;
+                            engine.LocalChanged = Interlocked.Exchange(ref rt.Changed, 0) == 1;
                             if (_forget.TryRemove(ps.Pair.Id, out var forget))
                             {
-                                engines[i]!.Forget(forget);
+                                engine.Forget(forget);
                                 _log.Info($"[{ps.Pair.Name}] {forget.Count} file(s) will be compared afresh; differing versions are both kept");
                             }
-                            var stats = await engines[i]!.RunCycleAsync(ct);
-                            followUp |= engines[i]!.NeedsFollowUp;
+                            var stats = await engine.RunCycleAsync(ct);
+                            followUp |= engine.NeedsFollowUp;
                             ps.LastStats = stats;
                             ps.NeedsPassphrase = false;
                             ps.VaultGone = false;
@@ -295,12 +333,12 @@ public sealed class SyncHost : IAsyncDisposable
                             if (stats.Frequent.Count > 0)
                                 lock (ps.Frequent) ps.Frequent.AddRange(stats.Frequent.Where(f => !ps.Frequent.Contains(f, StringComparer.OrdinalIgnoreCase)));
                             CycleCompleted?.Invoke(ps, stats);
-                            MaybeStartCheck(ps, engines[i]!, ct);
-                            ps.Versions = engines[i]!.BackupVersions();
+                            MaybeStartCheck(ps, engine, ct);
+                            ps.Versions = engine.BackupVersions();
                             if (_restores.TryGetValue(ps.Pair.Id, out var queue))
                                 while (queue.TryDequeue(out var r))
                                 {
-                                    try { r.Done.SetResult(await engines[i]!.RestoreAsync(r.Rel, ct)); followUp = true; }
+                                    try { r.Done.SetResult(await engine.RestoreAsync(r.Rel, ct)); followUp = true; }
                                     catch (Exception rex) { r.Done.SetException(rex); }
                                 }
                         }
@@ -308,8 +346,8 @@ public sealed class SyncHost : IAsyncDisposable
                         catch (Exception ex)
                         {
                             ok = false;
-                            Interlocked.Exchange(ref changed[i], 1); // scan again next time
-                            if (ps.Pair.Kind == RemoteKind.Synology) { engines[i] = null; stores.Forget(ps.Pair); }
+                            Interlocked.Exchange(ref rt.Changed, 1); // scan again next time
+                            if (ps.Pair.Kind == RemoteKind.Synology) { rt.Engine = null; stores.Forget(ps.Pair); }
                             ps.LastError = ex.Message;
                             ps.NeedsPassphrase = ex is VaultFoundException;
                             ps.VaultGone = ex is VaultGoneException;
@@ -346,8 +384,7 @@ public sealed class SyncHost : IAsyncDisposable
         finally
         {
             SyncActivity.Changed -= onActivity;
-            foreach (var w in watchers) w.Dispose();
-            foreach (var p in providers) p.Dispose();
+            foreach (var rt in runtimes) rt.Dispose();
             System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged -= onNet;
             System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= onAddr;
             try { Microsoft.Win32.SystemEvents.PowerModeChanged -= onPower; } catch { }
@@ -358,7 +395,7 @@ public sealed class SyncHost : IAsyncDisposable
     /// Registers a files-on-demand pair's folder and answers Windows when an online-only file in it is opened. A problem
     /// here (folder inside OneDrive, ...) is reported on the pair; its cycles then fail with the same explanation.
     /// </summary>
-    private void ServeOnDemand(PairStatus ps, StoreFactory stores, List<HydrationProvider> providers)
+    private HydrationProvider? ServeOnDemand(PairStatus ps, StoreFactory stores)
     {
         var pair = ps.Pair;
         try
@@ -367,7 +404,7 @@ public sealed class SyncHost : IAsyncDisposable
             if (!CloudFiles.IsRegistered(pair)) CloudFiles.Register(pair);
             IRemoteStore? store = null;
             var gate = new SemaphoreSlim(1, 1);
-            providers.Add(HydrationProvider.Connect(pair.LocalFullPath, async (rel, identity, size, ct) =>
+            return HydrationProvider.Connect(pair.LocalFullPath, async (rel, identity, size, ct) =>
             {
                 await gate.WaitAsync(ct);
                 try { store ??= await stores.CreateAsync(pair, ct); }
@@ -383,13 +420,53 @@ public sealed class SyncHost : IAsyncDisposable
                 }
                 catch { store = null; throw; } // e.g. a NAS session the sync loop has replaced: reconnect next time
                 return tmp;
-            }, _log, pair.Name));
+            }, _log, pair.Name);
         }
         catch (Exception ex)
         {
             ps.LastError = ex.Message;
             _log.Error($"[{pair.Name}] files on demand: {ex.Message}");
+            return null;
         }
+    }
+
+    /// <summary>
+    /// Takes in a changed pair list between cycles: a pair whose definition is unchanged keeps its runtime (engine,
+    /// watchers, quiet cycles); new and changed pairs get a new one (a full pass first); removed ones are stopped.
+    /// </summary>
+    private List<Runtime> Reconcile(List<Runtime> old, Config config, Func<PairStatus, Runtime> create)
+    {
+        var lastRuns = LoadLastRuns();
+        var result = new List<Runtime>();
+        var kept = new HashSet<Runtime>();
+        foreach (var pair in config.Pairs)
+        {
+            var definition = DefinitionOf(pair);
+            var same = old.FirstOrDefault(r => !kept.Contains(r) && (ReferenceEquals(r.Status.Pair, pair) || r.Definition == definition));
+            if (same != null)
+            {
+                kept.Add(same);
+                result.Add(same);
+                continue;
+            }
+            // Changed or new. A changed pair keeps its status (last run, health) but starts afresh.
+            var previous = old.FirstOrDefault(r => !kept.Contains(r) && r.Status.Pair.Id == pair.Id);
+            var ps = new PairStatus { Pair = pair, LastSync = previous?.Status.LastSync ?? (lastRuns.TryGetValue(pair.Id, out var t) ? t : null),
+                LastChecked = previous?.Status.LastChecked ?? DateTime.Now, Status = previous?.Status.Status ?? "waiting" };
+            if (previous != null) { previous.Dispose(); kept.Add(previous); }
+            result.Add(create(ps));
+            _log.Info($"[{pair.Name}] {(previous != null ? "settings changed: starting this pair afresh" : "added")}");
+        }
+        foreach (var gone in old.Where(r => !kept.Contains(r)))
+        {
+            gone.Dispose();
+            _log.Info($"[{gone.Status.Pair.Name}] removed: no longer synced");
+        }
+        var all = result.Select(r => r.Status.Pair).ToList();
+        foreach (var r in result) r.Engine?.SetOtherPairs(all); // nested folders are worked out from the whole list
+        Pairs = result.Select(r => r.Status).ToList();
+        try { StateChanged?.Invoke(); } catch { }
+        return result;
     }
 
     private string? SafeAutoPause()
