@@ -63,6 +63,24 @@ public static class SyncActivity
         return new Tracker(t);
     }
 
+    // Changes that are no transfer (deleting, recycling, moving, creating folders) are quick one by one but can come by
+    // the hundred: each is noted here, so the app shows "syncing" while they go on.
+    private static long _lastChangeTicks, _lastChangeRaise;
+    private static string? _lastChangePair;
+
+    /// <summary>A change other than a transfer was just made for this pair (see <see cref="LastChange"/>).</summary>
+    public static void NoteChange(string pair)
+    {
+        _lastChangePair = pair;
+        Interlocked.Exchange(ref _lastChangeTicks, DateTime.UtcNow.Ticks);
+        var now = Environment.TickCount64;
+        var last = Interlocked.Read(ref _lastChangeRaise);
+        if (now - last >= 300 && Interlocked.CompareExchange(ref _lastChangeRaise, now, last) == last) Raise();
+    }
+
+    /// <summary>When the last change other than a transfer was made, and for which pair.</summary>
+    public static (DateTime Utc, string? Pair) LastChange => (new DateTime(Interlocked.Read(ref _lastChangeTicks), DateTimeKind.Utc), _lastChangePair);
+
     public static Snapshot Now()
     {
         lock (Active) return new Snapshot(Active.ToList(), _uploaded, _downloaded, _upBytes, _downBytes);

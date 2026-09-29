@@ -1240,7 +1240,9 @@ public sealed partial class SyncEngine
     /// <summary>Records a done action for the Activity view (not in a preview).</summary>
     private void Journal(string action, string rel, long size = -1, string? detail = null)
     {
-        if (!DryRun) ActivityJournal.Add(_pair, action, rel, size, detail);
+        if (DryRun) return;
+        ActivityJournal.Add(_pair, action, rel, size, detail);
+        SyncActivity.NoteChange(_pair.Name); // deletions, moves and the like show as syncing too, not only transfers
     }
 
     private void WarnOnce(string key, string message)

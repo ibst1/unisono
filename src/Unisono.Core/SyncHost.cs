@@ -224,14 +224,24 @@ public sealed class SyncHost : IAsyncDisposable
         PairStatus? current = null;
         var roundStartedIdle = false;
         var checkingRound = false;
-        Action onActivity = () =>
+        // Other changes (deleting, recycling, moving) count for ChangeHold after the last one, so a run of them shows as
+        // one stretch of syncing instead of flickering between files.
+        var changeHold = TimeSpan.FromSeconds(3);
+        var recheckQueued = 0;
+        Action? onActivity = null;
+        onActivity = () =>
         {
             if (!roundRunning) return; // an online-only file opened between rounds
             var active = SyncActivity.Now().Active;
-            // Transfers over while the round goes on with quiet checks: back to how the round began.
-            if (active.Count == 0) { if (roundStartedIdle && State == HostState.Syncing) SetState(checkingRound ? HostState.Checking : HostState.Idle); return; }
+            var (changedAt, changedPair) = SyncActivity.LastChange;
+            var changing = DateTime.UtcNow - changedAt < changeHold;
+            // Transfers and changes over while the round goes on with quiet checks: back to how the round began.
+            if (active.Count == 0 && !changing) { if (roundStartedIdle && State == HostState.Syncing) SetState(checkingRound ? HostState.Checking : HostState.Idle); return; }
             SetState(HostState.Syncing);
-            if (current is { } c && c.Status != "syncing" && active.Any(t => t.Pair == c.Pair.Name)) Update(c, "syncing");
+            if (current is { } c && c.Status != "syncing" && (active.Any(t => t.Pair == c.Pair.Name) || (changing && changedPair == c.Pair.Name))) Update(c, "syncing");
+            // Nothing announces the end of a run of changes: look again once the hold is over.
+            if (active.Count == 0 && Interlocked.Exchange(ref recheckQueued, 1) == 0)
+                _ = Task.Delay(changeHold + TimeSpan.FromMilliseconds(200)).ContinueWith(_ => { Interlocked.Exchange(ref recheckQueued, 0); onActivity!(); });
         };
         SyncActivity.Changed += onActivity;
         Runtime NewRuntime(PairStatus ps)

@@ -1,7 +1,8 @@
 # Builds Unisono as a single-file exe (framework-dependent: needs the .NET 8 Desktop Runtime, or a newer one;
 # -SelfContained bundles the runtime instead, for computers without it) and copies it to
 # %USERPROFILE%\Program\Unisono (a location unsigned exes may run from on
-# locked-down machines) and to dist\ next to this script.
+# locked-down machines) and to dist\ next to this script. When the environment variable UNISONO_COPY_TO names a folder
+# (e.g. one a cloud drive shares with other computers), the finished files are copied there as well.
 param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
@@ -58,3 +59,12 @@ foreach ($app in @(@{ Proj = "src\Unisono\Unisono.csproj"; Exe = "Unisono" }, @{
     if ($app.Exe -eq "Unisono") { Copy-Item (Join-Path $target "WebView2Loader.dll") $dist -Force }
 }
 Write-Host "Published Unisono.exe and UnisonoCli.exe to $target and $dist"
+if ($env:UNISONO_COPY_TO) {
+    New-Item -ItemType Directory -Force $env:UNISONO_COPY_TO | Out-Null
+    foreach ($f in "Unisono.exe", "UnisonoCli.exe", "WebView2Loader.dll") {
+        # A computer may run Unisono from there: a locked file is left for the next build rather than failing this one.
+        try { Copy-Item (Join-Path $dist $f) $env:UNISONO_COPY_TO -Force -ErrorAction Stop }
+        catch { Write-Host "note: could not copy $f to $($env:UNISONO_COPY_TO) ($_)" }
+    }
+    Write-Host "Copied them to $($env:UNISONO_COPY_TO) as well"
+}
