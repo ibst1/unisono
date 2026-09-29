@@ -348,12 +348,12 @@ public sealed class SyncHost : IAsyncDisposable
                             ok = false;
                             Interlocked.Exchange(ref rt.Changed, 1); // scan again next time
                             if (ps.Pair.Kind == RemoteKind.Synology) { rt.Engine = null; stores.Forget(ps.Pair); }
-                            ps.LastError = ex.Message;
+                            ps.LastError = Log.Text(ex);
                             ps.NeedsPassphrase = ex is VaultFoundException;
                             ps.VaultGone = ex is VaultGoneException;
-                            TrackHealth(ps, ex.Message);
+                            TrackHealth(ps, Log.Text(ex));
                             Update(ps, "failed");
-                            _log.Error($"[{ps.Pair.Name}] {ex.Message}");
+                            _log.Error($"[{ps.Pair.Name}] {Log.Text(ex)}");
                         }
                     }
                     // Network trouble: back off up to 5 minutes rather than hammering the servers.
@@ -424,8 +424,8 @@ public sealed class SyncHost : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            ps.LastError = ex.Message;
-            _log.Error($"[{pair.Name}] files on demand: {ex.Message}");
+            ps.LastError = Log.Text(ex);
+            _log.Error($"[{pair.Name}] files on demand: {Log.Text(ex)}");
             return null;
         }
     }

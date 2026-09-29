@@ -571,7 +571,7 @@ public sealed partial class SyncEngine
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
                 {
-                    lock (gate) { stats.Errors++; stats.LastErrorText = $"{rel}: {ex.Message}"; _log.Error($"[{_pair.Name}] {rel}: {ex.Message}"); }
+                    lock (gate) { stats.Errors++; stats.LastErrorText = $"{rel}: {Log.Text(ex)}"; _log.Error($"[{_pair.Name}] {rel}: {Log.Text(ex)}"); }
                 }
             });
     }
@@ -1198,7 +1198,7 @@ public sealed partial class SyncEngine
         catch (Exception ex)
         {
             stats.Errors++;
-            stats.LastErrorText = $"{rel}: {ex.Message}";
+            stats.LastErrorText = $"{rel}: {Log.Text(ex)}";
             _log.Error($"[{_pair.Name}] {rel}: {ex.Message}");
         }
     }

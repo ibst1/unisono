@@ -73,11 +73,25 @@ public static class CloudFiles
 
     /// <summary>
     /// Why a folder cannot hold files on demand, or null when it can: sync roots may not nest, so it must not lie inside
-    /// or contain OneDrive, Work Folders or any other provider's folder.
+    /// or contain OneDrive, Work Folders or any other provider's folder. And Windows keeps sync roots on local NTFS
+    /// volumes only: a network share (mapped drive or \\server\share) or a FAT/exFAT stick cannot hold them.
     /// </summary>
     public static string? WhyNot(string folder, SyncPair? self = null)
     {
-        var mine = WithSep(Path.GetFullPath(folder));
+        var full = Path.GetFullPath(folder);
+        var local = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Unisono");
+        if (full.StartsWith(@"\\", StringComparison.Ordinal))
+            return $"{folder} is on a network share. Windows keeps online-only files on this computer's own disks only; turn off files on demand for this pair or pick a local folder, e.g. {local}.";
+        try
+        {
+            var drive = new DriveInfo(Path.GetPathRoot(full)!);
+            if (drive.DriveType == DriveType.Network)
+                return $"{folder} is on a network drive ({drive.Name.TrimEnd('\\')}). Windows keeps online-only files on this computer's own disks only; turn off files on demand for this pair or pick a local folder, e.g. {local}.";
+            if (drive.IsReady && !drive.DriveFormat.Equals("NTFS", StringComparison.OrdinalIgnoreCase))
+                return $"{folder} is on a {drive.DriveFormat} drive. Windows keeps online-only files on NTFS drives only; turn off files on demand for this pair or pick a folder on another drive, e.g. {local}.";
+        }
+        catch (ArgumentException) { } // no drive letter: let registration tell
+        var mine = WithSep(full);
         var ownId = self == null ? null : SyncRootId(self);
         foreach (var (id, path) in RegisteredRoots())
         {

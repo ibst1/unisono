@@ -15,6 +15,10 @@ public sealed class Log
 
     public string Directory => _dir;
 
+    /// <summary>An exception's message, or its type and HRESULT when it has none (some Windows APIs throw without text).</summary>
+    public static string Text(Exception ex) =>
+        string.IsNullOrWhiteSpace(ex.Message) ? $"{ex.GetType().Name} (0x{ex.HResult:X8})" : ex.Message;
+
     public void Info(string message) => Write(LogLevel.Info, message, ConsoleColor.Gray);
     public void Warn(string message) => Write(LogLevel.Warn, message, ConsoleColor.Yellow);
     public void Error(string message) => Write(LogLevel.Error, message, ConsoleColor.Red);
