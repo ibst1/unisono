@@ -10,6 +10,8 @@ public sealed class PairStatus
     public DateTime? LastSync { get; set; }
     /// <summary>Files found to change very often, waiting for the user's choice (ignore or keep syncing). Lock it.</summary>
     public List<string> Frequent { get; } = new();
+    /// <summary>What Unisono suggests leaving out of syncing (see <see cref="IgnoreAdvisor"/>); replaced, never changed.</summary>
+    public List<IgnoreSuggestion> Suggestions { get; set; } = new();
     /// <summary>Since when cycles of this pair fail or leave items unsynced (null = the last one went through).</summary>
     public DateTime? TroubleSince { get; set; }
     public int TroubleCycles { get; set; }
@@ -60,6 +62,7 @@ public sealed class SyncHost : IAsyncDisposable
         public readonly List<FileSystemWatcher> Watchers = new();
         public HydrationProvider? Provider;
         public int Changed = 1; // the watchers saw something since the pair's last cycle: scan the local folder
+        public int SuggestionsVersion; // the engine's suggestions last copied to the status
 
         public void Dispose()
         {
@@ -88,6 +91,10 @@ public sealed class SyncHost : IAsyncDisposable
 
     /// <summary>Check this pair's content soon (after its next cycle).</summary>
     public void RequestCheck(string pairId) { _checkRequests[pairId] = true; Nudge(); }
+
+    /// <summary>Work out this pair's ignore suggestions afresh in its next cycle (after the user chose some).</summary>
+    public void SuggestAgain(string pairId) { _suggestAgain[pairId] = true; Nudge(); }
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _suggestAgain = new();
 
     /// <summary>Forget the sync history of these files before the pair's next cycle (see <see cref="SyncEngine.Forget"/>).</summary>
     public void ForgetHistory(string pairId, IEnumerable<string> rels)
@@ -314,6 +321,7 @@ public sealed class SyncHost : IAsyncDisposable
                             // With other pairs to serve, a long job (thousands of uploads) is done in turns of a few minutes.
                             engine.TimeBudget = pairs.Count > 1 ? TurnLength : null;
                             engine.LocalChanged = Interlocked.Exchange(ref rt.Changed, 0) == 1;
+                            if (_suggestAgain.TryRemove(ps.Pair.Id, out _)) { engine.SuggestAgain(); engine.LocalChanged = true; }
                             if (_forget.TryRemove(ps.Pair.Id, out var forget))
                             {
                                 engine.Forget(forget);
@@ -332,6 +340,11 @@ public sealed class SyncHost : IAsyncDisposable
                             TrackHealth(ps, stats.Errors > 0 ? $"{stats.Errors} item(s) could not be synced, e.g. {stats.LastErrorText}" : null);
                             if (stats.Frequent.Count > 0)
                                 lock (ps.Frequent) ps.Frequent.AddRange(stats.Frequent.Where(f => !ps.Frequent.Contains(f, StringComparer.OrdinalIgnoreCase)));
+                            if (engine.SuggestionsVersion != rt.SuggestionsVersion)
+                            {
+                                rt.SuggestionsVersion = engine.SuggestionsVersion;
+                                ps.Suggestions = engine.Suggestions;
+                            }
                             CycleCompleted?.Invoke(ps, stats);
                             MaybeStartCheck(ps, engine, ct);
                             ps.Versions = engine.BackupVersions();

@@ -52,6 +52,9 @@ public sealed class SyncState
     /// <summary>Encrypted pairs: the small vault files already read (directory ids, long names), by remote id + date + size.</summary>
     public Dictionary<string, string> VaultFiles { get; set; } = new();
 
+    /// <summary>Ignore patterns already suggested with a tray notice (see <see cref="IgnoreAdvisor"/>), so each is told once.</summary>
+    public List<string> SuggestNotified { get; set; } = new();
+
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = false };
 
     public static string FilePathFor(SyncPair pair) => System.IO.Path.Combine(AppPaths.DataDir, "state", pair.Id + ".json");

@@ -326,7 +326,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     <div class="help">Kept in the file <span class="mono">.unisonoignore</span> at the top of the local folder, so the patterns sync with it and apply on every computer that syncs this folder.
       On top of the patterns in Settings and any <span class="mono">.unisonoignore</span> in subfolders. Ignored items are never touched on either side.</div>
     <div class="help" id="pairFreqRow" hidden>Kept syncing although they change very often (no warnings): <span class="mono" id="pairFreqList"></span>
-      <a class="path" id="pairFreqClear">Warn again</a></div></div>  <div class="field"><label>Check remote every</label>
+      <a class="path" id="pairFreqClear">Warn again</a></div>
+    <div class="help" id="pairSugRow" hidden>Kept syncing although Unisono suggested ignoring them: <span class="mono" id="pairSugList"></span>
+      <a class="path" id="pairSugClear">Suggest again</a></div></div>  <div class="field"><label>Check remote every</label>
     <div class="inline"><input type="number" id="pairPoll" min="10" max="3600" style="width:110px"> <span class="muted small" id="pairPollHelp">seconds; local changes are picked up at once</span></div></div>
   <div id="pairMsg"></div>
   <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="pairSave">Save</button></div>
@@ -383,6 +385,15 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     <input type="password" id="recPass2" class="grow" placeholder="the same again" autocomplete="new-password"></div>
   <div id="recMsg"></div>
   <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="recOk">Recover</button></div>
+</div></div>
+
+<div class="modal" id="dlgSuggest"><div class="dialog" style="width:min(860px,100%)">
+  <h3 id="sugTitle">Leave out of syncing?</h3>
+  <div class="small muted" style="margin-bottom:10px">These look like files that need not sync: they can be rebuilt, are temporary, or come and go in bulk.
+    Checked patterns go into the pair's <span class="mono">.unisonoignore</span>; unchecked ones keep syncing and are not suggested again.
+    Items already on the other side stay there, untouched; ignored items are simply no longer synced.</div>
+  <div class="plan" id="sugList"></div>
+  <div class="actions"><button class="btn" data-close>Later</button><button class="btn" id="sugKeepAll">Keep syncing all</button><button class="btn primary" id="sugOk">Ignore checked</button></div>
 </div></div>
 
 <div class="modal" id="dlgConfirm"><div class="dialog">
@@ -621,6 +632,7 @@ function renderPairs() {
         <span class="grow"><span class="mono">${esc(f)}</span> changes very often (${6} times or more within an hour). Logs and status files like this are usually better left out of syncing.</span>
         <button class="btn" data-freq="ignore" data-fpair="${esc(p.id)}" data-frel="${esc(f)}">Ignore it</button>
         <button class="btn" data-freq="keep" data-fpair="${esc(p.id)}" data-frel="${esc(f)}" title="No more warnings for this file">Keep syncing</button></div>`).join("")}
+      ${sugNote(p)}
     </div>`;
   }).join("") : `<div class="empty">No sync pairs yet. Add an account first, then a pair.</div>`;
   document.querySelectorAll("[data-openpair]").forEach(a => a.onclick = () => call("open", { what: "pair", id: a.dataset.openpair }));
@@ -643,11 +655,42 @@ function renderPairs() {
   document.querySelectorAll("[data-freq]").forEach(b => b.onclick = () =>
     call("pair.frequent", { id: b.dataset.fpair, rel: b.dataset.frel, action: b.dataset.freq })
       .then(() => toast(b.dataset.freq === "ignore" ? "Added to .unisonoignore" : "Kept syncing; no more warnings for it")).catch(e => toast(e.message, true)));
+  document.querySelectorAll("[data-sugpair]").forEach(b => b.onclick = () => suggestDialog(S.pairs.find(p => p.id === b.dataset.sugpair)));
   document.querySelectorAll("[data-rmpair]").forEach(b => b.onclick = async () => {
     const p = S.pairs.find(x => x.id === b.dataset.rmpair);
     if (!await confirmBox("Remove sync pair", [`Stop syncing ${remoteLabel(p).path} with ${p.localPath}? No files are deleted on either side.`])) return;
     call("pair.remove", { id: p.id }).catch(e => toast(e.message, true));
   });
+}
+
+const sugSize = n => n >= 1073741824 ? (n / 1073741824).toFixed(1) + " GB" : n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+const SUGKIND = { build: "build output", gitignore: "files a .gitignore leaves out", junk: "temporary files", churn: "files created and deleted in bulk" };
+function sugNote(p) {
+  const groups = p.suggestions || []; if (!groups.length) return "";
+  const all = groups.flatMap(g => g.patterns), pats = all.filter(x => x.recommended);
+  const kinds = [...new Set(groups.filter(g => g.patterns.some(x => x.recommended)).map(g => SUGKIND[g.kind.split(":")[0]]))].join(", ");
+  const more = all.length - pats.length ? `${pats.length ? "; " : ""}${all.length - pats.length} more to consider` : "";
+  return `<div class="note warn inline" style="margin-bottom:0"><span class="grow">${pats.length ? `Unisono suggests leaving ${pats.reduce((a, x) => a + x.files, 0)} files
+    (${sugSize(pats.reduce((a, x) => a + x.bytes, 0))}) out of syncing: ${esc(kinds)}` : "Unisono found items that may need not sync"}${more}.</span>
+    <button class="btn" data-sugpair="${esc(p.id)}">Review</button></div>`;
+}
+function suggestDialog(p) {
+  $("#sugTitle").textContent = "Leave out of syncing? " + p.localPath;
+  $("#sugList").innerHTML = (p.suggestions || []).map(g => `<div style="margin:8px 0 4px;font-weight:600">${esc(g.title)}</div>` + g.patterns.map(x => `
+    <label class="row small" style="gap:8px;align-items:flex-start;padding:3px 0"><input type="checkbox" data-sugpat="${esc(x.pattern)}" ${x.recommended ? "checked" : ""}>
+      <span class="grow"><span class="mono">${esc(x.pattern)}</span> <span class="muted">&middot; ${x.files} file(s), ${sugSize(x.bytes)} &middot; ${esc(x.note)}</span>
+      <br><span class="muted mono">e.g. ${esc(x.example)}</span></span></label>`).join("")).join("");
+  const answer = all => {
+    const boxes = [...document.querySelectorAll("#sugList [data-sugpat]")];
+    const ignore = all ? [] : boxes.filter(b => b.checked).map(b => b.dataset.sugpat);
+    const keep = boxes.filter(b => all || !b.checked).map(b => b.dataset.sugpat);
+    closeModal("#dlgSuggest");
+    call("pair.suggest", { id: p.id, ignore, keep })
+      .then(() => toast(ignore.length ? `${ignore.length} pattern(s) added to .unisonoignore` : "Kept syncing; not suggested again")).catch(e => toast(e.message, true));
+  };
+  $("#sugOk").onclick = () => answer(false);
+  $("#sugKeepAll").onclick = () => answer(true);
+  openModal("#dlgSuggest");
 }
 
 async function versionsDialog(p, query) {
@@ -801,6 +844,7 @@ function pairDialog(p) {
   $("#pairPass").value = ""; $("#pairPass2").value = ""; $("#pairUseRecovery").checked = false; $("#pairRecovery").value = ""; $("#pairPassHint").hidden = true;
   syncCrypt();
   frequentOk = p ? [...(p.frequentOk || [])] : []; renderFrequentOk();
+  suggestOk = p ? [...(p.suggestOk || [])] : []; renderSuggestOk();
   if (p) loadIgnoreFile(p.localPath, p.id);
   scope = { include: p ? [...p.includeFolders] : [], exclude: p ? [...p.excludeFolders] : [] };
   renderScopeText();
@@ -892,6 +936,9 @@ $("#conflictRefresh").onclick = conflictsDialog;
 let frequentOk = [];
 function renderFrequentOk() { $("#pairFreqRow").hidden = !frequentOk.length; $("#pairFreqList").textContent = frequentOk.join(", "); }
 $("#pairFreqClear").onclick = () => { frequentOk = []; renderFrequentOk(); };
+let suggestOk = [];
+function renderSuggestOk() { $("#pairSugRow").hidden = !suggestOk.length; $("#pairSugList").textContent = suggestOk.join(", "); }
+$("#pairSugClear").onclick = () => { suggestOk = []; renderSuggestOk(); };
 $("#pairPickLocal").onclick = async () => { const r = await call("pickLocal", { current: $("#pairLocal").value }); if (r) { $("#pairLocal").value = r; checkOnDemandPlace(); loadIgnoreFile(r); } };
 $("#pairLocal").addEventListener("change", () => loadIgnoreFile($("#pairLocal").value));
 $("#pairIgnore").addEventListener("input", () => $("#pairIgnore").dataset.dirty = "1");
@@ -1020,7 +1067,7 @@ function pairFromForm() {
   const [server, user] = nas ? ($("#pairAcct").value || "|").split("|") : [null, null];
   return {
     includeFolders: scope.include, excludeFolders: scope.exclude,
-    direction: $("#pairDirection").value, onDemand: $("#pairOnDemand").checked, ignorePatterns: $("#pairIgnore").value, frequentOk,
+    direction: $("#pairDirection").value, onDemand: $("#pairOnDemand").checked, ignorePatterns: $("#pairIgnore").value, frequentOk, suggestOk,
     encrypted: $("#pairEncrypt").checked, passphrase: $("#pairPass").value,
     recoveryKey: $("#pairUseRecovery").checked ? $("#pairRecovery").value : "",
     kind: pairKind, account: nas || folder ? null : $("#pairAcct").value, server, user,

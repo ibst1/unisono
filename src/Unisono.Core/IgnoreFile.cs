@@ -34,13 +34,21 @@ public static class IgnoreFile
     public static string AddItem(string localFullPath, string rel, bool isDir)
     {
         var pattern = "/" + rel.Replace('\\', '/').Trim('/').Replace("[", "[[]") + (isDir ? "/" : "");
+        AddPatterns(localFullPath, new[] { pattern });
+        return pattern;
+    }
+
+    /// <summary>Adds the patterns the file does not have yet, after a comment line when given; returns those added.</summary>
+    public static List<string> AddPatterns(string localFullPath, IEnumerable<string> patterns, string? comment = null)
+    {
         var current = Read(localFullPath);
         var lines = current.Length == 0 ? new List<string>() : current.Split('\n').ToList();
-        if (!lines.Any(l => l.Trim().Equals(pattern, StringComparison.OrdinalIgnoreCase)))
-        {
-            lines.Add(pattern);
-            Write(localFullPath, string.Join("\n", lines));
-        }
-        return pattern;
+        var added = patterns.Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(p => !lines.Any(l => l.Trim().Equals(p, StringComparison.OrdinalIgnoreCase))).ToList();
+        if (added.Count == 0) return added;
+        if (comment != null) lines.Add("# " + comment);
+        lines.AddRange(added);
+        Write(localFullPath, string.Join("\n", lines));
+        return added;
     }
 }

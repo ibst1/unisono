@@ -104,6 +104,7 @@ sealed class Bridge : IAsyncDisposable
                 _pushState();
                 return null;
             }
+            case "pair.suggest": return SuggestChoice(Str(p, "id"), Patterns(p, "ignore"), Patterns(p, "keep"));
             case "pair.frequent": return FrequentChoice(Str(p, "id"), Str(p, "rel") ?? "", Str(p, "action"));
             case "pair.ignoreFile": return ReadIgnoreFile(Str(p, "localPath"), Str(p, "id") is { } iid ? Config.Pairs.FirstOrDefault(x => x.Id == iid) : null);
             case "ondemand.check":
@@ -339,6 +340,7 @@ sealed class Bridge : IAsyncDisposable
             lastSync = st?.LastSync is { } ls ? ls.ToString(ls.Date == DateTime.Today ? "HH:mm:ss" : "d MMM HH:mm") : null,
             lastResult = st?.LastError ?? Summary(st?.LastStats), failed = st?.LastError != null,
             frequent = st == null ? new List<string>() : Locked(st.Frequent), frequentOk = p.FrequentOk, health = st?.Health,
+            suggestions = Suggestions(p, st), suggestOk = p.SuggestOk,
             encrypted = p.Encrypted, keyHere = !p.Encrypted || CryptomatorVault.LoadKey(p.VaultId) != null,
             needsPassphrase = st?.NeedsPassphrase ?? false, vaultGone = st?.VaultGone ?? false, converting = VaultConverter.Pending(p),
             decrypting = VaultConverter.Pending(p) && VaultConverter.PendingDecrypt(p),
@@ -640,6 +642,7 @@ sealed class Bridge : IAsyncDisposable
         pair.IncludeFolders = StrList(d, "includeFolders");
         pair.ExcludeFolders = StrList(d, "excludeFolders");
         if (d.TryGetProperty("frequentOk", out _)) pair.FrequentOk = StrList(d, "frequentOk");
+        if (d.TryGetProperty("suggestOk", out _)) pair.SuggestOk = Patterns(d, "suggestOk");
         pair.PollSeconds = Math.Clamp(d.TryGetProperty("pollSeconds", out var ps) && ps.TryGetInt32(out var pv) ? pv : 60, 10, 3600);
         if (pair.Kind == RemoteKind.Folder)
         {
@@ -805,6 +808,41 @@ sealed class Bridge : IAsyncDisposable
     }
 
     private static List<string> Locked(List<string> list) { lock (list) return list.ToList(); }
+
+    /// <summary>The pair's ignore suggestions still open: without those the user has answered since they were worked out.</summary>
+    private static object Suggestions(SyncPair p, PairStatus? st)
+    {
+        if (st == null) return Array.Empty<object>();
+        var answered = new HashSet<string>(p.SuggestOk, StringComparer.OrdinalIgnoreCase);
+        try { foreach (var l in IgnoreFile.Read(p.LocalFullPath).Split('\n')) answered.Add(l.Trim()); } catch { }
+        return st.Suggestions
+            .Select(s => new { kind = s.Kind, title = s.Title, patterns = s.Patterns.Where(x => !answered.Contains(x.Pattern)).Select(x => new
+            {
+                pattern = x.Pattern, files = x.Files, bytes = x.Bytes, example = x.Example, note = x.Note, recommended = x.Recommended,
+            }).ToList() })
+            .Where(s => s.patterns.Count > 0).ToList();
+    }
+
+    /// <summary>The user's answer to the ignore suggestions: patterns into the pair's .unisonoignore, the others kept syncing.</summary>
+    private object? SuggestChoice(string? id, List<string> ignore, List<string> keep)
+    {
+        var pair = FindPair(id);
+        if (ignore.Count > 0)
+        {
+            var added = IgnoreFile.AddPatterns(pair.LocalFullPath, ignore, $"suggested by Unisono {DateTime.Now:yyyy-MM-dd}");
+            if (added.Count > 0) _log.Info($"[{pair.Name}] now ignored (suggested): {string.Join(", ", added)}");
+        }
+        var kept = keep.Where(k => !pair.SuggestOk.Contains(k, StringComparer.OrdinalIgnoreCase)).ToList();
+        if (kept.Count > 0)
+        {
+            pair.SuggestOk.AddRange(kept);
+            Config.Save();
+            _log.Info($"[{pair.Name}] kept syncing (not suggested again): {string.Join(", ", kept)}");
+        }
+        _host.SuggestAgain(pair.Id);
+        _pushState();
+        return null;
+    }
 
     /// <summary>The user's answer to "this file changes very often": add it to the pair's .unisonoignore, or keep syncing it.</summary>
     private object? FrequentChoice(string? id, string rel, string? action)
@@ -1081,6 +1119,12 @@ sealed class Bridge : IAsyncDisposable
     private static List<string> StrList(JsonElement e, string name) =>
         e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Array
             ? v.EnumerateArray().Select(x => (x.GetString() ?? "").Replace('\\', '/').Trim('/')).Where(s => s.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            : new List<string>();
+
+    /// <summary>Ignore patterns as given: unlike <see cref="StrList"/>, leading and trailing slashes mean something.</summary>
+    private static List<string> Patterns(JsonElement e, string name) =>
+        e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Array
+            ? v.EnumerateArray().Select(x => (x.GetString() ?? "").Trim()).Where(s => s.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
             : new List<string>();
 
     private static string? Str(JsonElement e, string name) =>

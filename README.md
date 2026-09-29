@@ -53,6 +53,15 @@ pair then leaves that subfolder alone locally and remotely, so every file belong
   `.unisonoignore` files, which apply to their folder and below and sync to other computers.
   `*.log`, `__pycache__/`, `renv/library/`, `!keep.log`, `/only-at-this-level`. Ignored items
   are never touched on either side; a folder holding ignored items is never deleted as a whole.
+* **Ignore suggestions**: every 15 minutes or so each pair is looked over for items that probably
+  need not sync: build output next to the project file that rebuilds it (`bin/` and `obj/` beside a
+  `.csproj`, `node_modules/` beside `package.json`, `target/`, virtual environments...), what a
+  folder's own `.gitignore` leaves out, temporary, cache and log files, and folders whose files are
+  created and deleted in bulk. Nothing is ignored by itself: the pair's card says what was found and
+  Review lists the patterns, ticked when they are safe to drop (build output, caches, logs) and
+  unticked when they might be wanted on every computer (settings, keys, `dist/`). Ticked patterns go
+  into the pair's `.unisonoignore`; the rest keep syncing and are not suggested again (Edit > Suggest
+  again). The tray tells about new suggestions once. Contents of `.git` folders are never judged.
 * **Direction** per pair: two-way, *download only* (remote changes, deletions included, come
   here; nothing here goes up or is undone) or *upload only* (the reverse). In a one-way pair
   the source side wins where both changed; the replaced local file is kept as a version.

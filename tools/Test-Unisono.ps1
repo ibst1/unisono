@@ -353,7 +353,10 @@ function Test-Ui {
     # so both kinds of card are drawn.
     $c = Computer "ui" @{ Kind = "Drive"; RemotePath = "Unisono-tests-$stamp-ui"; Account = "nobody@example.invalid" }
     $cfg = Get-Content "$($c.Data)\config.json" -Raw | ConvertFrom-Json
-    $cfg.Pairs += [pscustomobject]@{ Kind = "Folder"; RemotePath = "$($c.Local)-other"; LocalPath = "$($c.Local)-2" }
+    $cfg.Pairs += [pscustomobject]@{ Kind = "Folder"; RemotePath = (New-TestDir "$($c.Local)-other"); LocalPath = (New-TestDir "$($c.Local)-2") }
+    # Build output in the folder pair, for the ignore suggestion card.
+    New-Item -ItemType Directory -Force "$($c.Local)-2\proj\bin" | Out-Null
+    Set-Content "$($c.Local)-2\proj\App.csproj" "<Project />"; Set-Content "$($c.Local)-2\proj\bin\App.dll" "binary"
     $cfg | ConvertTo-Json -Depth 6 | Set-Content "$($c.Data)\config.json" -Encoding UTF8
     Use-Data $c.Data; $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9339"
     $p = Start-Process $app -PassThru; Start-Sleep 15
@@ -377,6 +380,14 @@ function Test-Ui {
         Check "ui every part renders without errors" { $res.errors.Count -eq 0 }
         Check "ui the scratch pairs are listed" { $res.pairs -eq 2 }
         Check "ui stored accounts are listed" { ($res.google + $res.nas) -ge 1 }
+        $js = "(() => { const b = document.querySelector('[data-sugpair]'); if (!b) return 'no card'; b.click(); const n = document.querySelectorAll('#sugList [data-sugpat]:checked').length; document.querySelector('#sugOk').click(); return String(n); })()"
+        $msg = @{ id = 2; method = "Runtime.evaluate"; params = @{ expression = $js; returnByValue = $true } } | ConvertTo-Json -Depth 5 -Compress
+        $ws.SendAsync([ArraySegment[byte]][Text.Encoding]::UTF8.GetBytes($msg), 'Text', $true, [Threading.CancellationToken]::None).Wait()
+        $r = $ws.ReceiveAsync([ArraySegment[byte]]$buf, [Threading.CancellationToken]::None).Result
+        $sug = ([Text.Encoding]::UTF8.GetString($buf, 0, $r.Count) | ConvertFrom-Json).result.result.value
+        Check "ui build output is suggested on the pair's card, ticked" { $sug -eq "1" }
+        Start-Sleep 2
+        Check "ui ... and ""Ignore checked"" writes it to .unisonoignore" { (Get-Content -LiteralPath "$($c.Local)-2\.unisonoignore" -Raw -ErrorAction SilentlyContinue) -match "(?m)^/proj/bin/\r?$" }
     }
     catch { Check "ui debug connection" { $false } }
     finally { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue }
@@ -437,6 +448,16 @@ if ($Suite -contains "folder") {
         Set-Content -LiteralPath "$other\kept.txt" "changed on the other side"; (Get-Item -LiteralPath "$other\kept.txt").LastWriteTime = (Get-Date).AddMinutes(-1)
         $null = Sync $v
         Check "folder a replaced file is kept in the chosen versions folder" { @(Get-ChildItem $vdir -Recurse -File).Count -ge 1 -and -not (Test-Path "$($v.Data)\versions") }
+        Section "folder: ignore suggestions"
+        $s = Computer "folder-S" @{ Kind = "Folder"; RemotePath = (New-TestDir "$work\sug-other") }
+        Put $s "proj\App.csproj" "<Project />"; Put $s "proj\bin\App.dll" "binary"; Put $s "proj\obj\cache.json" "{}"; Put $s "run.log" "log"
+        Put $s "repo\.gitignore" "out/`nsecret.json`n"; Put $s "repo\out\gen.txt" "generated"; Put $s "repo\secret.json" "{}"; Put $s "repo\.git\logs\HEAD" "history"
+        $out = (Sync $s) -join "`n"
+        Check "folder build output, .gitignore entries and logs are suggested" { $out -match "suggests ignoring: .*/proj/bin/" -and $out -match "/proj/obj/" -and $out -match "\*\.log" -and $out -match "/repo/\*\*/out/" }
+        Check "folder ... but not what might be wanted, nor anything in .git" { $line = ($out -split "`n" | Where-Object { $_ -match "suggests ignoring" }) -join " "; $line -and $line -notmatch "secret\.json" -and $line -notmatch "\.git" }
+        Check "folder ... and nothing is ignored until the user chooses" { Test-Path -LiteralPath "$work\sug-other\proj\bin\App.dll" }
+        Put $s "proj\bin\App2.dll" "more"
+        Check "folder ... and each is told once" { ((Sync $s) -join "`n") -notmatch "suggests ignoring" }
     }
     finally { if (-not $KeepFiles -and $OtherFolder) { Wipe $other } }
 }

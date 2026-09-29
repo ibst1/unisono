@@ -179,6 +179,7 @@ public sealed partial class SyncEngine
         // The backup's versions folder is not part of the synced content, on either side.
         var remote = Visible(Without(remoteAll, IsInVersions), n => n.IsFolder, ignore);
         var local = Visible(Without(localAll, IsInVersions), i => i.IsDir, ignore);
+        Advise(local, stats);
         try
         {
             // Renames and moves first, so they are carried over as such instead of as a delete plus an upload.

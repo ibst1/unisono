@@ -122,6 +122,9 @@ public sealed class SyncPair
     /// <summary>Files (paths relative to the pair) the user keeps syncing although they change very often: no warning.</summary>
     public List<string> FrequentOk { get; set; } = new();
 
+    /// <summary>Ignore patterns Unisono suggested and the user chose to keep syncing: not suggested again.</summary>
+    public List<string> SuggestOk { get; set; } = new();
+
     /// <summary>Subfolders (relative to RemotePath) whose files stay cloud-only. Drive only.</summary>
     public List<string> CloudOnlyFolders { get; set; } = new();
 
