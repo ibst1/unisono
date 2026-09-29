@@ -7,3 +7,6 @@ dist/
 *.log
 # Probe reports are per machine and sync via OneDrive, not git.
 tools/probe-*.txt
+
+# OAuth clients of the Cloud Console project: kept in %LOCALAPPDATA%\Unisono, never in git.
+client_secret*.json
