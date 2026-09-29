@@ -135,7 +135,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 </head>
 <body>
 <header>
-  <div class="brand"><span class="dot" id="brandDot">U</span>Unisono</div>
+  <div class="brand"><span class="dot" id="brandDot">U</span>Unisono <span class="small muted mono" id="brandVersion" style="font-weight:400;margin-left:6px"></span></div>
   <div class="status"><span id="statusChip" class="chip">starting</span></div>
   <div class="spacer"></div>
   <button class="btn" id="btnSync">Sync now</button>
@@ -1201,6 +1201,7 @@ function renderSettings() {
   $("#verDirNote").textContent = S.options.versionsDefault ? "(default, in the settings folder)" : "";
   $("#verDirReset").hidden = S.options.versionsDefault;
   $("#version").textContent = "Unisono " + S.version;
+  $("#brandVersion").textContent = S.version.split("+")[0]; $("#brandVersion").title = "Unisono " + S.version;
   const o = S.options;
   if (document.activeElement !== $("#optKeep")) $("#optKeep").value = o.keepVersions;
   if (document.activeElement !== $("#optDays")) $("#optDays").value = o.keepVersionsDays;

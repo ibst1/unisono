@@ -365,7 +365,7 @@ try
                         if (dryRun) Console.WriteLine($"[{p.Name}] dry run: {engine.Plan.Count} action(s) planned, nothing changed");
                     }
                     catch (OperationCanceledException) { throw; }
-                    catch (Exception ex) { log.Error($"[{p.Name}] cycle failed: {ex.Message}"); failed++; }
+                    catch (Exception ex) { log.Error($"[{p.Name}] cycle failed: {Log.Text(ex)}"); log.Debug(ex.ToString()); failed++; }
                 }
                 return failed == 0 ? 0 : 1;
             }

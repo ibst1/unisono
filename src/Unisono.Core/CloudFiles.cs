@@ -40,7 +40,23 @@ public static class CloudFiles
 
     // -------------------------------------------------------------- registration
 
-    public static string SyncRootId(SyncPair pair) => $"Unisono!{WindowsIdentity.GetCurrent().User!.Value}!{pair.Id}";
+    /// <summary>
+    /// Windows refuses long sync root ids (0x8007007A or "value does not fall within the expected range" somewhere
+    /// between 99 and 214 characters), and a pair's id holds its whole remote path. Longer ids keep their hash and the
+    /// start of the readable part; shorter ones, i.e. every root registered so far, stay as they are.
+    /// </summary>
+    public const int MaxPairIdInSyncRoot = 44;
+
+    public static string SyncRootId(SyncPair pair)
+    {
+        var id = pair.Id;
+        if (id.Length > MaxPairIdInSyncRoot)
+        {
+            var hash = id[(id.LastIndexOf('-') + 1)..];
+            id = id[..(MaxPairIdInSyncRoot - hash.Length - 1)].TrimEnd('_') + "-" + hash;
+        }
+        return $"Unisono!{WindowsIdentity.GetCurrent().User!.Value}!{id}";
+    }
 
     /// <summary>Registers (or re-registers, which is harmless) the pair's local folder as a sync root.</summary>
     public static void Register(SyncPair pair)

@@ -228,6 +228,7 @@ sealed class HostForm : Form
         _trayPause.Click += (_, _) => { _host.Paused = !_host.Paused; UpdateTray(); QueueState(); };
         menu.Items.Add(_trayPause);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(new ToolStripMenuItem("Unisono " + Ui.Version) { Enabled = false });
         menu.Items.Add("Exit", null, (_, _) => { _exiting = true; Close(); });
         _tray.ContextMenuStrip = menu;
         _tray.Icon = IconFor(Ui.Grey);

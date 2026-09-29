@@ -479,6 +479,14 @@ if ($Suite -contains "folder") {
 if ($Suite -contains "ondemand") {
     $other = "$work\od-other"; New-TestDir $other | Out-Null
     Test-OnDemand @{ Kind = "Folder"; RemotePath = $other }
+    Section "ondemand: a pair with a very long remote path"
+    # The pair's id holds the whole remote path; Windows refuses long sync root ids.
+    $longOther = New-TestDir ("$work\" + ("long-remote-folder-name-" * 6))
+    Set-Content -LiteralPath "$longOther\far.txt" "far away"
+    $lp = Computer "od-long" @{ Kind = "Folder"; RemotePath = $longOther; OnDemand = $true }
+    $out = (Sync $lp) -join "`n"
+    try { Check "ondemand a long remote path still registers and syncs" { $out -notmatch "cycle failed" -and (Has $lp "far.txt") } }
+    finally { Use-Data $lp.Data; & $cli ondemand-off 2>&1 | Out-Null }
 }
 if ($Suite -contains "ui") { Test-Ui }
 
