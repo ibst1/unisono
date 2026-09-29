@@ -172,6 +172,7 @@ public sealed partial class SyncEngine
         }
         _lastRemoteFingerprint = fingerprint;
         _lastFullCycleUtc = DateTime.UtcNow;
+        await FetchIgnoreFilesAsync(remoteAll, stats, ct);
         var localAll = LocalScanner.Scan(_root, _log);
         var ignore = IgnoreRules.Build(_options, _pair, _root,
             localAll.Values.Where(i => !i.IsDir && PathUtil.NameOf(i.RelPath).Equals(IgnoreRules.FileName, StringComparison.OrdinalIgnoreCase)).Select(i => i.RelPath),
@@ -1111,6 +1112,33 @@ public sealed partial class SyncEngine
     }
 
     /// <summary>With a remote checksum, compare that; otherwise fall back to what the remote reports as size and modified time.</summary>
+    /// <summary>
+    /// The other side's .unisonoignore files come first, before anything is compared: on a new computer (or after
+    /// another computer changed them) the rules they hold must already apply to this cycle, or what they leave out
+    /// would be downloaded or uploaded before the rules arrived. Only files not changed here are fetched; the rest is
+    /// the ordinary file pass's (a conflict, both kept).
+    /// </summary>
+    private async Task FetchIgnoreFilesAsync(Dictionary<string, RemoteNode> remoteAll, CycleStats stats, CancellationToken ct)
+    {
+        if (!Down || DryRun) return;
+        foreach (var node in remoteAll.Values.Where(n => !n.IsFolder && PathUtil.NameOf(n.RelPath).Equals(IgnoreRules.FileName, StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(n => PathUtil.Depth(n.RelPath)).ToList())
+        {
+            if (_scope.Filter(new Dictionary<string, RemoteNode> { [node.RelPath] = node }, n => n.IsFolder).Count == 0) continue;
+            var path = Path.Combine(_root, node.RelPath.Replace('/', Path.DirectorySeparatorChar));
+            _state.Entries.TryGetValue(node.RelPath, out var s);
+            bool fetch;
+            if (!File.Exists(path)) fetch = s == null; // new there; one deleted here is the file pass's to carry over
+            else
+            {
+                if (s == null || RemoteUnchanged(node, s)) continue;
+                var fi = new FileInfo(path);
+                fetch = fi.Length == s.LocalSize && fi.LastWriteTimeUtc.Ticks == s.LocalMtimeTicks;
+            }
+            if (fetch) await Try(node.RelPath, stats, () => DownloadAsync(node, path, stats, "ignore rules first", ct, keep: true));
+        }
+    }
+
     private static bool RemoteUnchanged(RemoteNode node, StateEntry s) =>
         node.Md5 != null && s.Md5 != null
             ? string.Equals(node.Md5, s.Md5, StringComparison.OrdinalIgnoreCase)

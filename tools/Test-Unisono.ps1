@@ -461,6 +461,17 @@ if ($Suite -contains "folder") {
         Set-Content -LiteralPath "$other\kept.txt" "changed on the other side"; (Get-Item -LiteralPath "$other\kept.txt").LastWriteTime = (Get-Date).AddMinutes(-1)
         $null = Sync $v
         Check "folder a replaced file is kept in the chosen versions folder" { @(Get-ChildItem $vdir -Recurse -File).Count -ge 1 -and -not (Test-Path "$($v.Data)\versions") }
+        Section "folder: a new computer follows the ignore file from its first sync"
+        $io = New-TestDir "$work\ign-other"
+        $ia = Computer "folder-IA" @{ Kind = "Folder"; RemotePath = $io }
+        Put $ia "keep.txt" "synced"; Put $ia "cache\big.bin" "uploaded before it was ignored"
+        $null = Sync $ia
+        Put $ia ".unisonoignore" "cache/"; $null = Sync $ia
+        $ib = Computer "folder-IB" @{ Kind = "Folder"; RemotePath = $io }
+        Put $ib "cache\mine.bin" "the new computer's own cache"
+        $null = Sync $ib
+        Check "folder a new computer does not download what the ignore file leaves out" { (Has $ib "keep.txt") -and (Has $ib ".unisonoignore") -and -not (Has $ib "cache\big.bin") }
+        Check "folder ... nor upload it" { -not (Test-Path -LiteralPath "$io\cache\mine.bin") }
         Section "folder: ignore suggestions"
         $s = Computer "folder-S" @{ Kind = "Folder"; RemotePath = (New-TestDir "$work\sug-other") }
         Put $s "proj\App.csproj" "<Project />"; Put $s "proj\bin\App.dll" "binary"; Put $s "proj\obj\cache.json" "{}"; Put $s "run.log" "log"
