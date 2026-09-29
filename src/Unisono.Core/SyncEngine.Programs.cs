@@ -62,8 +62,7 @@ public sealed partial class SyncEngine
     {
         var self = Environment.ProcessPath != null && Path.GetFullPath(Environment.ProcessPath).Equals(Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase);
         _log.Info($"[{_pair.Name}] {rel} was running; its new version is in place and used from its next start");
-        stats.Notices.Add(self
-            ? "A new version of Unisono has arrived. Restart Unisono (Exit in the tray menu, then start it) to use it."
-            : $"{PathUtil.NameOf(rel)} was updated while it ran; the new version is used from its next start.");
+        // Unisono's own new version is announced by the tray app, which offers to restart into it.
+        if (!self) stats.Notices.Add($"{PathUtil.NameOf(rel)} was updated while it ran; the new version is used from its next start.");
     }
 }

@@ -9,7 +9,7 @@ namespace Unisono.App;
 /// The Unisono window: a WebView2 page (ui/index.html) for everything visible, plus what must stay native: the tray
 /// icon, the sync host, window placement and dialogs. Closing the window hides it; syncing continues until Exit.
 /// </summary>
-sealed class HostForm : Form
+sealed partial class HostForm : Form
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
@@ -230,6 +230,7 @@ sealed class HostForm : Form
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("Unisono " + Ui.Version) { Enabled = false });
         menu.Items.Add("Exit", null, (_, _) => { _exiting = true; Close(); });
+        SetUpUpdateCheck(menu);
         _tray.ContextMenuStrip = menu;
         _tray.Icon = IconFor(Ui.Grey);
         _tray.Text = "Unisono";

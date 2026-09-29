@@ -2,7 +2,8 @@ namespace Unisono.App;
 
 static class Program
 {
-    /// <summary>Unisono.exe [--tray]: the tray app. --tray starts with the window hidden (used by autostart).</summary>
+    /// <summary>Unisono.exe [--tray] [--after pid]: the tray app. --tray starts with the window hidden (used by autostart);
+    /// --after waits for that process (the version this one replaces) to exit first.</summary>
     [STAThread]
     static int Main(string[] args)
     {
@@ -23,6 +24,8 @@ static class Program
             ApplicationConfiguration.Initialize();
             return ShareForm.Run(args[1], args[2]);
         }
+        // A restart into a new version: the old one is still closing.
+        HostForm.WaitForPrevious(args);
         // One tray app per data dir. A second start just asks the running one to show its window.
         using var show = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\Unisono.Show." + SyncLock.Suffix, out var created);
         if (!created)
