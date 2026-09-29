@@ -451,9 +451,11 @@ if ($Suite -contains "folder") {
         Section "folder: ignore suggestions"
         $s = Computer "folder-S" @{ Kind = "Folder"; RemotePath = (New-TestDir "$work\sug-other") }
         Put $s "proj\App.csproj" "<Project />"; Put $s "proj\bin\App.dll" "binary"; Put $s "proj\obj\cache.json" "{}"; Put $s "run.log" "log"
+        Put $s "tool\Tool.csproj" "<Project />"; Put $s "tool\bin\Release\Tool.exe" "the only copy of a program"
         Put $s "repo\.gitignore" "out/`nsecret.json`n"; Put $s "repo\out\gen.txt" "generated"; Put $s "repo\secret.json" "{}"; Put $s "repo\.git\logs\HEAD" "history"
         $out = (Sync $s) -join "`n"
         Check "folder build output, .gitignore entries and logs are suggested" { $out -match "suggests ignoring: .*/proj/bin/" -and $out -match "/proj/obj/" -and $out -match "\*\.log" -and $out -match "/repo/\*\*/out/" }
+        Check "folder ... but not the only copy of a program" { $out -notmatch "/tool/bin/" }
         Check "folder ... but not what might be wanted, nor anything in .git" { $line = ($out -split "`n" | Where-Object { $_ -match "suggests ignoring" }) -join " "; $line -and $line -notmatch "secret\.json" -and $line -notmatch "\.git" }
         Check "folder ... and nothing is ignored until the user chooses" { Test-Path -LiteralPath "$work\sug-other\proj\bin\App.dll" }
         Put $s "proj\bin\App2.dll" "more"

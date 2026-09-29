@@ -202,7 +202,41 @@ public sealed class IgnoreAdvisor
         foreach (var dir in _churnFound.Keys.ToList())
             if (!dirs.Contains(dir) || Covered(dir) || skip.Contains(_churnFound[dir].Pattern)) _churnFound.Remove(dir);
         if (_churnFound.Count > 0) result.Add(new IgnoreSuggestion("churn", "Files created and deleted in bulk", _churnFound.Values.ToList()));
-        return result;
+        return KeepPrograms(result, files);
+    }
+
+    // Used only to build other programs: not what "keep every program" protects.
+    private static readonly HashSet<string> BuildTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "apphost.exe", "singlefilehost.exe", "createdump.exe", "testhost.exe", "testhost.x86.exe", "Ahk2Exe.exe",
+        "AutoHotkey32.exe", "AutoHotkey64.exe", "AutoHotkeyA32.exe", "AutoHotkeyU32.exe", "AutoHotkeyU64.exe",
+    };
+
+    /// <summary>
+    /// Runnable programs always sync, so they need not be rebuilt on every computer: a pattern that would hide the only
+    /// copy of a program (an .exe no other synced place has under the same name) is not ticked in advance.
+    /// </summary>
+    private static List<IgnoreSuggestion> KeepPrograms(List<IgnoreSuggestion> groups, List<LocalItem> files)
+    {
+        var exes = files.Where(f => f.RelPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && !BuildTools.Contains(PathUtil.NameOf(f.RelPath))).ToList();
+        if (exes.Count == 0) return groups;
+        var ticked = new IgnoreRules();
+        foreach (var p in groups.SelectMany(g => g.Patterns).Where(p => p.Recommended)) ticked.Add("", p.Pattern, "advisor");
+        var hidden = exes.Where(e => ticked.IsIgnored(e.RelPath, false)).ToList();
+        var onlyCopies = hidden.Where(h => !exes.Any(e => e != h && PathUtil.NameOf(e.RelPath).Equals(PathUtil.NameOf(h.RelPath), StringComparison.OrdinalIgnoreCase)
+            && !ticked.IsIgnored(e.RelPath, false))).ToList();
+        if (onlyCopies.Count == 0) return groups;
+        return groups.Select(g => g with
+        {
+            Patterns = g.Patterns.Select(p =>
+            {
+                if (!p.Recommended) return p;
+                var one = new IgnoreRules();
+                one.Add("", p.Pattern, "advisor");
+                var holds = onlyCopies.Where(e => one.IsIgnored(e.RelPath, false)).Select(e => PathUtil.NameOf(e.RelPath)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                return holds.Count == 0 ? p : p with { Recommended = false, Note = $"{p.Note}; holds {string.Join(", ", holds)}, the only copy of that program here" };
+            }).ToList(),
+        }).ToList();
     }
 
     private (int Added, int Removed) ChurnOf(string dir) =>
