@@ -7,7 +7,8 @@ namespace Unisono;
 /// <summary>
 /// Resolves a Synology QuickConnect ID to an address where the DSM API answers, the way DSM's own portal page does
 /// in the browser: ask Synology's directory (global.quickconnect.to/Serv.php) where the NAS is, probe the LAN,
-/// DDNS/FQDN, external and *.direct.quickconnect.to addresses, and fall back to Synology's relay.
+/// DDNS/FQDN, external and *.direct.quickconnect.to addresses, and fall back to Synology's relay - the tunnel relay
+/// first (TLS passes through to the NAS), then the HTTPS relay on port 443 for networks that block the tunnel's port.
 /// https://id.quickconnect.to itself only serves that HTML portal page, never the API.
 /// </summary>
 public static class QuickConnect
@@ -65,10 +66,35 @@ public static class QuickConnect
             }
             else if (terr != 0) trace?.Invoke($"QuickConnect '{id}': relay tunnel refused (errno {terr})");
         }
+        // Last: the HTTPS relay (https://ID.REGION.quickconnect.to), what the browser uses. It answers on port 443, which
+        // networks that block the tunnel's high port let through, but TLS ends at Synology's server: Synology could see
+        // the traffic. Only when nothing else answers; the caller is told (WebRelay).
+        if (WebRelay(id, info) is { } web)
+        {
+            trace?.Invoke($"QuickConnect '{id}': trying Synology's HTTPS relay {web}");
+            if (await probe(web, ct)) return web;
+            candidates.Add(web);
+        }
         throw new InvalidOperationException(
             $"QuickConnect found the NAS '{id}' but none of its addresses answered, not even through the relay ({string.Join(", ", candidates)}). " +
             "Check that QuickConnect is enabled with 'DSM' allowed under Advanced settings, or use a DDNS address with port 5001 forwarded.");
     }
+
+    /// <summary>
+    /// Synology's HTTPS relay for this NAS: https://ID.REGION.quickconnect.to, the region from env.relay_region or the
+    /// tunnel relay's name (synr-fr3.ID... gives fr3).
+    /// </summary>
+    private static string? WebRelay(string id, JsonElement info)
+    {
+        var region = info.TryGetProperty("env", out var env) ? Str(env, "relay_region") : null;
+        if (string.IsNullOrEmpty(region) && Relay(info) is { } relay && Regex.Match(relay, @"://synr-([a-z0-9]+)\.", RegexOptions.IgnoreCase) is { Success: true } m)
+            region = m.Groups[1].Value;
+        return string.IsNullOrEmpty(region) ? null : $"https://{id.ToLowerInvariant()}.{region.ToLowerInvariant()}.quickconnect.to";
+    }
+
+    /// <summary>True for an address on Synology's HTTPS relay, where TLS ends at Synology rather than at the NAS.</summary>
+    public static bool IsWebRelay(string url) =>
+        Regex.IsMatch(url, @"^https://[^./]+\.[a-z0-9]+\.quickconnect\.to/?$", RegexOptions.IgnoreCase) && !url.Contains(".direct.", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The relay endpoint from a get_server_info / request_tunnel answer: https://synr-xx.ID.direct.quickconnect.to:port.</summary>
     private static string? Relay(JsonElement info)

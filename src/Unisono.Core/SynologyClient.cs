@@ -58,6 +58,9 @@ public sealed class SynologyClient : IDisposable
     private readonly Action<string>? _trace;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CertificateInfo> _rejected = new();
 
+    /// <summary>Reached through Synology's HTTPS relay (see <see cref="QuickConnect"/>): TLS ends at Synology's server.</summary>
+    public bool ViaWebRelay => QuickConnect.IsWebRelay(_base);
+
     private SynologyClient(SynologyCredentials creds, bool allowInvalidCertificate, Func<CancellationToken, Task<string?>>? otpPrompt, Action<string>? trace)
     {
         _creds = creds;

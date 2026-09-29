@@ -82,6 +82,8 @@ public sealed class StoreFactory : IAsyncDisposable
         try
         {
             client = await SynologyClient.ConnectAsync(creds, creds.AllowInvalidCertificate || pair.AllowInvalidCertificate, otpPrompt: null, ct, _log.Debug);
+            if (client.ViaWebRelay)
+                _log.Warn($"[{pair.Name}] no direct route and no tunnel to the NAS from this network: going through Synology's HTTPS relay, where Synology's server could see the traffic");
         }
         catch (SynologyApiException ex) when (ex.Code is 403 or 404 or 406)
         {
