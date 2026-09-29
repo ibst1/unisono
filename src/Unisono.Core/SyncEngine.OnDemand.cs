@@ -38,7 +38,7 @@ public sealed partial class SyncEngine
     /// <summary>Should remote content for this path be downloaded (true) or only described by a placeholder (false)?</summary>
     private bool KeepLocal(string path)
     {
-        if (!OnDemand) return true;
+        if (!OnDemand || InAppDir(path)) return true;
         if (File.Exists(path))
         {
             var a = File.GetAttributes(path);
@@ -115,6 +115,16 @@ public sealed partial class SyncEngine
             if (!File.Exists(path) && !Directory.Exists(path)) continue;   // gone during the cycle
             try
             {
+                // Unisono's own folder stays pinned, whatever Explorer was told ("Free up space" included).
+                if (InAppDir(path) && !l.Pinned && (l.IsDir ? s.Kind == EntryKind.Folder : s.Kind == EntryKind.File))
+                {
+                    if (!l.IsPlaceholder) CloudFiles.Convert(path, s.DriveId);
+                    CloudFiles.SetPinState(path, 1);
+                    if (!l.IsDir && l.Dehydrated && remote.TryGetValue(l.RelPath, out var own) && !own.IsFolder)
+                        await Try(l.RelPath, stats, () => DownloadAsync(own, path, stats, "Unisono's own folder is kept on this device", ct, keep: true));
+                    changedDirs.Add(Path.GetDirectoryName(path)!);
+                    continue;
+                }
                 if (l.IsDir)
                 {
                     if (s.Kind == EntryKind.Folder && !l.IsPlaceholder) CloudFiles.Convert(path, s.DriveId);
@@ -127,13 +137,13 @@ public sealed partial class SyncEngine
                     continue;
                 }
                 if (!remote.TryGetValue(l.RelPath, out var node) || node.IsFolder) continue;
-                var pinned = l.Pinned || (!l.Unpinned && ParentPinned(path));
+                var pinned = l.Pinned || InAppDir(path) || (!l.Unpinned && ParentPinned(path));
                 if (l.Dehydrated && pinned && Down)
                 {
                     await Try(l.RelPath, stats, () => DownloadAsync(node, path, stats, "kept on this device", ct, keep: true));
                     changedDirs.Add(Path.GetDirectoryName(path)!);
                 }
-                else if (!l.Dehydrated && l.Unpinned && LocalUnchanged(l, s))
+                else if (!l.Dehydrated && l.Unpinned && !InAppDir(path) && LocalUnchanged(l, s))
                 {
                     if (!l.IsPlaceholder) CloudFiles.Convert(path, s.DriveId);
                     else CloudFiles.MarkInSync(path);

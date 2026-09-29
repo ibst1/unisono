@@ -439,6 +439,19 @@ if ($Suite -contains "folder") {
         Check "folder a file open in another program is left alone" { ($out -join "`n") -match "open in another program" -and (Text $o "kept.txt") -ne "newer on the other side" }
         $held.Dispose(); $null = Sync $o
         Check "folder ... and updated once it is closed" { (Text $o "kept.txt") -eq "newer on the other side" }
+        Section "folder: a running program gets its new version"
+        $pr = Computer "folder-P" @{ Kind = "Folder"; RemotePath = $other }
+        Set-Content -LiteralPath "$other\prog.exe" "version 1"; (Get-Item -LiteralPath "$other\prog.exe").LastWriteTime = (Get-Date).AddMinutes(-3)
+        $null = Sync $pr
+        # Windows holds a running .exe like this: others may read and rename it, but not write it.
+        $run = [IO.File]::Open((Join-Path $pr.Local "prog.exe"), "Open", "Read", [IO.FileShare]"Read, Delete")
+        Set-Content -LiteralPath "$other\prog.exe" "version 2"; (Get-Item -LiteralPath "$other\prog.exe").LastWriteTime = (Get-Date).AddMinutes(-2)
+        $out = (Sync $pr) -join "`n"
+        Check "folder a running program's new version is put in place" { $out -match "prog\.exe was running" -and (Text $pr "prog.exe") -eq "version 2" }
+        Check "folder ... the running one is parked, not synced" { (Test-Path -LiteralPath (Join-Path $pr.Local "prog.exe.unisono-old")) -and -not (Test-Path -LiteralPath "$other\prog.exe.unisono-old") }
+        $run.Dispose(); $null = Sync $pr
+        Check "folder ... and deleted once nothing runs from it" { -not (Test-Path -LiteralPath (Join-Path $pr.Local "prog.exe.unisono-old")) }
+        Remove-Item -LiteralPath "$other\prog.exe"
         Section "folder: previous versions in a folder of your choice"
         $v = Computer "folder-V" @{ Kind = "Folder"; RemotePath = $other }
         $vdir = New-TestDir "$work\my-versions"

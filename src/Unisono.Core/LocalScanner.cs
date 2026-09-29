@@ -27,6 +27,7 @@ public static class LocalScanner
 
     public static bool IsIgnored(string name) =>
         name.EndsWith(PartSuffix, StringComparison.OrdinalIgnoreCase) ||
+        name.EndsWith(SyncEngine.ParkedSuffix, StringComparison.OrdinalIgnoreCase) || // a running program moved aside
         name.StartsWith("~$", StringComparison.Ordinal) ||            // Office lock files
         name.StartsWith(".~lock.", StringComparison.Ordinal) ||       // LibreOffice lock files
         name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase) ||

@@ -55,6 +55,9 @@ public sealed class SyncState
     /// <summary>Ignore patterns already suggested with a tray notice (see <see cref="IgnoreAdvisor"/>), so each is told once.</summary>
     public List<string> SuggestNotified { get; set; } = new();
 
+    /// <summary>Running program files moved aside for their new versions (full paths), deleted once free.</summary>
+    public List<string> Parked { get; set; } = new();
+
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = false };
 
     public static string FilePathFor(SyncPair pair) => System.IO.Path.Combine(AppPaths.DataDir, "state", pair.Id + ".json");

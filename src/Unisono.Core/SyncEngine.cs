@@ -150,6 +150,7 @@ public sealed partial class SyncEngine
         // cycle, so they are never touched on either side.
         _scope = new SyncScope(_pair, _others);
         EnsureSyncRoot();
+        SweepParked();
         _doneThisCycle.Clear();
         var workLeft = NeedsFollowUp;
         NeedsFollowUp = false;
@@ -726,26 +727,30 @@ public sealed partial class SyncEngine
     private async Task DownloadAsync(RemoteNode node, string path, CycleStats stats, string why, CancellationToken ct, bool keep = false)
     {
         if (!keep && !KeepLocal(path)) { Placeholder(node, path, stats, why); return; }
-        if (OpenElsewhere(path))
+        string? parked = null;
+        if (OpenElsewhere(path) && (DryRun || !IsProgramFile(path) || (parked = Park(path, node.RelPath)) == null))
         {
-            // Replacing a file that Word or Excel has open would let its next save undo the new version.
+            // Replacing a file that Word or Excel has open would let its next save undo the new version. A running
+            // program is moved aside instead (see SyncEngine.Programs.cs), when Windows allows it.
             WarnOnce("open:" + node.RelPath, $"'{node.RelPath}' is open in another program; the new version comes once it is closed");
             return;
         }
         _doneThisCycle.Add(node.RelPath);
-        var pin = OnDemand && (keep || ParentPinned(path) || (File.Exists(path) && CloudFiles.IsPinned(File.GetAttributes(path))));
+        var pin = OnDemand && (keep || InAppDir(path) || ParentPinned(path) || (File.Exists(path) && CloudFiles.IsPinned(File.GetAttributes(path))));
         stats.Downloaded++;
         if (Planned("download", node.RelPath, $"{why}, {node.Size:N0} bytes{(File.Exists(path) ? ", replaces the local file (a copy is kept)" : "")}")) return;
         // The local file is about to be replaced: keep a copy first (an online-only placeholder has nothing to keep).
-        if (File.Exists(path) && !CloudFiles.IsDehydrated(File.GetAttributes(path)))
+        var current = parked ?? path;
+        if (File.Exists(current) && !CloudFiles.IsDehydrated(File.GetAttributes(current)))
         {
-            try { VersionStore.Save(_pair, node.RelPath, path, _options); }
+            try { VersionStore.Save(_pair, node.RelPath, current, _options); }
             catch (Exception ex) { _log.Warn($"[{_pair.Name}] could not keep a copy of {node.RelPath} before replacing it: {ex.Message}"); }
         }
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var replaces = File.Exists(path);
+        var replaces = parked != null || File.Exists(path);
         await Tracked(SyncActivity.Direction.Down, node.RelPath, node.Size, () => _store.DownloadAsync(node, path, ct));
         if (replaces) ChangeTransferred(node.RelPath, stats);
+        if (parked != null) Replaced(path, node.RelPath, stats);
         Adopt(path, node.Id, pin);
         RecordFile(node.RelPath, node, path);
         _log.Info($"[{_pair.Name}] downloaded ({why}): {node.RelPath} ({node.Size:N0} bytes)");
