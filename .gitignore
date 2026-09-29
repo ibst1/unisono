@@ -10,3 +10,10 @@ tools/probe-*.txt
 
 # OAuth clients of the Cloud Console project: kept in %LOCALAPPDATA%\Unisono, never in git.
 client_secret*.json
+
+# The repo doubles as the install folder (build.ps1 publishes to %USERPROFILE%\Program\Unisono): its binaries are not source.
+/*.exe
+/*.dll
+/*.pdb
+/*.xml
+/runtimes/
