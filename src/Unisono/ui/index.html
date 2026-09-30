@@ -468,6 +468,7 @@ function renderHeader() {
   let [cls, text] = STATE[S.host.state] || ["", S.host.state];
   if (S.host.paused && S.host.state !== "Syncing") [cls, text] = ["warn", "Paused"];
   else if (S.host.pausedBecause && S.host.state !== "Syncing") [cls, text] = ["warn", "Paused: " + S.host.pausedBecause];
+  else if (S.host.offline && S.host.state !== "Syncing" && S.host.state !== "Trouble") [cls, text] = ["warn", "Offline"];
   if (!S.pairs.length) [cls, text] = ["", "No sync pairs yet"];
   const chip = $("#statusChip"); chip.className = "chip " + cls; chip.textContent = text;
   $("#brandDot").style.background = { ok: "var(--green)", busy: "var(--blue)", warn: "var(--amber)", err: "var(--red)" }[cls] || "var(--muted)";
@@ -578,7 +579,7 @@ $("#nasGo").onclick = async () => {
 
 // -------------------------------------------------------------------- pairs
 function statusChip(p) {
-  const cls = p.failed || p.status === "failed" || p.status === "errors" ? "err" : p.status === "syncing" ? "busy" : p.status === "in sync" ? "ok" : "";
+  const cls = p.failed || p.status === "failed" || p.status === "errors" ? "err" : p.status === "syncing" ? "busy" : p.status === "in sync" ? "ok" : p.status === "offline" ? "warn" : "";
   // Only before a pair's first run since the start: afterwards every pair waits its turn each round anyway.
   const wait = p.waitingFor && p.status === "waiting" ? `<span class="chip plain" title="Pairs sync one at a time">waiting for ${esc(p.waitingFor)}</span>` : "";
   const run = p.running && p.status !== "syncing" ? `<span class="small muted" title="This pair's turn: comparing both sides">checking&hellip;</span>` : "";

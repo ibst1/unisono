@@ -289,6 +289,7 @@ sealed partial class HostForm : Form
         };
         if (_host.Paused && _host.State != HostState.Syncing) (text, color) = ("Paused", Ui.Amber);
         else if (_host.PausedBecause is { } why && _host.State != HostState.Syncing) (text, color) = ("Paused: " + why, Ui.Amber);
+        else if (_host.Offline && _host.State is not (HostState.Syncing or HostState.Trouble)) (text, color) = ("Offline, waiting for the network", Ui.Amber);
         var details = new List<string> { "Unisono: " + text };
         var last = _host.Pairs.Where(p => p.LastSync != null).Select(p => p.LastSync!.Value).DefaultIfEmpty().Max();
         if (last != default) details.Add($"Last sync {last:HH:mm}" + (_host.Pairs.Count > 1 ? $", {_host.Pairs.Count} pairs" : ""));

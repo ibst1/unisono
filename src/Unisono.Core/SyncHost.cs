@@ -122,6 +122,21 @@ public sealed class SyncHost : IAsyncDisposable
     /// </summary>
     public Func<string?>? AutoPauseReason { get; set; }
 
+    /// <summary>Some pair that needs the network waits for it (see <see cref="Connectivity"/>): shown as offline, not as trouble.</summary>
+    public bool Offline => Pairs.Any(p => p.Status == OfflineStatus);
+    private const string OfflineStatus = "offline";
+
+    private static bool NeedsNetwork(SyncPair pair) => pair.Kind != RemoteKind.Folder;
+
+    /// <summary>A pair that cannot sync for want of a network: quietly waiting, told once in the log, no health warning.</summary>
+    private void MarkOffline(PairStatus ps, string why)
+    {
+        if (ps.Status != OfflineStatus) _log.Info($"[{ps.Pair.Name}] offline ({why}); syncing resumes when the network is back");
+        ps.LastError = null;
+        TrackHealth(ps, null);
+        Update(ps, OfflineStatus);
+    }
+
     /// <summary>Why the last automatic round was skipped, or null.</summary>
     public string? PausedBecause { get; private set; }
 
@@ -305,6 +320,7 @@ public sealed class SyncHost : IAsyncDisposable
                         if (_pendingConfig != null) { followUp = true; break; } // the pair list changed: take it in first
                         var ps = pairs[i];
                         var rt = runtimes[i];
+                        if (NeedsNetwork(ps.Pair) && Connectivity.NoNetwork()) { MarkOffline(ps, "no network connected"); continue; }
                         if (i > 0 && pairs[i - 1].Running) { pairs[i - 1].Running = false; Update(pairs[i - 1], pairs[i - 1].Status); }
                         for (var j = i + 1; j < pairs.Count; j++) { pairs[j].WaitingFor = ps.Pair.Name; Update(pairs[j], pairs[j].Status); }
                         ps.WaitingFor = null;
@@ -366,6 +382,12 @@ public sealed class SyncHost : IAsyncDisposable
                                 }
                         }
                         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                        catch (Exception ex) when (NeedsNetwork(ps.Pair) && Connectivity.MeansOffline(ex))
+                        {
+                            Interlocked.Exchange(ref rt.Changed, 1); // scan again next time
+                            if (ps.Pair.Kind == RemoteKind.Synology) { rt.Engine = null; stores.Forget(ps.Pair); }
+                            MarkOffline(ps, Log.Text(ex));
+                        }
                         catch (Exception ex)
                         {
                             ok = false;

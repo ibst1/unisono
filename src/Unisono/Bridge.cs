@@ -312,7 +312,7 @@ sealed class Bridge : IAsyncDisposable
             server = c.Server, user = c.User, resolved = c.ResolvedBase, pinned = c.PinnedCertificates.Count,
         }),
         pairs = Config.Pairs.Select(PairDto),
-        host = new { state = _host.State.ToString(), paused = _host.Paused, pausedBecause = _host.PausedBecause },
+        host = new { state = _host.State.ToString(), paused = _host.Paused, pausedBecause = _host.PausedBecause, offline = _host.Offline },
         settings = new { autostart = IsAutostart(), verbose = _settings.VerboseLog, tab = _settings.Tab },
         options = new
         {
