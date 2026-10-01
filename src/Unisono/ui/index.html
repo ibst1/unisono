@@ -670,9 +670,12 @@ function sugNote(p) {
   const groups = p.suggestions || []; if (!groups.length) return "";
   const all = groups.flatMap(g => g.patterns), pats = all.filter(x => x.recommended);
   const kinds = [...new Set(groups.filter(g => g.patterns.some(x => x.recommended)).map(g => SUGKIND[g.kind.split(":")[0]]))].join(", ");
-  const more = all.length - pats.length ? `${pats.length ? "; " : ""}${all.length - pats.length} more to consider` : "";
-  return `<div class="note warn inline" style="margin-bottom:0"><span class="grow">${pats.length ? `Unisono suggests leaving ${pats.reduce((a, x) => a + x.files, 0)} files
-    (${sugSize(pats.reduce((a, x) => a + x.bytes, 0))}) out of syncing: ${esc(kinds)}` : "Unisono found items that may need not sync"}${more}.</span>
+  const others = all.length - pats.length;
+  const text = pats.length
+    ? `Unisono suggests leaving ${pats.reduce((a, x) => a + x.files, 0)} files (${sugSize(pats.reduce((a, x) => a + x.bytes, 0))}) out of syncing: ${esc(kinds)}.`
+      + (others ? ` Review also shows ${others} other possible exclusion${others > 1 ? "s" : ""} that you decide on.` : "")
+    : `Unisono found ${others} possible exclusion${others > 1 ? "s" : ""} from syncing, none it is sure about (e.g. settings or programs that a .gitignore lists). Review to choose, or keep syncing them.`;
+  return `<div class="note warn inline" style="margin-bottom:0"><span class="grow">${text}</span>
     <button class="btn" data-sugpair="${esc(p.id)}">Review</button></div>`;
 }
 function suggestDialog(p) {
