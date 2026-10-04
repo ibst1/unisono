@@ -57,6 +57,14 @@ public static class LocalScanner
         catch { return true; }
     }
 
+    /// <summary>
+    /// A name ending with a dot or a space: Windows trims those off, so "F1." is looked for as "F1" and never found.
+    /// Such names come from Linux tools (WSL) writing into Windows folders.
+    /// </summary>
+    public static bool Unreachable(string name) => name.EndsWith('.') || name.EndsWith(' ');
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> WarnedUnreachable = new(StringComparer.OrdinalIgnoreCase);
+
     public static Dictionary<string, LocalItem> Scan(string root, Log log)
     {
         var items = new Dictionary<string, LocalItem>(StringComparer.OrdinalIgnoreCase);
@@ -73,6 +81,12 @@ public static class LocalScanner
         foreach (var e in entries)
         {
             if (IsIgnored(e.Name)) continue;
+            if (Unreachable(e.Name))
+            {
+                if (WarnedUnreachable.TryAdd(e.FullName, true))
+                    log.Warn($"'{prefix}{e.Name}' ends with a dot or a space: Windows programs, Unisono included, cannot open such a name (Linux and WSL can make them), so it is left out of syncing. Rename or delete it, e.g. in WSL.");
+                continue;
+            }
             if (IsLinkOrSystem(e)) continue;
             var rel = prefix + e.Name;
             if (e is DirectoryInfo d)

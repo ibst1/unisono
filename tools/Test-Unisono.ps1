@@ -472,6 +472,14 @@ if ($Suite -contains "folder") {
         $null = Sync $ib
         Check "folder a new computer does not download what the ignore file leaves out" { (Has $ib "keep.txt") -and (Has $ib ".unisonoignore") -and -not (Has $ib "cache\big.bin") }
         Check "folder ... nor upload it" { -not (Test-Path -LiteralPath "$io\cache\mine.bin") }
+        Section "folder: names Windows cannot open (made in WSL)"
+        $wo = New-TestDir "$work\wsl-other"
+        $w = Computer "folder-W" @{ Kind = "Folder"; RemotePath = $wo }
+        [IO.File]::WriteAllText("\\?\$($w.Local)\junk.", "a log a Linux tool wrote")
+        Put $w "fine.txt" "ok"
+        $out1 = (Sync $w) -join "`n"; $out2 = (Sync $w) -join "`n"
+        Check "folder a name ending with a dot is left out with a warning, not an error each cycle" { $out1 -match "ends with a dot" -and $out1 -notmatch "[1-9]\d* errors" -and $out2 -notmatch "[1-9]\d* errors" -and (Test-Path -LiteralPath "$wo\fine.txt") }
+        [IO.File]::Delete("\\?\$($w.Local)\junk.")
         Section "folder: ignore suggestions"
         $s = Computer "folder-S" @{ Kind = "Folder"; RemotePath = (New-TestDir "$work\sug-other") }
         Put $s "proj\App.csproj" "<Project />"; Put $s "proj\bin\App.dll" "binary"; Put $s "proj\obj\cache.json" "{}"; Put $s "run.log" "log"
