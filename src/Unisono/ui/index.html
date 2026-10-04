@@ -630,7 +630,7 @@ function renderPairs() {
       ${p.converting && !p.decrypting ? `<div class="note" style="margin-bottom:0">Turning the remote folder into a Cryptomator vault: files are encrypted and uploaded in turns (see Activity and the transfers above). The unencrypted originals go to the trash on the other side at the end; empty it there to be rid of them.</div>` : ""}
       ${p.health ? `<div class="note err" style="margin-bottom:0">${esc(p.health)} <a class="path" data-showlog>Show the log</a></div>` : ""}
       ${(p.frequent || []).map(f => `<div class="note warn inline" style="margin-bottom:0">
-        <span class="grow"><span class="mono">${esc(f)}</span> changes very often (${6} times or more within an hour). Logs and status files like this are usually better left out of syncing.</span>
+        <span class="grow"><span class="mono">${esc(f)}</span> changes very often, the way logs, status files and data a program keeps rewriting do. Such files are usually better left out of syncing; documents and code you work on are never warned about.</span>
         <button class="btn" data-freq="ignore" data-fpair="${esc(p.id)}" data-frel="${esc(f)}">Ignore it</button>
         <button class="btn" data-freq="keep" data-fpair="${esc(p.id)}" data-frel="${esc(f)}" title="No more warnings for this file">Keep syncing</button></div>`).join("")}
       ${sugNote(p)}

@@ -206,29 +206,6 @@ public sealed partial class SyncEngine
         return stats;
     }
 
-    // Files whose changes are transferred again and again (logs, status files) are usually better ignored: after
-    // FrequentTransfers changes within FrequentWindow the user is asked, once per file and run of the app.
-    public const int FrequentTransfers = 6;
-    public static readonly TimeSpan FrequentWindow = TimeSpan.FromHours(1);
-    private readonly Dictionary<string, List<DateTime>> _changeTimes = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _frequentReported = new(StringComparer.OrdinalIgnoreCase);
-
-    private void ChangeTransferred(string rel, CycleStats stats)
-    {
-        if (DryRun || _pair.FrequentOk.Contains(rel, StringComparer.OrdinalIgnoreCase)) return;
-        var now = DateTime.UtcNow;
-        lock (_changeTimes)
-        {
-            if (!_changeTimes.TryGetValue(rel, out var times)) _changeTimes[rel] = times = new();
-            times.Add(now);
-            times.RemoveAll(t => now - t > FrequentWindow);
-            if (times.Count < FrequentTransfers || !_frequentReported.Add(rel)) return;
-        }
-        stats.Frequent.Add(rel);
-        stats.Notices.Add($"{PathUtil.NameOf(rel)} in {_pair.Name} changes very often ({FrequentTransfers} times within an hour). Open Unisono to ignore it or keep syncing it.");
-        _log.Warn($"[{_pair.Name}] '{rel}' changes very often; it is probably better ignored");
-    }
-
     private static Dictionary<string, T> Without<T>(Dictionary<string, T> all, Func<string, bool> drop)
     {
         if (!all.Keys.Any(drop)) return all;
@@ -722,7 +699,7 @@ public sealed partial class SyncEngine
         stats.Uploaded++;
         if (!DryRun) _log.Info($"[{_pair.Name}] uploaded change: {rel} ({l.Size:N0} bytes)");
         Journal("uploaded change", rel, l.Size, BackupMode ? "changed here; the previous version is kept in the backup" : "changed here");
-        ChangeTransferred(rel, stats);
+        ChangeTransferred(rel, path, stats);
     }
 
     private async Task DownloadAsync(RemoteNode node, string path, CycleStats stats, string why, CancellationToken ct, bool keep = false)
@@ -750,7 +727,7 @@ public sealed partial class SyncEngine
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var replaces = parked != null || File.Exists(path);
         await Tracked(SyncActivity.Direction.Down, node.RelPath, node.Size, () => _store.DownloadAsync(node, path, ct));
-        if (replaces) ChangeTransferred(node.RelPath, stats);
+        if (replaces) ChangeTransferred(node.RelPath, path, stats);
         if (parked != null) Replaced(path, node.RelPath, stats);
         Adopt(path, node.Id, pin);
         RecordFile(node.RelPath, node, path);
