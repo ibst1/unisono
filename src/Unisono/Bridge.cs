@@ -24,6 +24,32 @@ sealed class Bridge : IAsyncDisposable
     private readonly Dictionary<string, DriveClient> _drives = new();
     private readonly Dictionary<string, SynologyClient> _nas = new();
     private CancellationTokenSource? _googleSignIn;
+    private CancellationTokenSource? _boxSignIn;
+    private readonly Dictionary<string, BoxClient> _boxClients = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, (long Used, long Limit, string? Error)> _boxInfo = new(StringComparer.OrdinalIgnoreCase);
+
+    private BoxClient BoxFor(string? login)
+    {
+        var acct = BoxAccount.Resolve(login) ?? throw new InvalidOperationException("No Box account signed in; add one under Accounts.");
+        if (_boxClients.TryGetValue(acct.Login, out var c)) return c;
+        return _boxClients[acct.Login] = BoxClient.Connect(acct.Login);
+    }
+
+    /// <summary>Storage use per Box account, in the background, then refreshes the page.</summary>
+    public async Task RefreshBoxInfoAsync()
+    {
+        foreach (var a in BoxAccount.ListAll())
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var (_, _, used, limit) = await BoxFor(a.Login).MeAsync(cts.Token);
+                _boxInfo[a.Login] = (used, limit, null);
+            }
+            catch (Exception ex) { _boxInfo[a.Login] = (0, 0, Ui.Explain(ex)); }
+        }
+        _pushState();
+    }
 
     public Config Config { get; private set; } = Config.Load();
 
@@ -75,6 +101,45 @@ sealed class Bridge : IAsyncDisposable
             {
                 SynologyCredentials.Delete(Str(p, "server")!, Str(p, "user")!);
                 _log.Info($"forgot NAS login {Str(p, "user")} @ {Str(p, "server")}");
+                await _restartHost();
+                return null;
+            }
+
+            // ------------------------------------------------------- Box
+            case "box.setApp":
+            {
+                var id = (Str(p, "clientId") ?? "").Trim();
+                var secret = (Str(p, "clientSecret") ?? "").Trim();
+                if (id.Length == 0) throw new InvalidOperationException("Fill in the client id.");
+                if (secret.Length == 0) secret = BoxApp.Load() is { } old && old.ClientId == id ? old.ClientSecret : throw new InvalidOperationException("Fill in the client secret.");
+                new BoxApp { ClientId = id, ClientSecret = secret }.Save();
+                _boxClients.Clear();
+                _log.Info($"Box app set: client {id}");
+                return State();
+            }
+            case "box.add":
+            {
+                _boxSignIn?.Cancel();
+                using var cts = _boxSignIn = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+                try
+                {
+                    var client = await BoxClient.SignInAsync(url => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }), cts.Token);
+                    _boxClients[client.Login] = client;
+                    _log.Info($"signed in to Box as {client.Login}");
+                    _ = RefreshBoxInfoAsync();
+                    await _restartHost();
+                    return new { login = client.Login };
+                }
+                finally { _boxSignIn = null; }
+            }
+            case "box.cancel": _boxSignIn?.Cancel(); return null;
+            case "box.remove":
+            {
+                var login = Str(p, "login") ?? "";
+                BoxAccount.Delete(login);
+                _boxClients.Remove(login);
+                _boxInfo.TryRemove(login, out _);
+                _log.Info("forgot the Box sign-in of " + login);
                 await _restartHost();
                 return null;
             }
@@ -388,6 +453,16 @@ sealed class Bridge : IAsyncDisposable
         {
             server = c.Server, user = c.User, resolved = c.ResolvedBase, pinned = c.PinnedCertificates.Count,
         }),
+        box = new
+        {
+            app = BoxClient.HasApp(), clientId = BoxApp.Load()?.ClientId, redirect = BoxApp.RedirectUri,
+            accounts = BoxAccount.ListAll().Select(a => new
+            {
+                login = a.Login, name = a.Name,
+                used = _boxInfo.TryGetValue(a.Login, out var i1) ? i1.Used : 0, limit = _boxInfo.TryGetValue(a.Login, out var i2) ? i2.Limit : 0,
+                error = _boxInfo.TryGetValue(a.Login, out var i3) ? i3.Error : null,
+            }),
+        },
         pairs = Config.Pairs.Select(PairDto),
         groups =Config.Groups.Select(g => new
         {
@@ -709,6 +784,15 @@ sealed class Bridge : IAsyncDisposable
                 .Select(d => new { name = d.Name, key = d.FullName, path = shownPath.TrimEnd('/', '\\') + "/" + d.Name })
                 .ToList();
         }
+        if (Str(p, "kind") == "Box")
+        {
+            var box = BoxFor(Str(p, "account"));
+            var boxParent = Str(p, "path") ?? "";
+            key ??= await box.ResolveFolderAsync(boxParent, cts.Token);
+            return (await box.ListAsync(key, cts.Token)).Where(i => i.IsFolder)
+                .OrderBy(i => i.Name, StringComparer.CurrentCultureIgnoreCase)
+                .Select(i => new { name = i.Name, key = i.Id, path = PathUtil.Join(boxParent, i.Name) });
+        }
         if (Str(p, "kind") == "Synology")
         {
             var nas = await NasFor(Str(p, "server")!, Str(p, "user")!, cts.Token);
@@ -735,6 +819,15 @@ sealed class Bridge : IAsyncDisposable
         if (name.Length == 0 || name is "." or ".." || name.IndexOfAny(@"\/:*?""<>|".ToCharArray()) >= 0)
             throw new InvalidOperationException("That is not a usable folder name.");
         var key = Str(p, "key");
+        if (Str(p, "kind") == "Box")
+        {
+            var box = BoxFor(Str(p, "account"));
+            var boxParent = Str(p, "path") ?? "";
+            key ??= await box.ResolveFolderAsync(boxParent, cts.Token);
+            var boxMade = await box.CreateFolderAsync(key, name, cts.Token); // one by that name already there is returned instead
+            _log.Info($"Folder picker: {PathUtil.Join(boxParent, boxMade.Name)} on Box ({box.Login})");
+            return new { name = boxMade.Name, key = boxMade.Id, path = PathUtil.Join(boxParent, boxMade.Name) };
+        }
         if (Str(p, "kind") == "Synology")
         {
             if (key == null) throw new InvalidOperationException("Select the shared folder to create it in first.");
@@ -827,6 +920,14 @@ sealed class Bridge : IAsyncDisposable
             pair.CloudOnlyMinMB = 0;
             pair.CloudOnlyFolders = new();
         }
+        else if (pair.Kind == RemoteKind.Box)
+        {
+            pair.Server = pair.User = null;
+            pair.AllowInvalidCertificate = false;
+            pair.Account = Str(d, "account") is { Length: > 0 } login ? login : throw new InvalidOperationException("Choose the Box account.");
+            pair.CloudOnlyMinMB = 0;
+            pair.CloudOnlyFolders = new();
+        }
         else
         {
             pair.Server = pair.User = null;
@@ -868,6 +969,19 @@ sealed class Bridge : IAsyncDisposable
             remoteHasItems = rootNames.Count > 0;
             createRemote = () => new SynologyStore(nas, pair).EnsureRootAsync(ct);
         }
+        else if (pair.Kind == RemoteKind.Box)
+        {
+            var box = BoxFor(pair.Account);
+            try
+            {
+                var id = await box.ResolveFolderAsync(pair.RemotePath, ct);
+                exists = true;
+                rootNames.AddRange((await box.ListAsync(id, ct)).Select(i => i.Name));
+                remoteHasItems = rootNames.Count > 0;
+            }
+            catch (DirectoryNotFoundException) { exists = false; remoteHasItems = false; }
+            createRemote = () => box.EnsureFolderAsync(pair.RemotePath, ct);
+        }
         else
         {
             var drive = await DriveFor(pair.Account, ct);
@@ -905,6 +1019,10 @@ sealed class Bridge : IAsyncDisposable
                              "'name (conflict <computer> <time>)' and uploaded next to the remote one). Nothing is deleted.");
             if (pair.Kind == RemoteKind.Drive && pair.RemotePath.Length == 0)
                 messages.Add("This syncs your whole My Drive. Everything in it is downloaded to this computer unless cloud-only rules keep large files or folders online.");
+            if (pair.Kind == RemoteKind.Box && pair.RemotePath.Length == 0)
+                messages.Add("This syncs your whole Box: All Files, including the folders others share with you (your changes there reach them too). " +
+                             (pair.OnDemand ? "With files on demand nothing is downloaded until opened. " : "Everything in it is downloaded to this computer. ") +
+                             "Any change anywhere in your Box makes Unisono list it all again, which takes longer the more it holds.");
             if (original is { OnDemand: true } && (!pair.OnDemand || original.Id != pair.Id))
                 messages.Add("Files on demand ends for this folder: what is on this computer stays as ordinary files, and everything that is online-only now will be downloaded.");
             if (!pair.OnDemand && ManagedSyncRoot(pair.LocalFullPath) is { } root)

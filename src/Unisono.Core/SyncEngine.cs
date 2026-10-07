@@ -961,6 +961,7 @@ public sealed partial class SyncEngine
 
     private static bool SameVersion(RemoteNode a, RemoteNode b) =>
         a.Md5 != null && b.Md5 != null ? string.Equals(a.Md5, b.Md5, StringComparison.OrdinalIgnoreCase)
+        : a.Sha1 != null && b.Sha1 != null ? string.Equals(a.Sha1, b.Sha1, StringComparison.OrdinalIgnoreCase)
         : a.ModifiedUtc == b.ModifiedUtc && a.Size == b.Size;
 
     // ---------------------------------------------------- exports and links
@@ -1270,6 +1271,7 @@ public sealed partial class SyncEngine
             Path = rel, Kind = EntryKind.File, DriveId = node.Id,
             // Without a remote checksum (NAS) the local one stands in; local edits are still detected against it.
             Md5 = node.Md5 ?? (CloudFiles.IsDehydrated(info.Attributes) ? null : PathUtil.Md5Of(path)),
+            Sha1 = node.Sha1,
             Size = node.Size, DriveModifiedUtc = node.ModifiedUtc,
             LocalSize = info.Length, LocalMtimeTicks = info.LastWriteTimeUtc.Ticks,
         };
@@ -1332,9 +1334,9 @@ public sealed partial class SyncEngine
     }
 
     private static bool RemoteUnchanged(RemoteNode node, StateEntry s) =>
-        node.Md5 != null && s.Md5 != null
-            ? string.Equals(node.Md5, s.Md5, StringComparison.OrdinalIgnoreCase)
-            : node.ModifiedUtc == s.DriveModifiedUtc && node.Size == s.Size;
+        node.Md5 != null && s.Md5 != null ? string.Equals(node.Md5, s.Md5, StringComparison.OrdinalIgnoreCase)
+        : node.Sha1 != null && s.Sha1 != null ? string.Equals(node.Sha1, s.Sha1, StringComparison.OrdinalIgnoreCase)
+        : node.ModifiedUtc == s.DriveModifiedUtc && node.Size == s.Size;
 
     private static bool LocalUnchanged(LocalItem l, StateEntry s) =>
         l.Dehydrated // online-only: nothing local that could have changed
@@ -1347,6 +1349,8 @@ public sealed partial class SyncEngine
         if (new FileInfo(path).Length != node.Size) return false;
         if (node.Md5 != null)
             return string.Equals(PathUtil.Md5Of(path), node.Md5, StringComparison.OrdinalIgnoreCase);
+        if (node.Sha1 != null)
+            return string.Equals(PathUtil.Sha1Of(path), node.Sha1, StringComparison.OrdinalIgnoreCase);
         var scratch = path + ".unisono-cmp";
         try
         {

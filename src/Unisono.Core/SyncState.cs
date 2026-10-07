@@ -25,6 +25,8 @@ public sealed class StateEntry
 
     public string DriveId { get; set; } = "";
     public string? Md5 { get; set; }
+    /// <summary>The remote's SHA-1 where it gives one (Box): tells a remote change apart without relying on dates.</summary>
+    public string? Sha1 { get; set; }
     public long Size { get; set; }
     public DateTime DriveModifiedUtc { get; set; }
 

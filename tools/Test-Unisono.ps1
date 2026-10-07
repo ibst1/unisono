@@ -13,7 +13,9 @@
     drive   sync both ways, conflicts, deletions, renames and moves, ignore rules, versions, dry run, selective sync,
             download-only
     nas     the same core on a NAS folder (needs -NasServer, -NasUser and a stored login for them)
-    folder  the same core with an ordinary folder as the other side (-OtherFolder, default a scratch folder)
+    box     the same core on a Box folder (needs the Box app and a signed-in account; the folder goes to Box's trash after)
+    folder  the same core with an ordinary folder as the other side (-OtherFolder, default a scratch folder), and
+            sync groups (several folders kept in step through a hub, on two simulated computers); "groups" runs only those
     ondemand  files on demand: placeholders, download on open, keep / free up space, edits, deletes, renames, turning it off
               (registers a temporary sync root in Explorer; removed at the end)
     ui      starts the window on a scratch config and checks that every part of the page renders without errors
@@ -632,6 +634,25 @@ if ($Suite -contains "nas") {
     & $cli init $remote (New-TestDir "$work\init-nas") --create --nas $server $NasUser | Out-Null
     try { Test-Core @{ Kind = "Synology"; RemotePath = $remote; Server = $server; User = $NasUser } "nas" }
     finally { if (-not $KeepFiles) { & $cli nas api $server entry.cgi api=SYNO.FileStation.Delete version=2 method=delete "path=$remote" recursive=true | Out-Null } }
+}
+if ($Suite -contains "box") {
+    # Needs the Box app and a signed-in account ('UnisonoCli box app <id>', 'UnisonoCli box login'); the first account is used.
+    $remote = "Unisono-tests-$stamp"
+    Use-Data (New-TestDir "$work\init-box-data")
+    & $cli init $remote (New-TestDir "$work\init-box") --box --create | Out-Null
+    try {
+        Test-Core @{ Kind = "Box"; RemotePath = $remote } "box"
+        Section "box: names Windows cannot hold"
+        $bn = Computer "box-N" @{ Kind = "Box"; RemotePath = $remote }
+        Set-Content "$work\colon-source.txt" "made on Box"
+        & $cli box put "$work\colon-source.txt" $remote "Canvas 14:28:23.txt" | Out-Null
+        $out1 = (Sync $bn) -join "`n"; $out2 = (Sync $bn) -join "`n"
+        Check "box a name with ':' is left out with a warning, not an error every cycle" { $out1 -match "which Windows does not allow" -and $out1 -notmatch "[1-9]\d* errors" -and $out2 -notmatch "[1-9]\d* errors" }
+        Check "box ... the rest still syncs" { Has $bn "kept.txt" }
+        Use-Data $bn.Data; & $cli box exists $remote "Canvas 14:28:23.txt" | Out-Null; $there = $LASTEXITCODE -eq 0
+        Check "box ... and it stays on Box" { $there }
+    }
+    finally { if (-not $KeepFiles) { Use-Data "$work\init-box-data"; & $cli box trash $remote | Out-Null } }
 }
 if ($Suite -contains "folder") {
     # The other side may be a network folder (-OtherFolder \\server\share\tests); a subfolder is created and removed.

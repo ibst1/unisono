@@ -12,6 +12,8 @@ public enum RemoteKind
     Synology,
     /// <summary>An ordinary folder: a network share, a mapped or USB drive, or another local folder.</summary>
     Folder,
+    /// <summary>Box (box.com), e.g. a university's Box: through Box's API with the user's own Box app (see <see cref="BoxClient"/>).</summary>
+    Box,
 }
 
 public enum SyncDirection
@@ -44,7 +46,7 @@ public sealed class SyncPair
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public RemoteKind Kind { get; set; } = RemoteKind.Drive;
 
-    /// <summary>Drive: folder under My Drive, e.g. "Projects/Unisono" (empty = all of My Drive). Synology: absolute path starting with the shared folder, e.g. "/home/Sync". Folder: a full path, e.g. "\\server\share\Projects" (may contain %VARS%).</summary>
+    /// <summary>Drive: folder under My Drive, e.g. "Projects/Unisono" (empty = all of My Drive). Synology: absolute path starting with the shared folder, e.g. "/home/Sync". Folder: a full path, e.g. "\\server\share\Projects" (may contain %VARS%). Box: folder under All Files, e.g. "Projects/Wilms" (empty = All Files).</summary>
     public string RemotePath { get; set; } = "";
 
     /// <summary>Older config files called it DrivePath; still accepted.</summary>
@@ -88,7 +90,7 @@ public sealed class SyncPair
 
     /// <summary>gitignore-style patterns for this pair, on top of the global ones and any .unisonoignore files.</summary>
     public List<string> IgnorePatterns { get; set; } = new();
-    /// <summary>Drive only: the Google account's e-mail address. Empty means the default (first) account.</summary>
+    /// <summary>Drive: the Google account's e-mail address; empty means the default (first) account. Box: the Box login (e-mail).</summary>
     public string? Account { get; set; }
 
     /// <summary>Synology only: DSM address, e.g. "https://nas.example.com:5001" or "https://myid.quickconnect.to".</summary>
@@ -159,6 +161,7 @@ public sealed class SyncPair
     public string Name => Group != null ? $"{Group.Name}: {LocalFullPath}" : Kind switch
     {
         RemoteKind.Synology => $"NAS:{RemotePath}",
+        RemoteKind.Box => RemotePath.Length == 0 ? "Box" : $"Box:{RemotePath}",
         RemoteKind.Folder => RemoteFullPath,
         _ => RemotePath.Length == 0 ? "My Drive" : RemotePath,
     };

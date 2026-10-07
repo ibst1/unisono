@@ -119,6 +119,7 @@ sealed partial class HostForm : Form
         _log.Info($"Unisono {Ui.Version} started; settings in {AppPaths.DataDir}");
         await StartHostAsync();
         _ = _bridge.RefreshGoogleInfoAsync();
+        _ = _bridge.RefreshBoxInfoAsync();
         if (!_startHidden) await OpenWebAsync();
         await ScanGroupsAsync();
         _groupTimer.Start();

@@ -188,6 +188,14 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <div id="nasList"></div>
       <button class="btn primary" id="btnAddNas">+ Add NAS login</button>
     </section>
+    <section>
+      <h2>Box</h2>
+      <div class="sub">Box accounts (e.g. your university's Box) through your own Box app; each signs in once in the browser.</div>
+      <div id="boxApp"></div>
+      <div id="boxList"></div>
+      <div id="boxPending"></div>
+      <button class="btn primary" id="btnAddBox">+ Add Box account</button>
+    </section>
   </div>
 
   <!-- =============================================================== pairs -->
@@ -304,11 +312,11 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 <div class="modal" id="dlgPair"><div class="dialog">
   <h3 id="pairTitle">Add sync pair</h3>
-  <div class="field"><label>Remote</label><div class="seg" id="pairKind"><button data-k="Drive">Google Drive</button><button data-k="Synology">Synology NAS</button><button data-k="Folder">Folder</button></div></div>
+  <div class="field"><label>Remote</label><div class="seg" id="pairKind"><button data-k="Drive">Google Drive</button><button data-k="Synology">Synology NAS</button><button data-k="Box">Box</button><button data-k="Folder">Folder</button></div></div>
   <div class="field" id="pairAcctRow"><label id="pairAcctLabel">Account</label><select id="pairAcct"></select></div>
   <div class="field"><label id="pairRemoteLabel">Remote folder</label>
     <div class="inline"><input type="text" id="pairRemote"><button class="btn" id="pairBrowse">Browse...</button></div>
-    <label class="check help" id="pairRootRow" style="margin-top:4px"><input type="checkbox" id="pairRoot"> Whole My Drive (the root folder)</label>
+    <label class="check help" id="pairRootRow" style="margin-top:4px"><input type="checkbox" id="pairRoot"> <span id="pairRootText">Whole My Drive (the root folder)</span></label>
     <div class="help" id="pairRemoteHelp"></div>
     <label class="check help"><input type="checkbox" id="pairCreate" checked> Create it if missing</label></div>
   <div class="field"><label>Local copies</label>
@@ -426,6 +434,19 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     Items already on the other side stay there, untouched; ignored items are simply no longer synced.</div>
   <div class="plan" id="sugList"></div>
   <div class="actions"><button class="btn" data-close>Later</button><button class="btn" id="sugKeepAll">Keep syncing all</button><button class="btn primary" id="sugOk">Ignore checked</button></div>
+</div></div>
+
+<div class="modal" id="dlgBoxApp"><div class="dialog">
+  <h3>Box app</h3>
+  <div class="small muted" style="margin-bottom:10px">Unisono talks to Box through an app of your own. In the Box Developer Console (on your Box: Dev Console, or
+    <span class="mono">https://app.box.com/developers/console</span>) create a <b>Custom App</b> with <b>User Authentication (OAuth 2.0)</b>. Under Configuration:
+    Redirect URI <span class="mono" id="boxRedirect"></span>, scope <i>Write all files and folders stored in Box</i>. Then copy its client id and secret here.
+    Some organisations must approve new apps first; Box says so when you sign in.</div>
+  <div class="field"><label>Client ID</label><input type="text" id="boxClientId" autocomplete="off"></div>
+  <div class="field"><label>Client secret</label><input type="password" id="boxClientSecret" autocomplete="off">
+    <div class="help">Stored encrypted for your Windows user only.</div></div>
+  <div id="boxAppMsg"></div>
+  <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="boxAppSave">Save</button></div>
 </div></div>
 
 <div class="modal" id="dlgGroup"><div class="dialog">
@@ -586,7 +607,47 @@ function renderAccounts() {
     if (!await confirmBox("Remove NAS login", [`Forget ${user} @ ${server}?` + (using ? ` ${using} sync pair(s) use it and will stop.` : "")])) return;
     call("nas.remove", { server, user }).catch(e => toast(e.message, true));
   });
+  renderBox();
 }
+
+function renderBox() {
+  const b = S.box || { app: false, accounts: [] };
+  $("#boxApp").innerHTML = b.app
+    ? `<div class="note">Box app set (client <span class="mono">${esc(b.clientId)}</span>, redirect URI <span class="mono">${esc(b.redirect)}</span>). <button class="btn link" id="btnBoxApp">Change...</button></div>`
+    : `<div class="note warn">No Box app yet. Create one in the Box Developer Console and enter its client id and secret. <button class="btn link" id="btnBoxApp">Set up the Box app...</button></div>`;
+  $("#btnBoxApp").onclick = () => {
+    $("#boxRedirect").textContent = b.redirect; $("#boxClientId").value = b.clientId || ""; $("#boxClientSecret").value = ""; $("#boxAppMsg").innerHTML = "";
+    openModal("#dlgBoxApp"); $("#boxClientId").focus();
+  };
+  $("#btnAddBox").disabled = !b.app;
+  $("#boxList").innerHTML = b.accounts.length ? b.accounts.map(a => {
+    const used = a.limit > 0 ? Math.min(100, a.used / a.limit * 100) : 0;
+    return `<div class="card"><div class="row">
+      <div class="grow"><div><b>${esc(a.login)}</b> ${a.name ? `<span class="muted">${esc(a.name)}</span>` : ""}</div>
+        ${a.error ? `<div class="small" style="color:var(--red)">${esc(a.error)}</div>` : a.limit ? `<div class="small muted">${gb(a.used)} of ${gb(a.limit)} used</div><div class="bar"><i style="width:${used}%"></i></div>` : ""}</div>
+      <button class="btn danger" data-rmbox="${esc(a.login)}">Remove</button></div></div>`;
+  }).join("") : `<div class="empty">No Box account yet.</div>`;
+  document.querySelectorAll("[data-rmbox]").forEach(x => x.onclick = async () => {
+    const login = x.dataset.rmbox, using = S.pairs.filter(p => p.kind === "Box" && p.account === login).length;
+    if (!await confirmBox("Remove Box account", [`Forget the Box sign-in of ${login} on this computer? Nothing on Box or here is touched.` + (using ? ` ${using} sync pair(s) use it and will stop until you sign in again.` : "")])) return;
+    call("box.remove", { login }).catch(e => toast(e.message, true));
+  });
+}
+$("#boxAppSave").onclick = async () => {
+  const btn = $("#boxAppSave"); busy(btn, true, "Saving...");
+  try { const s = await call("box.setApp", { clientId: $("#boxClientId").value, clientSecret: $("#boxClientSecret").value }); busy(btn, false); closeModal("#dlgBoxApp"); if (s) { S = s; render(); } toast("Box app saved"); }
+  catch (e) { busy(btn, false); $("#boxAppMsg").innerHTML = `<div class="note err">${esc(e.message)}</div>`; }
+};
+$("#btnAddBox").onclick = async () => {
+  $("#btnAddBox").hidden = true;
+  $("#boxPending").innerHTML = `<div class="card row"><span class="chip busy">waiting</span>
+    <div class="grow">Finish the sign-in in your browser (your organisation's login page if it has one) and grant Unisono access.</div>
+    <button class="btn" id="btnCancelBox">Cancel</button></div>`;
+  $("#btnCancelBox").onclick = () => call("box.cancel");
+  try { const r = await call("box.add"); toast(`Added ${r.login}`); }
+  catch (e) { toast("Box sign-in did not complete: " + e.message, true); }
+  $("#boxPending").innerHTML = ""; $("#btnAddBox").hidden = false;
+};
 
 $("#btnAddGoogle").onclick = async () => {
   $("#btnAddGoogle").hidden = true;
@@ -653,6 +714,7 @@ function remoteLabel(p) {
     let host = p.server; try { host = new URL(p.server).host; } catch {}
     return { what: "Synology NAS", who: `${p.user} @ ${host}`, path: p.remotePath };
   }
+  if (p.kind === "Box") return { what: "Box", who: p.account || "Box account", path: "All Files/" + p.remotePath };
   const def = S.google.find(a => a.isDefault);
   return { what: "Google Drive", who: p.account || (def && def.email) || "default account", path: p.remotePath ? "My Drive/" + p.remotePath : "My Drive (whole)" };
 }
@@ -955,21 +1017,26 @@ let editing = null, pairKind = "Drive";
 function setKind(k) {
   pairKind = k;
   document.querySelectorAll("#pairKind button").forEach(b => b.classList.toggle("on", b.dataset.k === k));
-  const nas = k === "Synology", folder = k === "Folder";
-  $("#pairAcctRow").hidden = folder; $("#pairDocsRow").hidden = folder || $("#pairEncrypt").checked;
+  const nas = k === "Synology", folder = k === "Folder", box = k === "Box";
+  $("#pairAcctRow").hidden = folder; $("#pairDocsRow").hidden = folder || box || $("#pairEncrypt").checked;
   $("#pairRemoteLabel").textContent = folder ? "Other folder" : "Remote folder";
   $("#pairPollHelp").textContent = folder ? "seconds; changes in either folder are usually picked up at once" : "seconds; local changes are picked up at once";
-  $("#pairAcctLabel").textContent = nas ? "NAS login" : "Google account";
+  $("#pairAcctLabel").textContent = nas ? "NAS login" : box ? "Box account" : "Google account";
+  const boxAccounts = (S.box && S.box.accounts) || [];
   $("#pairAcct").innerHTML = nas
     ? (S.nas.length ? S.nas.map(n => `<option value="${esc(n.server)}|${esc(n.user)}">${esc(n.user)} @ ${esc(n.server)}</option>`).join("") : `<option value="">(add a NAS login under Accounts first)</option>`)
+    : box
+    ? (boxAccounts.length ? boxAccounts.map(a => `<option value="${esc(a.login)}">${esc(a.login)}</option>`).join("") : `<option value="">(add a Box account under Accounts first)</option>`)
     : (S.google.length ? S.google.map(a => `<option value="${esc(a.email || "")}">${esc(a.email || a.id)}${a.isDefault ? " (default)" : ""}</option>`).join("") : `<option value="">(add a Google account under Accounts first)</option>`);
   $("#pairDocsLabel").textContent = nas ? "Synology Office" : "Google Docs";
-  document.querySelectorAll("#dlgPair .drive-only").forEach(e => e.hidden = nas || folder);
+  document.querySelectorAll("#dlgPair .drive-only").forEach(e => e.hidden = nas || folder || box);
   $("#pairRootRow").hidden = nas || folder;
   $("#pairRemoteHelp").textContent = folder
     ? "A network folder (\\\\server\\share\\...), a mapped or USB drive, or another folder on this computer. Deletions go to the Recycle Bin, or to Unisono's trash folder where the drive has none."
     : nas
     ? "A shared folder (e.g. /home) or a folder inside one. Turn on the Recycle Bin for that shared folder in DSM so deletions can be undone."
+    : box
+    ? "A folder under All Files, e.g. Projects/2026 (folders shared with you are there too). Deletions go to Box's trash."
     : "A folder under My Drive, e.g. Projects/2026. Deletions go to the Drive trash.";
   if (!editing) $("#pairPoll").value = nas ? 60 : 30;
   syncOnDemand();
@@ -1002,9 +1069,9 @@ async function checkOnDemandPlace() {
 document.querySelectorAll("#pairCopies button").forEach(b => b.onclick = () => { if (b.disabled) return; $("#pairOnDemand").checked = b.dataset.c === "demand"; syncOnDemand(); });
 $("#pairLocal").addEventListener("change", checkOnDemandPlace);
 function syncRootBox() {
-  const root = pairKind === "Drive" && $("#pairRoot").checked;
+  const root = (pairKind === "Drive" || pairKind === "Box") && $("#pairRoot").checked;
   $("#pairRemote").disabled = root; if (root) $("#pairRemote").value = "";
-  $("#pairRemote").placeholder = pairKind === "Drive" ? "Projects/2026" : pairKind === "Folder" ? "\\\\server\\share\\Projects" : "/home/Sync";
+  $("#pairRemote").placeholder = pairKind === "Drive" || pairKind === "Box" ? "Projects/2026" : pairKind === "Folder" ? "\\\\server\\share\\Projects" : "/home/Sync";
 }
 $("#pairRoot").onchange = syncRootBox;
 document.querySelectorAll("#pairKind button").forEach(b => b.onclick = () => { if (!editing) setKind(b.dataset.k); });
@@ -1017,9 +1084,10 @@ function pairDialog(p) {
   document.querySelectorAll("#pairKind button").forEach(b => b.disabled = !!p && b.dataset.k !== p.kind);
   if (p) {
     if (p.kind === "Synology") $("#pairAcct").value = `${p.server}|${p.user}`;
+    else if (p.kind === "Box") $("#pairAcct").value = p.account || "";
     else { const def = S.google.find(a => a.isDefault); $("#pairAcct").value = p.account || (def && def.email) || ""; }
   }
-  $("#pairRoot").checked = !!p && p.kind === "Drive" && !p.remotePath;
+  $("#pairRoot").checked = !!p && (p.kind === "Drive" || p.kind === "Box") && !p.remotePath;
   $("#pairRemote").value = p ? (p.kind === "Folder" ? p.remoteFullPath : p.remotePath) : "";
   $("#pairLocal").value = p ? p.localPath : "";
   $("#pairCreate").checked = !p;
@@ -1166,7 +1234,7 @@ $("#pairBrowse").onclick = async () => {
 // overrides per path; a folder inherits its parent's state. "All except unchecked" starts with everything on,
 // "Only checked" with everything off. Inside an explicitly unchecked folder nothing can be re-checked.
 let scope = { include: [], exclude: [] }, scopeBase = null;
-function currentRemote() { if (pairKind === "Folder") return $("#pairRemote").value.trim().replace(/[\\\/]+$/, ""); return pairKind === "Drive" && $("#pairRoot").checked ? "" : $("#pairRemote").value.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").replace(/^/, pairKind === "Synology" ? "/" : ""); }
+function currentRemote() { if (pairKind === "Folder") return $("#pairRemote").value.trim().replace(/[\\\/]+$/, ""); return (pairKind === "Drive" || pairKind === "Box") && $("#pairRoot").checked ? "" : $("#pairRemote").value.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").replace(/^/, pairKind === "Synology" ? "/" : ""); }
 function renderScopeText() {
   const t = !scope.include.length && !scope.exclude.length ? "Everything in the remote folder"
     : scope.include.length ? `Only ${scope.include.length} folder(s)` + (scope.exclude.length ? `, minus ${scope.exclude.length}` : "") + "; new folders are ignored"
@@ -1189,7 +1257,7 @@ $("#pairScopeBtn").onclick = () => {
   if (!nas && !folder && !$("#pairRoot").checked && !base) { toast("Choose the remote folder first", true); return; }
   if (nas && base.replace(/\//g, "") === "") { toast("Choose the remote folder first", true); return; }
   const [server, user] = nas ? acct.split("|") : [null, null];
-  const req = folder ? { kind: "Folder" } : nas ? { kind: "Synology", server, user } : { kind: "Drive", account: acct };
+  const req = folder ? { kind: "Folder" } : nas ? { kind: "Synology", server, user } : { kind: pairKind === "Box" ? "Box" : "Drive", account: acct };
   let mode = scope.include.length ? "include" : "exclude";
   const over = new Map(); scope.include.forEach(r => over.set(r, true)); scope.exclude.forEach(r => over.set(r, false));
   // Folders another pair already syncs (same account, inside this remote folder) get a marker.
@@ -1289,8 +1357,8 @@ $("#pairSave").onclick = async () => {
   if (pairKind === "Folder" && !$("#pairRemote").value.trim()) {
     $("#pairMsg").innerHTML = `<div class="note err">Choose the other folder.</div>`; return;
   }
-  if (pairKind === "Drive" && !$("#pairRoot").checked && !$("#pairRemote").value.trim()) {
-    $("#pairMsg").innerHTML = `<div class="note err">Choose a remote folder, or tick "Whole My Drive" to sync the root.</div>`; return;
+  if ((pairKind === "Drive" || pairKind === "Box") && !$("#pairRoot").checked && !$("#pairRemote").value.trim()) {
+    $("#pairMsg").innerHTML = `<div class="note err">Choose a remote folder, or tick "${pairKind === "Box" ? "Whole Box" : "Whole My Drive"}" to sync the root.</div>`; return;
   }
   if (((!editing || !editing.encrypted) || $("#pairUseRecovery").checked) && $("#pairEncrypt").checked && (!$("#pairPass").value || $("#pairPass").value !== $("#pairPass2").value)) {
     $("#pairMsg").innerHTML = `<div class="note err">${!$("#pairPass").value ? "Choose a passphrase." : "The two passphrases differ."}</div>`; return;
@@ -1313,16 +1381,17 @@ $("#pairSave").onclick = async () => {
 // ------------------------------------------------------------ folder browser
 let browseSel = null;
 function browseDialog() {
-  const nas = pairKind === "Synology";
+  const nas = pairKind === "Synology", box = pairKind === "Box";
   const acct = $("#pairAcct").value;
   if (!acct) { toast("Choose an account first", true); return; }
   const [server, user] = nas ? acct.split("|") : [null, null];
-  const base = nas ? { kind: "Synology", server, user } : { kind: "Drive", account: acct };
-  $("#browseTitle").textContent = nas ? "Choose a NAS folder" : "Choose a Google Drive folder";
+  const base = nas ? { kind: "Synology", server, user } : { kind: box ? "Box" : "Drive", account: acct };
+  $("#browseTitle").textContent = nas ? "Choose a NAS folder" : box ? "Choose a Box folder" : "Choose a Google Drive folder";
   browseSel = null; browseLi = null; $("#browseOk").disabled = true; $("#browseSel").textContent = "Nothing selected";
   $("#browseNewRow").hidden = true; $("#browseNew").disabled = false;
   const tree = $("#tree"); tree.innerHTML = "<ul></ul>";
-  const rootLi = makeNode(nas ? "Shared folders" : "My Drive", null, nas ? null : "", !nas);
+  // Box: All Files itself is not offered (pick a folder in it); its id is 0.
+  const rootLi = makeNode(nas ? "Shared folders" : box ? "All Files" : "My Drive", box ? "0" : null, nas ? null : "", !nas);
   tree.firstChild.appendChild(rootLi);
   openModal("#dlgBrowse");
   expand(rootLi);
@@ -1336,9 +1405,9 @@ function browseDialog() {
     node.querySelector(".tw").onclick = ev => { ev.stopPropagation(); toggle(li); };
     node.onclick = () => {
       tree.querySelectorAll(".node.sel").forEach(n => n.classList.remove("sel"));
-      if (!selectable) { browseSel = null; browseLi = null; $("#browseOk").disabled = true; $("#browseSel").textContent = "Pick a shared folder or a folder inside one"; toggle(li, true); return; }
+      if (!selectable) { browseSel = null; browseLi = null; $("#browseOk").disabled = true; $("#browseSel").textContent = box ? "Pick a folder in All Files" : "Pick a shared folder or a folder inside one"; toggle(li, true); return; }
       node.classList.add("sel"); browseSel = path; browseLi = li;
-      $("#browseSel").textContent = path === "" ? "My Drive (the whole drive)" : path;
+      $("#browseSel").textContent = path === "" ? (box ? "All Files (the whole Box)" : "My Drive (the whole drive)") : path;
       $("#browseOk").disabled = false;
       toggle(li, true);
     };
@@ -1378,7 +1447,7 @@ let browseLi = null, browseMkdir = null;
 $("#browseNew").onclick = () => {
   $("#browseNewRow").hidden = false; $("#browseNew").disabled = true;
   $("#browseNewName").value = ""; $("#browseNewName").focus();
-  $("#browseSel").textContent = "New folder in: " + (browseSel == null ? (pairKind === "Drive" ? "My Drive" : "(select a shared folder)") : browseSel || "My Drive");
+  $("#browseSel").textContent = "New folder in: " + (browseSel == null ? (pairKind === "Drive" ? "My Drive" : pairKind === "Box" ? "All Files" : "(select a shared folder)") : browseSel || "My Drive");
 };
 $("#browseNewCancel").onclick = () => { $("#browseNewRow").hidden = true; $("#browseNew").disabled = false; };
 $("#browseNewOk").onclick = async () => {
@@ -1394,7 +1463,7 @@ $("#browseNewName").addEventListener("keydown", e => { if (e.key === "Enter") $(
 $("#browseOk").onclick = () => {
   closeModal("#dlgBrowse");
   if (browseSel !== currentRemote().replace(/^\//, pairKind === "Synology" ? "/" : "")) resetScope("a different remote folder was chosen");
-  if (pairKind === "Drive" && browseSel === "") { $("#pairRoot").checked = true; syncRootBox(); }
+  if ((pairKind === "Drive" || pairKind === "Box") && browseSel === "") { $("#pairRoot").checked = true; syncRootBox(); }
   else { $("#pairRoot").checked = false; syncRootBox(); $("#pairRemote").value = browseSel; }
 };
 

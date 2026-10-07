@@ -315,6 +315,27 @@ folder inside another provider's: pick one outside OneDrive and Work Folders, e.
 Turning it off (or removing the pair) turns what is local back into ordinary files; online-only files are
 downloaded (or, when the pair is removed, simply dropped: they are still online).
 
+## Box
+
+A pair's other side can be a folder on Box (e.g. a university's Box, `lu.app.box.com`), through Box's API.
+
+One-time setup: Box needs an app of your own. In the Box Developer Console (`https://app.box.com/developers/console`,
+or *Dev Console* in your Box) create a **Custom App** with **User Authentication (OAuth 2.0)**. Under *Configuration*
+set the Redirect URI to `http://localhost:50734/box` and tick *Write all files and folders stored in Box*. Then, in
+Unisono: *Accounts → Box → Set up the Box app* with its client id and secret (stored DPAPI-encrypted), and *+ Add Box
+account*: the browser signs in (an organisation's own login page if it has one). Some organisations must approve new
+apps before they can be used; Box says so at the sign-in. From the command line: `UnisonoCli box app <client id>` (the
+secret is asked for), `UnisonoCli box login`, `UnisonoCli init Projects/Wilms C:\Work\Wilms --box`.
+
+- Pairs sync a folder under *All Files* (folders shared with you are there too), or the whole Box (*Whole Box*):
+  then any change anywhere in the account makes Unisono list it all again.
+- Box gives a SHA-1 per file, so changes and identical content are told apart by checksum as with Drive's MD5.
+- The tree is listed in full at the start and every *FullRescanMinutes*; in between, only when Box's event stream
+  shows a change in the folder. Files of 50 MB and more go up in parts. Deletions go to Box's trash; renames and
+  moves are carried over as such (Box ids are stable); a file's earlier versions on Box serve as the base of a merge.
+- The access token lasts an hour and is renewed by itself; the sign-in lasts 60 days without use, after which Box
+  asks for it again (*Add Box account*).
+
 ## Folder pairs
 
 The other side of a pair can also be an ordinary folder: a network share (`\\server\share\Projects`), a mapped or
@@ -438,6 +459,7 @@ powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1                 
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite folder -OtherFolder \\server\share\tests
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite groups     # sync groups only (two simulated computers)
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite autosave   # Office AutoSave (opens Word, Excel, PowerPoint minimized)
+powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite box        # Box (needs the Box app and a signed-in account)
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite nas -NasServer myid -NasUser me -NasFolder "/home/tests"
 ```
 ## Building

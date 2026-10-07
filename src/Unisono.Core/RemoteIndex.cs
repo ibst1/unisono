@@ -16,6 +16,8 @@ public sealed class RemoteNode
     public string MimeType { get; set; } = "";
     public long Size { get; set; }
     public string? Md5 { get; set; }
+    /// <summary>Box gives SHA-1 instead of MD5 (lower-case hex); null elsewhere.</summary>
+    public string? Sha1 { get; set; }
     public DateTime ModifiedUtc { get; set; }
 
     [JsonIgnore] public bool IsFolder => MimeType == DriveClient.FolderMime;

@@ -28,6 +28,15 @@ public sealed class StoreFactory : IAsyncDisposable
         return _drive[acct.Id] = await DriveClient.ConnectAsync(acct.Id, ct);
     }
 
+    private readonly Dictionary<string, BoxClient> _box = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The Box connection for a pair's login (empty = the only account).</summary>
+    public BoxClient Box(string? login)
+    {
+        if (_box.TryGetValue(login ?? "", out var c)) return c;
+        return _box[login ?? ""] = BoxClient.Connect(login);
+    }
+
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     /// <summary>Safe to call concurrently: the sync loop and on-open downloads share the connections.</summary>
@@ -60,6 +69,7 @@ public sealed class StoreFactory : IAsyncDisposable
         {
             RemoteKind.Folder => new FolderStore(pair),
             RemoteKind.Drive => new DriveStore(await DriveAsync(pair.Account, ct), pair),
+            RemoteKind.Box => new BoxStore(Box(pair.Account), pair),
             _ => new SynologyStore(await NasAsync(pair, ct), pair),
         };
         if (!pair.Encrypted) return store;

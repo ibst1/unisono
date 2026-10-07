@@ -55,6 +55,14 @@ public static class PathUtil
         return Reserved.Contains(stem) ? $"the reserved name {stem}" : null;
     }
 
+    /// <summary>Box's checksum.</summary>
+    public static string Sha1Of(string localPath)
+    {
+        using var sha1 = SHA1.Create();
+        using var fs = OpenShared(localPath);
+        return Convert.ToHexString(sha1.ComputeHash(fs)).ToLowerInvariant();
+    }
+
     /// <summary>Read even while another program has the file open for writing (Office keeps its documents open).</summary>
     public static FileStream OpenShared(string path) =>
         new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);

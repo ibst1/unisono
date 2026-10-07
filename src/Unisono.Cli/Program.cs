@@ -6,7 +6,8 @@ using File = Google.Apis.Drive.v3.Data.File;
 //   unisono auth                                    Google: sign in (opens the browser once) and print the account
 //   unisono nas login <server> <user>               Synology: store DSM credentials (DPAPI) after a test login
 //   unisono nas logout <server>                     Synology: forget stored credentials
-//   unisono init <remote/path> <localDir> [--create] [--nas <server> <user> | --folder]
+//   unisono init <remote/path> <localDir> [--create] [--nas <server> <user> | --folder | --box [login]]
+//   unisono box app <client id> | login | accounts | ls [path] | logout <login>   Box: your app, sign-in, browsing
 //   unisono sync [-v]                               run one sync cycle for every pair
 //   unisono run [-v]                                keep syncing: watch the local folders, poll the remote side
 //   unisono ls [drive/path] | pull <drive/path> <localDir> | changes <token>   Drive helpers
@@ -56,6 +57,67 @@ try
                 Console.WriteLine($"  [{p.Kind}] {p.Name}  <->  {p.LocalPath}   {(p.Server != null ? $"server={p.Server} user={p.User} " : "")}docs={p.GoogleDocs} cloudOnly>={p.CloudOnlyMinMB}MB folders=[{string.Join(", ", p.CloudOnlyFolders)}] poll={p.PollSeconds}s");
             if (config.Pairs.Count == 0) Console.WriteLine("  (no pairs; use: unisono init <remote/path> <localDir>)");
             return 0;
+        }
+
+        case "box":
+        {
+            var sub = args.Length > 1 ? args[1].ToLowerInvariant() : "";
+            if (sub == "app" && args.Length >= 3)
+            {
+                // The secret is typed (not echoed), or piped in: it never goes on the command line.
+                Console.Write("Client secret of the Box app: ");
+                var secret = ReadSecret().Trim();
+                if (secret.Length == 0) { Console.Error.WriteLine("no secret given"); return 1; }
+                new BoxApp { ClientId = args[2].Trim(), ClientSecret = secret }.Save();
+                Console.WriteLine($"Box app stored (redirect URI to register in the app: {BoxApp.RedirectUri})");
+                return 0;
+            }
+            if (sub == "login")
+            {
+                var client = await BoxClient.SignInAsync(url => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }), ct);
+                var (login, name, used, limit) = await client.MeAsync(ct);
+                Console.WriteLine($"Signed in to Box as {login} ({name}); {Gb(used)} of {(limit > 0 ? Gb(limit) : "unlimited")} used");
+                return 0;
+            }
+            if (sub == "logout" && args.Length >= 3) { BoxAccount.Delete(args[2]); Console.WriteLine($"forgot the Box sign-in of {args[2]}"); return 0; }
+            if (sub == "ls")
+            {
+                var box = BoxClient.Connect(args.Length > 3 ? args[3] : null);
+                var path = args.Length > 2 ? args[2] : "";
+                foreach (var i in (await box.ListAsync(await box.ResolveFolderAsync(path, ct), ct)).OrderBy(i => !i.IsFolder).ThenBy(i => i.Name))
+                    Console.WriteLine(i.IsFolder ? $"  {i.Name}/" : $"  {i.Name}  ({i.Size:N0} bytes, {i.ModifiedUtc:yyyy-MM-dd HH:mm})");
+                return 0;
+            }
+            if (sub == "put" && args.Length >= 5)
+            {
+                // Tests: a local file uploaded under any name, also one Windows cannot hold ("a:b.txt").
+                var box = BoxClient.Connect(null);
+                var item = await box.UploadAsync(Path.GetFullPath(args[2]), await box.ResolveFolderAsync(args[3], ct), args[4], null, ct);
+                Console.WriteLine($"uploaded {args[3]}/{item.Name}");
+                return 0;
+            }
+            if (sub == "exists" && args.Length >= 4)
+            {
+                // Tests: whether a name is in a Box folder (exit code 0 = yes).
+                var box = BoxClient.Connect(null);
+                return (await box.ListAsync(await box.ResolveFolderAsync(args[2], ct), ct)).Any(i => i.Name == args[3]) ? 0 : 1;
+            }
+            if (sub == "trash" && args.Length >= 3)
+            {
+                // Tests: the test folder into Box's trash.
+                var box = BoxClient.Connect(args.Length > 3 ? args[3] : null);
+                await box.DeleteAsync(await box.ResolveFolderAsync(args[2], ct), folder: true, ct);
+                Console.WriteLine($"moved Box folder {args[2]} to the trash");
+                return 0;
+            }
+            if (sub == "accounts")
+            {
+                Console.WriteLine(BoxClient.HasApp() ? $"Box app set (redirect URI {BoxApp.RedirectUri})" : "no Box app yet: UnisonoCli box app <client id>");
+                foreach (var a in BoxAccount.ListAll()) Console.WriteLine($"  {a.Login} ({a.Name})");
+                return 0;
+            }
+            Usage();
+            return 2;
         }
 
         case "groups":
@@ -337,16 +399,26 @@ try
                 user = args[nasIdx + 2];
                 args = args.Where((_, i) => i < nasIdx || i > nasIdx + 2).ToArray();
             }
+            // --box [login]: a Box folder (the login may be left out when one Box account is signed in).
+            var boxIdx = Array.IndexOf(args, "--box");
+            string? boxLogin = null;
+            if (boxIdx >= 0)
+            {
+                if (args.Length > boxIdx + 1 && args[boxIdx + 1].Contains('@')) boxLogin = args[boxIdx + 1];
+                boxLogin ??= BoxAccount.Resolve(null)?.Login ?? throw new InvalidOperationException("no Box account signed in (UnisonoCli box login)");
+                args = args.Where((a, i) => i != boxIdx && !(i == boxIdx + 1 && a == boxLogin)).ToArray();
+            }
             args = args.Where(a => a is not ("--create" or "--insecure" or "--folder" or "--on-demand")).ToArray();
             if (args.Length < 3) { Usage(); return 2; }
             var localPath = Path.GetFullPath(args[2]);
             var pair = new SyncPair
             {
-                Kind = folder ? RemoteKind.Folder : server != null ? RemoteKind.Synology : RemoteKind.Drive,
-                RemotePath = folder ? Path.GetFullPath(args[1]).TrimEnd('\\') : server != null ? "/" + args[1].Replace('\\', '/').Trim('/') : args[1].Trim('/', '\\'),
+                Kind = folder ? RemoteKind.Folder : server != null ? RemoteKind.Synology : boxIdx >= 0 ? RemoteKind.Box : RemoteKind.Drive,
+                RemotePath = folder ? Path.GetFullPath(args[1]).TrimEnd('\\') : server != null ? "/" + args[1].Replace('\\', '/').Trim('/') : args[1].Replace('\\', '/').Trim('/'),
                 LocalPath = localPath,
                 Server = server,
                 User = user,
+                Account = boxLogin,
                 AllowInvalidCertificate = insecure,
                 OnDemand = onDemand,
             };
@@ -370,6 +442,12 @@ try
                 var store = (SynologyStore)await stores.CreateAsync(pair, ct);
                 if (create) await store.EnsureRootAsync(ct);
                 await store.GetTreeAsync(log, ct);
+            }
+            else if (pair.Kind == RemoteKind.Box)
+            {
+                var box = stores.Box(boxLogin);
+                if (create) await box.EnsureFolderAsync(pair.RemotePath, ct);
+                else await box.ResolveFolderAsync(pair.RemotePath, ct);
             }
             else
             {
@@ -547,6 +625,8 @@ static void Usage()
     Console.WriteLine("  UnisonoCli ondemand-off              end files on demand for all pairs (keeps what is local, unregisters)");
     Console.WriteLine("  UnisonoCli sync [-v] [--dry-run]   |   UnisonoCli run [-v]   |   UnisonoCli config   |   UnisonoCli version");
     Console.WriteLine("  UnisonoCli ls [drive/path]   |   UnisonoCli pull <drive/path> <localDir>   |   UnisonoCli changes <token>");
+    Console.WriteLine("  UnisonoCli box app <client id>       store your Box app (the secret is asked for)   |   box login   |   box accounts");
+    Console.WriteLine("  UnisonoCli box ls [path] [login]     |   box logout <login>   |   init <box/path> <localDir> --box [login] [--create]");
     Console.WriteLine("  UnisonoCli groups                    sync groups, and groups found in synced folders that this computer can join");
     Console.WriteLine("  UnisonoCli groups create <name> <hubDir> <memberDir>...   |   groups members <name> <memberDir>...   |   groups hub <name> <newHubDir>");
     Console.WriteLine("  UnisonoCli groups join <hubDir>   |   groups remove <name> [--everywhere]");
