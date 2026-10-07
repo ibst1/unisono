@@ -20,6 +20,8 @@ public sealed class SynologyStore : IRemoteStore
 
     public string Kind => "Synology";
 
+    private readonly HashSet<string> Told = new(StringComparer.Ordinal); // case clashes already reported
+
     public void LoadState(SyncState state) { }
     public void SaveState(SyncState state) { }
 
@@ -36,14 +38,20 @@ public sealed class SynologyStore : IRemoteStore
         {
             ct.ThrowIfCancellationRequested();
             var (path, rel) = queue.Dequeue();
-            foreach (var e in await _nas.ListAsync(path, ct))
+            var entries = (await _nas.ListAsync(path, ct)).OrderBy(e => e.Name, StringComparer.Ordinal).ToList();
+            var names = new HashSet<string>(entries.Select(e => e.Name), StringComparer.OrdinalIgnoreCase);
+            foreach (var e in entries)
             {
                 if (e.Name.StartsWith("#", StringComparison.Ordinal) || e.Name == "@eaDir") continue; // #recycle, #snapshot, thumbnails
                 var childRel = PathUtil.Join(rel, e.Name);
                 if (tree.ContainsKey(childRel))
                 {
-                    log.Warn($"skipping '{childRel}': a sibling differs only in case, which Windows cannot hold");
-                    continue;
+                    // A sibling that differs only in case, which Windows cannot hold: shown here under a free name.
+                    // Ids are paths on a NAS, so the item keeps its own (renaming it here renames it there).
+                    var free = PathUtil.FreeName(e.Name, e.IsDir, n => names.Contains(n));
+                    names.Add(free);
+                    if (Told.Add(e.Path)) log.Info($"'{childRel}' differs from a sibling only in case, which Windows cannot hold: synced here as '{free}'");
+                    childRel = PathUtil.Join(rel, free);
                 }
                 var node = ToNode(e, path, childRel);
                 tree[childRel] = node;

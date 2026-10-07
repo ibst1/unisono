@@ -71,6 +71,24 @@ public sealed partial class SyncEngine
     /// <summary>Something was left for a moment (a file still being written); the host runs another cycle soon.</summary>
     public bool NeedsFollowUp { get; private set; }
 
+    /// <summary>As of the last full cycle: synced files that are on the remote twice with the same content (the copy is left out).</summary>
+    public IReadOnlyList<DuplicateFile> Duplicates { get; private set; } = Array.Empty<DuplicateFile>();
+
+    /// <summary>Moves the copies of <see cref="Duplicates"/> to the remote's trash, each after checking it again. Returns how many. Call between cycles.</summary>
+    public async Task<int> TrashDuplicatesAsync(CancellationToken ct)
+    {
+        var done = 0;
+        foreach (var d in Duplicates)
+        {
+            if (!await _store.TrashDuplicateAsync(d, ct)) { _log.Info($"[{_pair.Name}] '{d.Rel}': its copy was not trashed, the two are no longer the same"); continue; }
+            done++;
+            _log.Info($"[{_pair.Name}] '{d.Rel}' was on the other side twice with the same content: the copy (id {d.CopyId}) went to the trash");
+            Journal("duplicate trashed", d.Rel, d.Size, "a second, identical copy by the same name; moved to the trash on the other side");
+        }
+        Duplicates = Array.Empty<DuplicateFile>();
+        return done;
+    }
+
     /// <summary>As of the last cycle: the pair's local folder, or a folder pair's other folder, that was deleted (see <see cref="DeletedFolder"/>).</summary>
     public string? FolderGone { get; private set; }
 
@@ -215,7 +233,8 @@ public sealed partial class SyncEngine
             _log);
         _ignoredBelow = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // The backup's versions folder is not part of the synced content, on either side.
-        var remote = Visible(Without(remoteAll, IsInVersions), n => n.IsFolder, ignore);
+        var remote = Holdable(Visible(Without(remoteAll, IsInVersions), n => n.IsFolder, ignore));
+        Duplicates = _store.Duplicates.Where(d => remote.ContainsKey(d.Rel)).ToList();
         var local = Visible(Without(localAll, IsInVersions), i => i.IsDir, ignore);
         Advise(local, stats);
         try
@@ -262,6 +281,28 @@ public sealed partial class SyncEngine
         foreach (var (rel, n) in tree) // a sum: the order of the dictionary does not matter
             h += HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(rel), n.Id, n.Size, n.ModifiedUtc, n.Md5);
         return h;
+    }
+
+    /// <summary>
+    /// The remote items whose names Windows can hold. The others (and everything in such a folder) are left out with
+    /// a warning, once: no download that fails every cycle. Their folders count as holding ignored content, so they are
+    /// never deleted as a whole, and the item stays untouched on the other side.
+    /// </summary>
+    private Dictionary<string, RemoteNode> Holdable(Dictionary<string, RemoteNode> remote)
+    {
+        if (!remote.Keys.Any(k => k.Split('/').Any(s => PathUtil.WindowsProblem(s) != null))) return remote;
+        var kept = new Dictionary<string, RemoteNode>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (rel, node) in remote)
+        {
+            var parts = rel.Split('/');
+            var bad = Array.FindIndex(parts, s => PathUtil.WindowsProblem(s) != null);
+            if (bad < 0) { kept[rel] = node; continue; }
+            if (bad == parts.Length - 1)
+                WarnOnce("name:" + rel, $"'{rel}' has {PathUtil.WindowsProblem(parts[^1])} in its name, which Windows does not allow: it is left out of syncing " +
+                                        $"and stays as it is on the other side. Rename it there to have it synced.");
+            for (var p = PathUtil.ParentOf(rel); p.Length > 0; p = PathUtil.ParentOf(p)) _ignoredBelow.Add(p);
+        }
+        return kept;
     }
 
     /// <summary>The in-scope, not-ignored part of one side; records which folders hold ignored content.</summary>

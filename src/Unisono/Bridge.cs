@@ -216,6 +216,20 @@ sealed class Bridge : IAsyncDisposable
                 await engine.RunCycleAsync(cts.Token);
                 return new { actions = engine.Plan.Select(a => new { action = a.Action, path = a.Path, detail = a.Detail }) };
             }
+            case "pair.trashDuplicates":
+            {
+                var pair = FindPair(Str(p, "id"));
+                using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+                var n = await _host.TrashDuplicatesAsync(pair.Id).WaitAsync(cts.Token);
+                _pushState();
+                return new { trashed = n };
+            }
+            case "pair.keepDuplicates":
+            {
+                if (_host.Pairs.FirstOrDefault(s => s.Pair.Id == Str(p, "id")) is { } st) st.DuplicatesKept = true;
+                _pushState();
+                return null;
+            }
             case "pair.keepGone":
             {
                 if (_host.Pairs.FirstOrDefault(s => s.Pair.Id == Str(p, "id")) is { } st) st.FolderGoneKept = true;
@@ -423,6 +437,7 @@ sealed class Bridge : IAsyncDisposable
             lastChecked = st?.LastChecked is { } lc ? lc.ToString(lc.Date == DateTime.Today ? "HH:mm" : "d MMM") : null,
             checkProblems = st?.LastCheck?.Problems.Select(x => new { rel = x.Rel, side = x.Side, detail = x.Detail }).ToList(),
             groupId = p.Group?.Id, group = p.Group?.Name,
+            duplicates = st is { DuplicatesKept: false } ? st.Duplicates.Select(x => x.Rel).ToList() : new List<string>(),
             folderGone = st is { FolderGoneKept: false } ? st.FolderGone : null,
             hubGone = st?.FolderGone != null && p.Group != null && st.FolderGone.Equals(p.RemoteFullPath, StringComparison.OrdinalIgnoreCase),
         };

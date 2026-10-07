@@ -39,6 +39,10 @@ public sealed class PairStatus
     public string? FolderGone { get; set; }
     /// <summary>The user chose to keep the pair although its folder is gone: not offered again until the folder is back and gone again.</summary>
     public bool FolderGoneKept { get; set; }
+    /// <summary>Synced files that are on the other side twice with the same content, as of the last cycle (see SyncEngine.Duplicates).</summary>
+    public IReadOnlyList<DuplicateFile> Duplicates { get; set; } = Array.Empty<DuplicateFile>();
+    /// <summary>The user chose to keep the duplicates: not offered again in this session.</summary>
+    public bool DuplicatesKept { get; set; }
 }
 
 /// <summary>
@@ -90,6 +94,17 @@ public sealed class SyncHost : IAsyncDisposable
     {
         var done = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         _restores.GetOrAdd(pairId, _ => new()).Enqueue((versionRel, done));
+        _forceOnce = true; // even while paused
+        Nudge();
+        return done.Task;
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<int>> _trashDuplicates = new();
+
+    /// <summary>Moves the pair's duplicate copies to the remote's trash after its next cycle; returns how many went.</summary>
+    public Task<int> TrashDuplicatesAsync(string pairId)
+    {
+        var done = _trashDuplicates.GetOrAdd(pairId, _ => new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously));
         _forceOnce = true; // even while paused
         Nudge();
         return done.Task;
@@ -379,6 +394,12 @@ public sealed class SyncHost : IAsyncDisposable
                             }
                             var stats = await engine.RunCycleAsync(ct);
                             TrackFolder(ps, engine.FolderGone);
+                            if (_trashDuplicates.TryRemove(ps.Pair.Id, out var trash))
+                            {
+                                try { trash.SetResult(await engine.TrashDuplicatesAsync(ct)); followUp = true; }
+                                catch (Exception tex) { trash.SetException(tex); }
+                            }
+                            ps.Duplicates = engine.Duplicates;
                             if (ps.Pair.Kind == RemoteKind.Drive) _exports[ps.Pair.Id] = engine.ExportedFiles();
                             followUp |= engine.NeedsFollowUp;
                             ps.LastStats = stats;

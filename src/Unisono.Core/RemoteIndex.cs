@@ -5,6 +5,9 @@ using File = Google.Apis.Drive.v3.Data.File;
 
 namespace Unisono;
 
+/// <summary>A file on the remote twice by the same name and with the same content: <paramref name="KeptId"/> is synced, <paramref name="CopyId"/> is left out.</summary>
+public sealed record DuplicateFile(string Rel, string KeptId, string CopyId, string Md5, long Size);
+
 public sealed class RemoteNode
 {
     public string Id { get; set; } = "";
@@ -178,13 +181,23 @@ public sealed class RemoteIndex
 
     /// <summary>
     /// Path-keyed view of everything reachable from the root. Drive allows sibling name clashes (and case-only
-    /// differences); Windows does not, so the first one wins and the rest are reported and left out. Nodes that
-    /// are no longer reachable (moved out, parent trashed) are pruned here.
+    /// differences); Windows does not. Of files with the same content (same MD5) one is enough here: the others are
+    /// left out. Any other second item gets a free name here ("name (2).ext", see <see cref="PathUtil.FreeName"/>) and
+    /// keeps its own name on Drive; renaming or moving it here renames it there too, which ends the clash. The order is
+    /// fixed (by name, then id), so each keeps its name from one listing to the next. Nodes that are no longer
+    /// reachable (moved out, parent trashed) are pruned here.
     /// </summary>
+    /// <summary>As of the last <see cref="BuildTree"/>: files that are on Drive twice with the same content, of which only one is synced.</summary>
+    public List<DuplicateFile> Duplicates { get; private set; } = new();
+
+    /// <summary>Items already told about (the tree is built every cycle): once per process.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> Told = new();
+
     public Dictionary<string, RemoteNode> BuildTree(Log log)
     {
         var tree = new Dictionary<string, RemoteNode>(StringComparer.OrdinalIgnoreCase);
-        var byParent = _nodes.Values.GroupBy(n => n.ParentId).ToDictionary(g => g.Key, g => g.OrderBy(n => n.Name, StringComparer.Ordinal).ThenBy(n => n.Id, StringComparer.Ordinal).ToList());
+        var duplicates = new List<DuplicateFile>();
+        var byParent =_nodes.Values.GroupBy(n => n.ParentId).ToDictionary(g => g.Key, g => g.OrderBy(n => n.Name, StringComparer.Ordinal).ThenBy(n => n.Id, StringComparer.Ordinal).ToList());
         var reachable = new HashSet<string>();
         var stack = new Stack<(string Id, string Prefix)>();
         stack.Push((RootId, ""));
@@ -192,18 +205,31 @@ public sealed class RemoteIndex
         {
             var (id, prefix) = stack.Pop();
             if (!byParent.TryGetValue(id, out var kids)) continue;
+            var names = new HashSet<string>(kids.Select(k => k.Name), StringComparer.OrdinalIgnoreCase);
             foreach (var kid in kids)
             {
                 var rel = prefix + kid.Name;
                 if (kid.Name.Contains('/') || kid.Name.Contains('\\') || kid.Name is "." or "..")
                 {
-                    log.Warn($"skipping '{rel}': name not representable on Windows");
+                    if (Told.TryAdd(kid.Id, true)) log.Warn($"skipping '{rel}': name not representable on Windows");
                     continue;
                 }
-                if (tree.ContainsKey(rel))
+                if (tree.TryGetValue(rel, out var first))
                 {
-                    log.Warn($"skipping duplicate '{rel}' (Drive id {kid.Id}); Windows cannot hold two files by that name");
-                    continue;
+                    reachable.Add(kid.Id); // still part of the folder, just not shown twice
+                    if (!kid.IsFolder && !first.IsFolder && kid.Md5 != null && kid.Md5 == first.Md5 && kid.Size == first.Size)
+                    {
+                        duplicates.Add(new DuplicateFile(rel, first.Id, kid.Id, kid.Md5, kid.Size));
+                        if (Told.TryAdd(kid.Id, true))
+                            log.Info($"'{rel}' is twice on Drive with the same content (Drive ids {first.Id} and {kid.Id}): synced once; the copy stays on Drive untouched");
+                        continue;
+                    }
+                    var free = PathUtil.FreeName(kid.Name, kid.IsFolder, n => names.Contains(n) || tree.ContainsKey(prefix + n));
+                    names.Add(free);
+                    if (Told.TryAdd(kid.Id, true))
+                        log.Info($"'{rel}' is twice on Drive{(kid.IsFolder || first.IsFolder ? "" : " with different content")}: the second (Drive id {kid.Id}) is synced here as '{free}'; " +
+                                 "renaming it here renames it on Drive too");
+                    rel = prefix + free;
                 }
                 kid.RelPath = rel;
                 tree[rel] = kid;
@@ -213,6 +239,7 @@ public sealed class RemoteIndex
         }
         foreach (var id in _nodes.Keys.Where(k => !reachable.Contains(k)).ToList())
             _nodes.Remove(id);
+        Duplicates = duplicates;
         return tree;
     }
 }

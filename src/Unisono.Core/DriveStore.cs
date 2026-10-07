@@ -77,6 +77,21 @@ public sealed class DriveStore : IRemoteStore
 
     private string ParentId(RemoteNode? parent) => parent?.Id ?? _index!.RootId;
 
+    public IReadOnlyList<DuplicateFile> Duplicates => _index?.Duplicates ?? new();
+
+    public async Task<bool> TrashDuplicateAsync(DuplicateFile d, CancellationToken ct)
+    {
+        var kept = await _drive.GetFileAsync(d.KeptId, ct);
+        var copy = await _drive.GetFileAsync(d.CopyId, ct);
+        if (kept == null || copy == null) return false;
+        static bool Same(Google.Apis.Drive.v3.Data.File f, DuplicateFile d) => string.Equals(f.Md5Checksum, d.Md5, StringComparison.OrdinalIgnoreCase) && f.Size == d.Size;
+        // Only while both still hold that content, in the same folder under the same name.
+        if (!Same(kept, d) || !Same(copy, d) || kept.Name != copy.Name || kept.Parents?.FirstOrDefault() != copy.Parents?.FirstOrDefault()) return false;
+        await _drive.TrashAsync(d.CopyId, ct);
+        _index?.Remove(d.CopyId);
+        return true;
+    }
+
     public async Task<RemoteNode?> RefreshAsync(RemoteNode node, CancellationToken ct)
     {
         var f = await _drive.GetFileAsync(node.Id, ct);

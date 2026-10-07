@@ -37,6 +37,15 @@ public interface IRemoteStore
 
     Task<RemoteNode> UploadUpdateAsync(string localPath, RemoteNode node, CancellationToken ct);
 
+    /// <summary>As of the last <see cref="GetTreeAsync"/>: files there twice with the same content, of which one is synced (Drive).</summary>
+    IReadOnlyList<DuplicateFile> Duplicates => Array.Empty<DuplicateFile>();
+
+    /// <summary>
+    /// Moves a duplicate's copy to the trash, after checking straight with the remote that both are still there with
+    /// that content. False when they are not (then nothing is done).
+    /// </summary>
+    Task<bool> TrashDuplicateAsync(DuplicateFile d, CancellationToken ct) => Task.FromResult(false);
+
     /// <summary>How many new files <see cref="UploadNewAsync"/> may upload at once (it must then be thread-safe).</summary>
     int ParallelUploads => 1;
 

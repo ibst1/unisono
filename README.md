@@ -409,6 +409,15 @@ Unisono. Unisono can also sync a vault made by Cryptomator.
 - The crypto (AES-SIV, scrypt, AES Key Wrap, AES-GCM) is in `CryptomatorPrimitives.cs`, `CryptomatorVault.cs` and
   `CryptomatorStore.cs`; the primitives were checked against the RFC 5297, 7914 and 3394 test vectors.
 
+## Names Windows cannot hold
+
+- Drive allows two items by the same name in one folder (and names differing only in case; so do a NAS and Box).
+  Of files with the same content one is synced, and the pair's card offers to move the copies to Drive's trash
+  (each is checked again with Drive first). Any other second item is synced here as `name (2).ext`; renaming it
+  here renames it there too.
+- Names with `< > : " | ? *`, a dot or space at the end, or a reserved name (`CON`, `NUL`...) are left out with a
+  warning and stay untouched on the other side; their folders are never deleted as a whole.
+
 ## Renames and moves
 
 A file or folder renamed or moved on one side is renamed or moved on the other, instead of

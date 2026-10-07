@@ -211,7 +211,7 @@ try
             foreach (var f in children)
             {
                 var kind = DriveClient.IsFolder(f) ? "<dir>" : DriveClient.IsGoogleNative(f) ? "<gdoc>" : (f.Size?.ToString() ?? "?");
-                Console.WriteLine($"{f.ModifiedTimeDateTimeOffset:yyyy-MM-dd HH:mm:ss.fff}  {kind,10}  {f.Name}  v{f.Version}");
+                Console.WriteLine($"{f.ModifiedTimeDateTimeOffset:yyyy-MM-dd HH:mm:ss.fff}  {kind,10}  {f.Name}  v{f.Version}  md5 {f.Md5Checksum ?? "-"}  id {f.Id}");
             }
             Console.WriteLine($"{children.Count} item(s)");
             return 0;
