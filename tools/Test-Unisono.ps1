@@ -464,6 +464,19 @@ function Test-Groups {
     $kept = { param($c) @(Get-ChildItem "$($c.Home)\M\.obsidian" -Filter "hotkeys*.json" | Where-Object { (Get-Content -LiteralPath $_.FullName -Raw).Trim() -eq "after the move" }).Count -ge 1 }
     Check "groups ... and nothing is lost" { (& $kept $a) -and (& $kept $b) }
 
+    Section "groups: a pair whose folder was deleted"
+    $go = New-TestDir "$work\gone-other"
+    $g = Computer "folder-G" @{ Kind = "Folder"; RemotePath = $go }
+    Put $g "keep.txt" "kept"; Start-Sleep 2; $null = Sync $g
+    Remove-Item -LiteralPath $g.Local -Recurse -Force
+    $out = (Sync $g) -join "`n"
+    Check "groups a deleted local folder is reported and nothing is done" { $out -match "does not exist" -and (Test-Path -LiteralPath "$go\keep.txt") }
+    $go2 = New-TestDir "$work\gone-other2"
+    $g2 = Computer "folder-G2" @{ Kind = "Folder"; RemotePath = $go2 }
+    Put $g2 "keep.txt" "kept"; Start-Sleep 2; $null = Sync $g2
+    Remove-Item -LiteralPath $go2 -Recurse -Force
+    $out = (Sync $g2) -join "`n"
+    Check "groups a deleted other folder is reported and nothing is deleted here" { $out -match "does not exist any more" -and (Has $g2 "keep.txt") }
 }
 
 # ------------------------------------------------------------------ UI

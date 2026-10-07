@@ -71,6 +71,26 @@ public sealed partial class SyncEngine
     /// <summary>Something was left for a moment (a file still being written); the host runs another cycle soon.</summary>
     public bool NeedsFollowUp { get; private set; }
 
+    /// <summary>As of the last cycle: the pair's local folder, or a folder pair's other folder, that was deleted (see <see cref="DeletedFolder"/>).</summary>
+    public string? FolderGone { get; private set; }
+
+    /// <summary>
+    /// The pair's local folder, or a folder pair's other folder, when it is not there although the folder it lay in
+    /// is: deleted (or renamed), rather than on a drive or share that is not connected right now. Null otherwise.
+    /// </summary>
+    public static string? DeletedFolder(SyncPair pair)
+    {
+        static bool Gone(string path)
+        {
+            if (path.Length == 0 || Directory.Exists(path)) return false;
+            var parent = Path.GetDirectoryName(path.TrimEnd('\\'));
+            return parent != null && Directory.Exists(parent);
+        }
+        if (Gone(pair.LocalFullPath)) return pair.LocalFullPath;
+        if (pair.Kind == RemoteKind.Folder && Gone(pair.RemoteFullPath)) return pair.RemoteFullPath;
+        return null;
+    }
+
     /// <summary>A file written to in the last seconds is left for the next cycle rather than uploaded half-saved.</summary>
     /// <summary>
     /// How long one cycle may keep starting file transfers; the rest waits for the next cycle. Set by the host when
@@ -145,9 +165,15 @@ public sealed partial class SyncEngine
     {
         var stats = new CycleStats();
         Plan.Clear();
+        FolderGone = DeletedFolder(_pair);
         if (!Directory.Exists(_root))
         {
             _log.Warn($"[{_pair.Name}] local folder {_root} does not exist; nothing done");
+            return stats;
+        }
+        if (FolderGone != null)
+        {
+            WarnOnce("gone:" + FolderGone, $"{FolderGone} does not exist any more; nothing done");
             return stats;
         }
 

@@ -90,6 +90,13 @@ sealed partial class HostForm : Form
             _tray.ShowBalloonTip(20000, $"Unisono: {ps.Pair.Name} is encrypted",
                 "Everything is in the Cryptomator vault. Unencrypted copies can still be in the trash on the other side (Google Drive, the NAS's recycle bin) until it is emptied.",
                 ToolTipIcon.Info));
+        _host.FolderGone += ps => OnUi(() =>
+        {
+            _balloonTab = ps.Pair.Group != null ? "groups" : "pairs";
+            _tray.ShowBalloonTip(15000, $"Unisono: folder deleted",
+                $"{ps.FolderGone} no longer exists, so {(ps.Pair.Group != null ? $"it is not kept in step with the group '{ps.Pair.Group.Name}'" : "its pair cannot sync")}. Click to remove the pair, or keep it in case the folder comes back.",
+                ToolTipIcon.Warning);
+        });
         // Other computers change sync groups through the file in the hub, and a hub that arrives here can be joined.
         _groupTimer.Tick += async (_, _) => await ScanGroupsAsync();
         _host.ContentProblem += ps => OnUi(() =>

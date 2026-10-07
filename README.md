@@ -329,6 +329,11 @@ side are picked up at once where Windows reports them (network shares usually do
   is deleted locally.
 
 From the command line: `UnisonoCli init \\server\share\Projects C:\Work\Projects --folder`.
+
+If a pair's local folder, or a folder pair's other folder, is deleted (the folder it lay in is still there, so it is
+not just a drive that is not connected), the pair does nothing, its card says so and the tray tells once: *Remove the
+pair*, or *Keep it* for a folder that comes back.
+
 ## Sync groups
 
 A group keeps several folders on one computer identical, e.g. the `.obsidian` settings (hotkeys, plugins) of several

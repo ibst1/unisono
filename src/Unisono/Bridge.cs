@@ -216,6 +216,12 @@ sealed class Bridge : IAsyncDisposable
                 await engine.RunCycleAsync(cts.Token);
                 return new { actions = engine.Plan.Select(a => new { action = a.Action, path = a.Path, detail = a.Detail }) };
             }
+            case "pair.keepGone":
+            {
+                if (_host.Pairs.FirstOrDefault(s => s.Pair.Id == Str(p, "id")) is { } st) st.FolderGoneKept = true;
+                _pushState();
+                return null;
+            }
             case "group.save": return await SaveGroupAsync(p);
             case "group.remove":
             {
@@ -406,6 +412,8 @@ sealed class Bridge : IAsyncDisposable
             lastChecked = st?.LastChecked is { } lc ? lc.ToString(lc.Date == DateTime.Today ? "HH:mm" : "d MMM") : null,
             checkProblems = st?.LastCheck?.Problems.Select(x => new { rel = x.Rel, side = x.Side, detail = x.Detail }).ToList(),
             groupId = p.Group?.Id, group = p.Group?.Name,
+            folderGone = st is { FolderGoneKept: false } ? st.FolderGone : null,
+            hubGone = st?.FolderGone != null && p.Group != null && st.FolderGone.Equals(p.RemoteFullPath, StringComparison.OrdinalIgnoreCase),
         };
     }
 

@@ -35,6 +35,10 @@ public sealed class PairStatus
     public string? LastError { get; set; }
     /// <summary>Conflict copies in the pair not sorted out yet, as of the last cycle (the tray stays amber while there are any).</summary>
     public int ConflictCopies { get; set; }
+    /// <summary>The pair's folder (local, or a folder pair's other one) was deleted: the window offers to remove the pair.</summary>
+    public string? FolderGone { get; set; }
+    /// <summary>The user chose to keep the pair although its folder is gone: not offered again until the folder is back and gone again.</summary>
+    public bool FolderGoneKept { get; set; }
 }
 
 /// <summary>
@@ -115,6 +119,18 @@ public sealed class SyncHost : IAsyncDisposable
     public event Action<PairStatus, CycleStats>? CycleCompleted;
     /// <summary>A pair has not synced cleanly for a while (<see cref="PairStatus.Health"/> says why). Once per episode.</summary>
     public event Action<PairStatus>? HealthProblem;
+    /// <summary>A pair's folder was deleted (<see cref="PairStatus.FolderGone"/>). Once until the folder is back.</summary>
+    public event Action<PairStatus>? FolderGone;
+
+    private void TrackFolder(PairStatus ps, string? gone)
+    {
+        if (gone == ps.FolderGone) return;
+        ps.FolderGone = gone;
+        ps.FolderGoneKept = false;
+        if (gone == null) return;
+        _log.Warn($"[{ps.Pair.Name}] {gone} was deleted; the pair can be removed in the window");
+        try { FolderGone?.Invoke(ps); } catch { }
+    }
 
     public HostState State { get; private set; } = HostState.Stopped;
 
@@ -356,6 +372,7 @@ public sealed class SyncHost : IAsyncDisposable
                                 _log.Info($"[{ps.Pair.Name}] {forget.Count} file(s) will be compared afresh; differing versions are both kept");
                             }
                             var stats = await engine.RunCycleAsync(ct);
+                            TrackFolder(ps, engine.FolderGone);
                             followUp |= engine.NeedsFollowUp;
                             ps.LastStats = stats;
                             ps.ConflictCopies = engine.ConflictCopyCount;
@@ -364,7 +381,7 @@ public sealed class SyncHost : IAsyncDisposable
                             ps.LastSync = DateTime.Now;
                             SaveLastRuns();
                             ps.LastError = stats.Errors > 0 ? $"{stats.Errors} item(s) failed, see log" : null;
-                            Update(ps, stats.Errors > 0 ? "errors" : "in sync");
+                            Update(ps, stats.Errors > 0 ? "errors" : engine.FolderGone != null ? "folder deleted" : "in sync");
                             if (stats.Errors > 0) ok = false;
                             TrackHealth(ps, stats.Errors > 0 ? $"{stats.Errors} item(s) could not be synced, e.g. {stats.LastErrorText}" : null);
                             if (stats.Frequent.Count > 0)
@@ -393,6 +410,7 @@ public sealed class SyncHost : IAsyncDisposable
                         }
                         catch (Exception ex)
                         {
+                            TrackFolder(ps, SyncEngine.DeletedFolder(ps.Pair));
                             ok = false;
                             Interlocked.Exchange(ref rt.Changed, 1); // scan again next time
                             if (ps.Pair.Kind == RemoteKind.Synology) { rt.Engine = null; stores.Forget(ps.Pair); }
