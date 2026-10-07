@@ -33,6 +33,8 @@ sealed partial class HostForm : Form
     private readonly List<object> _history = new();
     private readonly System.Windows.Forms.Timer _stateTimer = new() { Interval = 250 };
     private readonly System.Windows.Forms.Timer _activityTimer = new() { Interval = 1000 };
+    private readonly System.Windows.Forms.Timer _groupTimer = new() { Interval = 60_000 };
+    private bool _scanningGroups;
     private bool _webReady;
     // The page said hello (it is loaded and listens); until then a request to open the Conflicts window waits.
     private bool _pageLoaded;
@@ -88,6 +90,8 @@ sealed partial class HostForm : Form
             _tray.ShowBalloonTip(20000, $"Unisono: {ps.Pair.Name} is encrypted",
                 "Everything is in the Cryptomator vault. Unencrypted copies can still be in the trash on the other side (Google Drive, the NAS's recycle bin) until it is emptied.",
                 ToolTipIcon.Info));
+        // Other computers change sync groups through the file in the hub, and a hub that arrives here can be joined.
+        _groupTimer.Tick += async (_, _) => await ScanGroupsAsync();
         _host.ContentProblem += ps => OnUi(() =>
             _tray.ShowBalloonTip(15000, $"Unisono: content check of {ps.Pair.Name}",
                 $"{ps.LastCheck?.Problems.Count} file(s) changed without being edited (disk or transfer damage?). Open Unisono to keep both versions.", ToolTipIcon.Warning));
@@ -107,6 +111,26 @@ sealed partial class HostForm : Form
         await StartHostAsync();
         _ = _bridge.RefreshGoogleInfoAsync();
         if (!_startHidden) await OpenWebAsync();
+        await ScanGroupsAsync();
+        _groupTimer.Start();
+    }
+
+    private async Task ScanGroupsAsync()
+    {
+        if (_scanningGroups) return;
+        _scanningGroups = true;
+        try
+        {
+            foreach (var o in await _bridge.ScanGroupsAsync())
+            {
+                _balloonTab = "groups";
+                _tray.ShowBalloonTip(20000, "Unisono: sync group found",
+                    $"The group '{o.Name}' keeps {o.Members.Count} folders in step ({o.MembersHere.Count} on this computer). Click to join it here.",
+                    ToolTipIcon.Info);
+            }
+        }
+        catch (Exception ex) { _log.Warn("looking for sync groups: " + ex.Message); }
+        finally { _scanningGroups = false; }
     }
 
     private async Task OpenWebAsync()
@@ -439,6 +463,7 @@ sealed partial class HostForm : Form
         {
             _tray.Dispose();
             _stateTimer.Dispose();
+            _groupTimer.Dispose();
             foreach (var i in _icons.Values) i.Dispose();
         }
         base.Dispose(disposing);

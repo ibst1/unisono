@@ -11,6 +11,7 @@ using File = Google.Apis.Drive.v3.Data.File;
 //   unisono run [-v]                                keep syncing: watch the local folders, poll the remote side
 //   unisono ls [drive/path] | pull <drive/path> <localDir> | changes <token>   Drive helpers
 //   unisono config | version
+//   unisono groups [create <name> <hub> <member>... | members <name> <member>... | hub <name> <hub> | join <hub> | remove <name> [--everywhere]]
 
 var asm = Assembly.GetExecutingAssembly();
 var version = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "?";
@@ -54,6 +55,79 @@ try
             foreach (var p in config.Pairs)
                 Console.WriteLine($"  [{p.Kind}] {p.Name}  <->  {p.LocalPath}   {(p.Server != null ? $"server={p.Server} user={p.User} " : "")}docs={p.GoogleDocs} cloudOnly>={p.CloudOnlyMinMB}MB folders=[{string.Join(", ", p.CloudOnlyFolders)}] poll={p.PollSeconds}s");
             if (config.Pairs.Count == 0) Console.WriteLine("  (no pairs; use: unisono init <remote/path> <localDir>)");
+            return 0;
+        }
+
+        case "groups":
+        {
+            var config = Config.Load();
+            var sub = args.Length > 1 ? args[1].ToLowerInvariant() : "list";
+            if (sub == "create" && args.Length >= 5)
+            {
+                var g = new SyncGroup
+                {
+                    Name = args[2], Hub = SyncPair.Portable(SyncGroups.Full(args[3])),
+                    Members = args.Skip(4).Select(m => SyncPair.Portable(SyncGroups.Full(m))).ToList(),
+                };
+                if (SyncGroups.Problem(config, g) is { } problem) { Console.Error.WriteLine(problem); return 1; }
+                foreach (var m in g.Members) Directory.CreateDirectory(SyncGroups.Full(m));
+                SyncGroups.Apply(config, g, log);
+                config.Save();
+                Console.WriteLine($"group '{g.Name}': {g.Members.Count} folder(s) kept in step with {g.HubFullPath}");
+                return 0;
+            }
+            if (sub == "members" && args.Length >= 4)
+            {
+                var old = config.Groups.FirstOrDefault(x => x.Name.Equals(args[2], StringComparison.OrdinalIgnoreCase) || x.Id == args[2]);
+                if (old == null) { Console.Error.WriteLine($"no group '{args[2]}'"); return 1; }
+                var g = SyncGroups.Copy(old);
+                g.Members = args.Skip(3).Select(m => old.Members.FirstOrDefault(x => SyncGroups.Full(x).Equals(SyncGroups.Full(m), StringComparison.OrdinalIgnoreCase))
+                                                     ?? SyncPair.Portable(SyncGroups.Full(m))).ToList();
+                if (SyncGroups.Problem(config, g) is { } problem) { Console.Error.WriteLine(problem); return 1; }
+                foreach (var m in g.Members) Directory.CreateDirectory(SyncGroups.Full(m));
+                SyncGroups.Apply(config, g, log);
+                config.Save();
+                return 0;
+            }
+            if (sub == "hub" && args.Length >= 4)
+            {
+                // Another folder becomes the hub; a member that does leaves the members, and the old hub becomes one.
+                var old = config.Groups.FirstOrDefault(x => x.Name.Equals(args[2], StringComparison.OrdinalIgnoreCase) || x.Id == args[2]);
+                if (old == null) { Console.Error.WriteLine($"no group '{args[2]}'"); return 1; }
+                var g = SyncGroups.WithHub(old, args[3]);
+                if (SyncGroups.Problem(config, g) is { } problem) { Console.Error.WriteLine(problem); return 1; }
+                SyncGroups.Apply(config, g, log);
+                config.Save();
+                return 0;
+            }
+            if (sub == "join" && args.Length >= 3)
+            {
+                SyncGroups.Join(config, args[2].Length == 32 && !args[2].Contains('\\') ? args[2] : SyncGroups.Full(args[2]), log);
+                config.Save();
+                return 0;
+            }
+            if (sub == "remove" && args.Length >= 3)
+            {
+                var g = config.Groups.FirstOrDefault(x => x.Name.Equals(args[2], StringComparison.OrdinalIgnoreCase) || x.Id == args[2]);
+                if (g == null) { Console.Error.WriteLine($"no group '{args[2]}'"); return 1; }
+                SyncGroups.Remove(config, g, args.Contains("--everywhere"), log);
+                config.Save();
+                return 0;
+            }
+            if (sub != "list") { Usage(); return 2; }
+            var (changed, offers) = SyncGroups.Scan(config, log);
+            if (changed) config.Save();
+            foreach (var g in config.Groups)
+            {
+                Console.WriteLine($"{g.Name}  hub {g.HubFullPath}");
+                foreach (var m in g.Members) Console.WriteLine($"  {SyncGroups.Full(m)}{(Directory.Exists(SyncGroups.Full(m)) ? "" : "  (not on this computer)")}");
+            }
+            foreach (var o in offers)
+            {
+                Console.WriteLine($"can join: {o.Name}  hub {o.Hub}  ({o.MembersHere.Count} of {o.Members.Count} folder(s) on this computer; UnisonoCli groups join \"{o.Hub}\")");
+                foreach (var p in o.Replaces) Console.WriteLine($"  replaces the pair {p.LocalFullPath} <-> {p.Name}");
+            }
+            if (config.Groups.Count == 0 && offers.Count == 0) Console.WriteLine("(no sync groups)");
             return 0;
         }
 
@@ -473,6 +547,9 @@ static void Usage()
     Console.WriteLine("  UnisonoCli ondemand-off              end files on demand for all pairs (keeps what is local, unregisters)");
     Console.WriteLine("  UnisonoCli sync [-v] [--dry-run]   |   UnisonoCli run [-v]   |   UnisonoCli config   |   UnisonoCli version");
     Console.WriteLine("  UnisonoCli ls [drive/path]   |   UnisonoCli pull <drive/path> <localDir>   |   UnisonoCli changes <token>");
+    Console.WriteLine("  UnisonoCli groups                    sync groups, and groups found in synced folders that this computer can join");
+    Console.WriteLine("  UnisonoCli groups create <name> <hubDir> <memberDir>...   |   groups members <name> <memberDir>...   |   groups hub <name> <newHubDir>");
+    Console.WriteLine("  UnisonoCli groups join <hubDir>   |   groups remove <name> [--everywhere]");
 }
 
 sealed class PullStats

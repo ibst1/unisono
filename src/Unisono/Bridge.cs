@@ -216,9 +216,49 @@ sealed class Bridge : IAsyncDisposable
                 await engine.RunCycleAsync(cts.Token);
                 return new { actions = engine.Plan.Select(a => new { action = a.Action, path = a.Path, detail = a.Detail }) };
             }
+            case "group.save": return await SaveGroupAsync(p);
+            case "group.remove":
+            {
+                var g = FindGroup(Str(p, "id"));
+                var everywhere = p.TryGetProperty("everywhere", out var ev) && ev.GetBoolean();
+                SyncGroups.Remove(Config, g, everywhere, _log);
+                Config.Save();
+                await _restartHost();
+                return null;
+            }
+            case "group.join":
+            {
+                SyncGroups.Join(Config, Str(p, "id") ?? Str(p, "hub") ?? "", _log);
+                Config.Save();
+                _offers.RemoveAll(o => o.Id == Str(p, "id") || o.Hub.Equals(Str(p, "hub"), StringComparison.OrdinalIgnoreCase));
+                await _restartHost();
+                return null;
+            }
+            case "group.decline":
+            {
+                var id = Str(p, "id") ?? "";
+                if (!Config.DeclinedGroups.Contains(id)) Config.DeclinedGroups.Add(id);
+                Config.Save();
+                _log.Info($"group '{_offers.FirstOrDefault(o => o.Id == id)?.Name ?? id}': not joined on this computer");
+                _offers.RemoveAll(o => o.Id == id);
+                _pushState();
+                return null;
+            }
             case "pair.remove":
             {
                 var pair = FindPair(Str(p, "id"));
+                if (pair.Group is { } group)
+                {
+                    // A group's pair goes by leaving the group (on every computer: the hub's file says so).
+                    var left = SyncGroups.Copy(group);
+                    left.Members = group.Members.Where(m => !SyncGroups.Full(m).Equals(pair.LocalFullPath, StringComparison.OrdinalIgnoreCase)).ToList();
+                    if (left.Members.Count == 0) SyncGroups.Remove(Config, group, everywhere: true, _log);
+                    else SyncGroups.Apply(Config, left, _log);
+                    Config.Save();
+                    _log.Info($"{pair.LocalFullPath} left the group '{group.Name}'; no files were deleted");
+                    await _restartHost();
+                    return null;
+                }
                 if (pair.OnDemand)
                 {
                     // Placeholders need their provider: turn them back into ordinary files (online-only ones are dropped;
@@ -319,6 +359,16 @@ sealed class Bridge : IAsyncDisposable
             server = c.Server, user = c.User, resolved = c.ResolvedBase, pinned = c.PinnedCertificates.Count,
         }),
         pairs = Config.Pairs.Select(PairDto),
+        groups =Config.Groups.Select(g => new
+        {
+            id = g.Id, name = g.Name, hub = g.HubFullPath, hubExists = Directory.Exists(g.HubFullPath),
+            members = g.Members.Select(m => new { path = SyncGroups.Full(m), here = Directory.Exists(SyncGroups.Full(m)) }),
+        }),
+        groupOffers = _offers.Select(o => new
+        {
+            id = o.Id, name = o.Name, hub = o.Hub, members = o.Members, membersHere = o.MembersHere,
+            replaces = o.Replaces.Select(r => $"{r.LocalFullPath} \u21c6 {r.Name}"),
+        }),
         conflictCopies = _host.Pairs.Sum(s => s.ConflictCopies),
         host = new { state = _host.State.ToString(), paused = _host.Paused, pausedBecause = _host.PausedBecause, offline = _host.Offline },
         settings = new { autostart = IsAutostart(), verbose = _settings.VerboseLog, tab = _settings.Tab },
@@ -355,7 +405,81 @@ sealed class Bridge : IAsyncDisposable
             checking = st?.Checking ?? false, running = st?.Running ?? false,
             lastChecked = st?.LastChecked is { } lc ? lc.ToString(lc.Date == DateTime.Today ? "HH:mm" : "d MMM") : null,
             checkProblems = st?.LastCheck?.Problems.Select(x => new { rel = x.Rel, side = x.Side, detail = x.Detail }).ToList(),
+            groupId = p.Group?.Id, group = p.Group?.Name,
         };
+    }
+
+    // ----------------------------------------------------------------- groups
+
+    /// <summary>Groups found in synced folders that this computer has not joined (see <see cref="ScanGroups"/>).</summary>
+    private List<GroupOffer> _offers = new();
+
+    private SyncGroup FindGroup(string? id) =>
+        Config.Groups.FirstOrDefault(g => g.Id == id) ?? throw new InvalidOperationException("That group no longer exists.");
+
+    /// <summary>
+    /// Takes in what other computers changed in the groups' files and looks for groups to join. Called now and then on
+    /// the UI thread (it changes the config; the folders it reads are few); returns the offers new since the last call.
+    /// </summary>
+    public async Task<List<GroupOffer>> ScanGroupsAsync()
+    {
+        var (changed, offers) = SyncGroups.Scan(Config, _log);
+        var fresh = offers.Where(o => !_offers.Any(x => x.Id == o.Id)).ToList();
+        var gone = _offers.Count(o => !offers.Any(x => x.Id == o.Id));
+        _offers = offers;
+        if (changed)
+        {
+            Config.Save();
+            await _restartHost();
+        }
+        if (changed || fresh.Count > 0 || gone > 0) _pushState();
+        foreach (var o in fresh) _log.Info($"found the sync group '{o.Name}' in {o.Hub}: it can be joined in the window");
+        return fresh;
+    }
+
+    /// <summary>
+    /// Creates or changes a group. The pairs it takes the place of are named first ({status:"confirm"}), and so is what
+    /// happens to the members' files; the page then sends the request again with confirmed=true.
+    /// </summary>
+    private async Task<object> SaveGroupAsync(JsonElement p)
+    {
+        var d = p.GetProperty("group");
+        var original = Str(p, "originalId") is { } oid ? FindGroup(oid) : null;
+        var confirmed = p.TryGetProperty("confirmed", out var cf) && cf.GetBoolean();
+        // Folders keep how they were written (their pairs' ids depend on it); new ones are written portably.
+        string Keep(string raw, IEnumerable<string> before) =>
+            before.FirstOrDefault(x => SyncGroups.Full(x).Equals(SyncGroups.Full(raw), StringComparison.OrdinalIgnoreCase)) ?? SyncPair.Portable(SyncGroups.Full(raw));
+        var g = original == null ? new SyncGroup() : SyncGroups.Copy(original);
+        var before = original?.Folders.ToList() ?? new List<string>();
+        g.Name = (Str(d, "name") ?? "").Trim();
+        var hub = (Str(d, "hub") ?? "").Trim();
+        g.Hub = hub.Length == 0 ? "" : Keep(hub, before);
+        g.Members = StrList(d, "members").Where(m => m.Trim().Length > 0).Select(m => Keep(m, before)).ToList();
+        var hubMoved = original != null && !SyncGroups.Same(original.Hub, g.Hub);
+        if (SyncGroups.Problem(Config, g) is { } problem) throw new InvalidOperationException(problem);
+
+        if (!confirmed)
+        {
+            var messages = new List<string>();
+            if (hubMoved)
+                messages.Add($"The hub becomes {g.HubFullPath}. Every folder pairs up with it afresh: identical files are simply linked, files that differ " +
+                             "take its version (the replaced one is kept among the previous versions). Sync everything first, so no edit is waiting in another folder. " +
+                             $"{g.HubFullPath} now goes to the cloud with its own folder's pair, replacing older copies there, and {original!.HubFullPath} no longer does. " +
+                             "Other computers in the group follow when the change reaches them.");
+            var added = g.Members.Where(m => !before.Any(x => SyncGroups.Same(x, m))).ToList();
+            var replaced = SyncGroups.Replaced(Config, g);
+            if (replaced.Count > 0)
+                messages.Add("The group takes the place of these pairs: " + string.Join("; ", replaced.Select(r => $"{r.LocalFullPath} \u21c6 {r.Name}")) + ".");
+            if (added.Any(m => Directory.Exists(SyncGroups.Full(m)) && Directory.EnumerateFileSystemEntries(SyncGroups.Full(m)).Any()))
+                messages.Add("Files in the new folders that differ from the hub's are replaced by the hub's version; the replaced version is kept among the previous versions (Versions). Files only a folder has go to the hub and from there to the others. Nothing is deleted.");
+            if (messages.Count > 0) return new { status = "confirm", messages };
+        }
+        foreach (var m in g.Members) Directory.CreateDirectory(SyncGroups.Full(m));
+        SyncGroups.Apply(Config, g, _log);
+        Config.Save();
+        _log.Info($"{(original == null ? "added" : "changed")} the group '{g.Name}': {g.Members.Count} folder(s) kept in step with {g.HubFullPath}");
+        await _restartHost();
+        return new { status = "ok" };
     }
 
     private static object? OAuthInfo()
@@ -609,6 +733,7 @@ sealed class Bridge : IAsyncDisposable
     {
         var d = p.GetProperty("pair");
         var original = Str(p, "originalId") is { } oid ? FindPair(oid) : null;
+        if (original?.Group != null) throw new InvalidOperationException($"This pair belongs to the group '{original.Group.Name}': edit the group instead.");
         var confirmed = p.TryGetProperty("confirmed", out var cf) && cf.GetBoolean();
         var create = p.TryGetProperty("create", out var cr) && cr.GetBoolean();
 

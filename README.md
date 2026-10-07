@@ -329,6 +329,35 @@ side are picked up at once where Windows reports them (network shares usually do
   is deleted locally.
 
 From the command line: `UnisonoCli init \\server\share\Projects C:\Work\Projects --folder`.
+## Sync groups
+
+A group keeps several folders on one computer identical, e.g. the `.obsidian` settings (hotkeys, plugins) of several
+Obsidian vaults: *+ Add group* on the Sync groups tab, with a hub and the folders to keep in step with it.
+
+- Each member is an ordinary two-way folder pair with the hub, made from the group when the config is loaded and never
+  stored (`SyncGroups.Expand`); a change in one member reaches the hub and from there the others. The pairs show under
+  the group's card; *Edit group* changes the folders, *Leave group* takes one out.
+- When a folder joins, its files that differ from the hub's take the hub's version (the replaced one is kept among the
+  previous versions), so joining causes no conflict copies; files only the folder has go to the hub and on to the
+  others. Hand-made folder pairs between the group's folders are replaced, keeping their history where the group's
+  pair is the same pair.
+- The members lie inside their vaults' own pairs and are left out of those (nested pairs); the hub is not, so exactly
+  one copy goes to the cloud. There, a hub file without history meets the other side's copy by date: the newer wins
+  (an old copy from before the group is replaced; one another computer's hub uploaded since is taken), and the other
+  is kept among the previous versions or in the remote's file history.
+- The hub can be changed (*Make hub* on a folder in *Edit group*, or `groups hub`): the old hub becomes one of the
+  folders, every folder pairs up with the new hub afresh (identical files are just linked), and the new hub goes to the
+  cloud with its own folder's pair instead of the old one.
+- The group is also written as `.unisono-group.json` (paths with `%USERPROFILE%`, the hub, the time of the last
+  change) into the hub and every member, and that one file stays part of the vaults' own pairs, so it reaches other
+  computers through any of them. Another computer finds it (in each synced folder and one level down) and offers to
+  join; members it does not have are left out there. Changing the group on one computer (folders, hub) changes it on
+  the others, the latest change winning; removing it everywhere removes it there too, and *Remove group* can also do
+  it only on this computer. A removed group's folders rejoin their vaults' pairs, and where the other side still has
+  an older copy from before, both are kept.
+- From the command line: `UnisonoCli groups` (with the groups to join), `groups create <name> <hub> <member>...`,
+  `groups members <name> <member>...`, `groups hub <name> <newHub>`, `groups join <hub>`, `groups remove <name> [--everywhere]`.
+
 ## Encrypted pairs (Cryptomator vaults)
 
 Tick *Encrypt on the other side* when adding a pair: the remote folder (empty, new, or an existing vault) then holds
@@ -375,6 +404,7 @@ that is removed afterwards.
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1                  # drive + ui
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite folder -OtherFolder \\server\share\tests
+powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite groups     # sync groups only (two simulated computers)
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite nas -NasServer myid -NasUser me -NasFolder "/home/tests"
 ```
 ## Building

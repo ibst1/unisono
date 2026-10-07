@@ -59,6 +59,7 @@ public sealed partial class SyncEngine
     public void SetOtherPairs(IReadOnlyList<SyncPair> pairs) => _others = pairs;
     private readonly HashSet<string> _warnedOnce = new(StringComparer.OrdinalIgnoreCase);
     private SyncScope _scope = null!;
+    private string[] _hubs = Array.Empty<string>(); // sync group hubs inside this pair's folder, relative to it
     private HashSet<string> _ignoredBelow = new(StringComparer.OrdinalIgnoreCase);
 
     public SyncPair Pair => _pair;
@@ -153,6 +154,7 @@ public sealed partial class SyncEngine
         // Selective sync and ignore rules: out-of-scope and ignored items are simply invisible to the rest of the
         // cycle, so they are never touched on either side.
         _scope = new SyncScope(_pair, _others);
+        _hubs = SyncGroups.HubsInside(_pair, _others).ToArray();
         EnsureSyncRoot();
         SweepParked();
         _doneThisCycle.Clear();
@@ -641,6 +643,17 @@ public sealed partial class SyncEngine
                 // Both sides have it and we have never synced it: content decides; in a one-way pair the source wins.
                 if (await SameContentAsync(node, path, ct)) { RecordFile(rel, node, path); return; }
                 if (_pair.Direction == SyncDirection.DownloadOnly) await DownloadAsync(node, path, stats, "differs; download-only pair", ct);
+                // A folder joining a sync group takes the group's version; its own is kept among the previous versions.
+                else if (_pair.Group != null) await DownloadAsync(node, path, stats, $"differs; the version of the group '{_pair.Group.Name}' is used", ct);
+                // A group's hub that just became one (or comes back into this pair): the newer version wins rather than
+                // conflict copies that would spread to every member. The other side's may be a copy from before the
+                // group (older), or one another computer's hub has uploaded since (newer). The loser is kept: locally
+                // among the previous versions, remotely in the file's own history where the remote has one.
+                else if (_hubs.Any(h => rel.StartsWith(h + "/", StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (node.ModifiedUtc.Ticks > l.MtimeTicks) await DownloadAsync(node, path, stats, "differs; the newer version is used (a sync group's hub)", ct);
+                    else await UploadChangeAsync(node, rel, path, l, remote, stats, ct);
+                }
                 else if (!Down) await UploadChangeAsync(node, rel, path, l, remote, stats, ct);
                 else await ConflictAsync(node, rel, path, remote, stats, "exists on both sides with different content", ct);
                 return;

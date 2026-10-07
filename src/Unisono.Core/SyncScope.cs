@@ -9,14 +9,21 @@ public sealed class SyncScope
 {
     private readonly string[] _include;
     private readonly string[] _exclude;
+    /// <summary>Nested sync group members: left out but for their group file, which travels to other computers this way.</summary>
+    private readonly string[] _members;
 
     /// <param name="others">All other pairs. A pair whose local folder lies inside this one's (nested pairs, e.g. a Drive
     /// folder inside a NAS folder) is excluded here, locally and remotely, so each file belongs to exactly one pair.</param>
     public SyncScope(SyncPair pair, IEnumerable<SyncPair>? others = null)
     {
+        others ??= Array.Empty<SyncPair>();
         _include = Normalize(pair.IncludeFolders);
-        _exclude = Normalize(pair.ExcludeFolders.Concat(NestedPaths(pair, others ?? Array.Empty<SyncPair>())));
+        _exclude = Normalize(pair.ExcludeFolders.Concat(NestedPaths(pair, others)));
+        _members = Normalize(NestedPaths(pair, others.Where(o => o.Group != null)));
     }
+
+    private bool GroupFile(string rel, bool isDir) =>
+        _members.Any(m => isDir ? rel.Equals(m, StringComparison.OrdinalIgnoreCase) : rel.Equals(m + "/" + SyncGroups.FileName, StringComparison.OrdinalIgnoreCase));
 
     public static IEnumerable<string> NestedPaths(SyncPair pair, IEnumerable<SyncPair> others)
     {
@@ -40,7 +47,7 @@ public sealed class SyncScope
 
     public bool Contains(string rel, bool isDir)
     {
-        if (_exclude.Any(x => Under(rel, x))) return false;
+        if (_exclude.Any(x => Under(rel, x)) && !GroupFile(rel, isDir)) return false;
         if (_include.Length == 0) return true;
         if (_include.Any(i => Under(rel, i))) return true;
         return isDir && IsBridge(rel);
@@ -56,7 +63,7 @@ public sealed class SyncScope
     /// the other, item by item.
     /// </summary>
     public bool IsProtected(string rel) =>
-        IsBridge(rel) || _exclude.Any(x => x.StartsWith(rel + "/", StringComparison.OrdinalIgnoreCase));
+        IsBridge(rel) || _exclude.Any(x => x.StartsWith(rel + "/", StringComparison.OrdinalIgnoreCase)) || GroupFile(rel, isDir: true);
 
     public Dictionary<string, T> Filter<T>(Dictionary<string, T> items, Func<T, bool> isDir)
     {

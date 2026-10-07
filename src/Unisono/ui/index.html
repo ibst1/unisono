@@ -39,6 +39,8 @@ h2 { font-size: 15px; margin: 0 0 4px; }
 h2 + .sub { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
 section { margin-bottom: 28px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 16px; margin-bottom: 10px; }
+.groupcard { margin-bottom: 6px; }
+.members { margin-left: 22px; padding-left: 10px; border-left: 2px solid var(--line); margin-bottom: 14px; }
 .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .grow { flex: 1; min-width: 0; }
 .muted { color: var(--muted); }
@@ -148,6 +150,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 <nav id="tabs">
   <button data-tab="accounts">Accounts</button>
   <button data-tab="pairs">Sync pairs</button>
+  <button data-tab="groups" id="tabGroupsBtn">Sync groups</button>
   <button data-tab="activity">Activity</button>
   <button data-tab="settings">Settings</button>
   <button data-tab="log">Log</button>
@@ -197,6 +200,19 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       </div>
       <div id="transfers" hidden></div>
       <div id="pairList"></div>
+      <div id="groupHint"></div>
+    </section>
+  </div>
+
+  <!-- ============================================================== groups -->
+  <div class="tab" id="tab-groups">
+    <section>
+      <div class="row" style="margin-bottom:12px">
+        <div class="grow"><h2>Sync groups</h2><div class="sub" style="margin:0">Several folders on this computer kept identical, e.g. the settings of several Obsidian vaults: each is synced with the group's hub.</div></div>
+        <button class="btn primary" id="btnAddGroup">+ Add group</button>
+      </div>
+      <div id="groupOffers"></div>
+      <div id="groupList"></div>
     </section>
   </div>
 
@@ -403,6 +419,31 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="actions"><button class="btn" data-close>Later</button><button class="btn" id="sugKeepAll">Keep syncing all</button><button class="btn primary" id="sugOk">Ignore checked</button></div>
 </div></div>
 
+<div class="modal" id="dlgGroup"><div class="dialog">
+  <h3 id="groupTitle">Add sync group</h3>
+  <div class="small muted" style="margin-bottom:10px">Several folders on this computer kept identical, e.g. the <span class="mono">.obsidian</span> settings of several vaults.
+    Each folder is synced two-way with the hub, and through it with the others. Only the hub goes to the cloud with its own pair; the other folders are left out of theirs.
+    Other computers that sync the hub find the group there and offer to join it.</div>
+  <div class="field"><label>Name</label><input type="text" id="groupName" placeholder="e.g. Obsidian settings"></div>
+  <div class="field"><label>Hub</label>
+    <div class="inline"><input type="text" id="groupHub"><button class="btn" id="groupPickHub">Browse...</button></div>
+    <div class="help">Its content wins when a folder joins: files that differ are replaced by the hub's (and kept among the previous versions). Only the hub goes to the cloud with its own folder's pair.
+      To move the hub to one of the folders, use <i>Make hub</i> there; the old hub then becomes one of the folders.</div></div>
+  <div class="field"><label>Folders</label>
+    <div><div id="groupMembers"></div><button class="btn" id="groupAddMember" style="margin-top:6px">Add folder...</button>
+      <div class="help">Missing folders are created. A folder that is not on another computer is simply left out there.</div></div></div>
+  <div id="groupMsg"></div>
+  <div class="actions"><button class="btn danger" id="groupRemove" style="margin-right:auto" hidden>Remove group...</button><button class="btn" data-close>Cancel</button><button class="btn primary" id="groupSave">Save</button></div>
+</div></div>
+
+<div class="modal" id="dlgGroupRemove"><div class="dialog">
+  <h3>Remove sync group</h3>
+  <div class="small" id="groupRemoveText" style="margin-bottom:10px"></div>
+  <label class="check"><input type="radio" name="grpWhere" value="all" checked> On all computers: the folders are no longer kept in step anywhere</label>
+  <label class="check"><input type="radio" name="grpWhere" value="here"> Only on this computer: the others keep the group</label>
+  <div class="actions"><button class="btn" data-close>Cancel</button><button class="btn danger" id="groupRemoveOk">Remove</button></div>
+</div></div>
+
 <div class="modal" id="dlgConfirm"><div class="dialog">
   <h3 id="confirmTitle">Please confirm</h3>
   <div id="confirmBody"></div>
@@ -606,8 +647,60 @@ function remoteLabel(p) {
   const def = S.google.find(a => a.isDefault);
   return { what: "Google Drive", who: p.account || (def && def.email) || "default account", path: p.remotePath ? "My Drive/" + p.remotePath : "My Drive (whole)" };
 }
+function goneNote(p) {
+  if (!p.folderGone) return "";
+  const what = p.hubGone ? `The group's hub ${p.folderGone} no longer exists, so none of the group's folders are kept in step.`
+    : p.group ? `${p.folderGone} no longer exists (deleted or renamed), so it is not kept in step with the group. The group's other folders are untouched.`
+    : `${p.folderGone} no longer exists (deleted or renamed), so this pair cannot sync. Nothing was deleted on the other side.`;
+  const act = p.hubGone ? `<button class="btn danger" data-gonegroup="${esc(p.groupId)}">Remove the group</button>`
+    : `<button class="btn danger" data-gonepair="${esc(p.id)}">${p.group ? "Remove it from the group" : "Remove the pair"}</button>`;
+  return `<div class="note warn inline" style="margin-bottom:0"><span class="grow">${esc(what)}</span>${act}
+    <button class="btn" data-keepgone="${esc(p.id)}" title="For a folder that comes back, e.g. after a rename back">Keep it</button></div>`;
+}
+function dupNote(p) {
+  const d = p.duplicates || []; if (!d.length) return "";
+  return `<div class="note inline" style="margin-bottom:0"><span class="grow">${d.length} file(s) are on Google Drive twice by the same name and with the same content; only one of each is synced
+    (${d.slice(0, 3).map(r => `<span class="mono">${esc(r)}</span>`).join(", ")}${d.length > 3 ? ", ..." : ""}). The copies can go to Drive's trash: each is checked again first, and can be restored from the trash.</span>
+    <button class="btn" data-trashdup="${esc(p.id)}">Move the copies to Drive's trash</button>
+    <button class="btn" data-keepdup="${esc(p.id)}">Keep them</button></div>`;
+}
+function renderGroupOffers() {
+  $("#groupOffers").innerHTML = (S.groupOffers || []).map(o => `<div class="card"><div class="note inline" style="margin:0">
+    <span class="grow"><b>Sync group found: ${esc(o.name)}</b>. Another computer keeps ${o.members.length} folders in step through
+      <span class="mono">${esc(o.hub)}</span>; ${o.membersHere.length} of them are on this computer.
+      ${o.replaces.length ? `Joining replaces these pairs: <span class="mono">${o.replaces.map(esc).join("; ")}</span>.` : ""}
+      Files that differ from the hub's are replaced by the hub's version (kept among the previous versions).</span>
+    <button class="btn primary" data-joingroup="${esc(o.id)}">Join</button>
+    <button class="btn" data-declinegroup="${esc(o.id)}">Not on this computer</button></div></div>`).join("");
+  document.querySelectorAll("[data-joingroup]").forEach(b => b.onclick = async () => {
+    busy(b, true, "Joining...");
+    try { await call("group.join", { id: b.dataset.joingroup }); toast("Joined the group"); } catch (e) { busy(b, false); toast(e.message, true); }
+  });
+  document.querySelectorAll("[data-declinegroup]").forEach(b => b.onclick = () => call("group.decline", { id: b.dataset.declinegroup }).catch(e => toast(e.message, true)));
+}
+function groupCard(g) {
+  const missing = g.members.filter(m => !m.here).length;
+  return `<div class="card groupcard"><div class="row">
+    <div class="grow"><div><b>${esc(g.name)}</b> <span class="chip plain">group</span> <span class="small muted">${g.members.length} folder(s) kept in step with the hub${missing ? `, ${missing} not on this computer` : ""}</span></div>
+      <div class="small muted ellipsis" title="${esc(g.hub)}">Hub: <span class="mono">${esc(g.hub)}</span>${g.hubExists ? "" : ' <span class="chip err">missing</span>'}</div></div>
+    <button class="btn" data-editgroup="${esc(g.id)}">Edit group</button></div></div>`;
+}
 function renderPairs() {
-  $("#pairList").innerHTML = S.pairs.length ? S.pairs.map(p => {
+  renderGroupOffers();
+  const groups = S.groups || [], offers = S.groupOffers || [];
+  const own = S.pairs.filter(p => !p.groupId);
+  $("#pairList").innerHTML = own.map(pairCard).join("") || `<div class="empty">No sync pairs yet. Add an account first, then a pair.</div>`;
+  // A group's folders are pairs too, shown on their own tab; here a pointer to it.
+  const inGroups = S.pairs.length - own.length;
+  $("#groupHint").innerHTML = inGroups || offers.length ? `<div class="small muted" style="margin-top:4px">${inGroups ? `${inGroups} more folder(s) are kept in step by ${groups.length} sync group(s)` : ""}${inGroups && offers.length ? "; " : ""}${offers.length ? `${offers.length} sync group(s) found to join` : ""}: <a class="path" data-gotab="groups">Sync groups</a>.</div>` : "";
+  $("#groupList").innerHTML = groups.map(g => groupCard(g) + `<div class="members">${S.pairs.filter(p => p.groupId === g.id).map(pairCard).join("")}</div>`).join("")
+    || (offers.length ? "" : `<div class="empty">No sync groups yet. A group keeps several folders on this computer identical; other computers that sync its hub find it and can join.</div>`);
+  // The tab says when a group waits to be joined.
+  $("#tabGroupsBtn").textContent = offers.length ? `Sync groups (${offers.length})` : "Sync groups";
+  document.querySelectorAll("[data-gotab]").forEach(a => a.onclick = () => showTab(a.dataset.gotab, true));
+  bindPairs();
+}
+function pairCard(p) {
     const r = remoteLabel(p);
     return `<div class="card">
       <div class="pair">
@@ -624,8 +717,10 @@ function renderPairs() {
         <span class="small grow ellipsis" style="${p.failed ? "color:var(--red)" : ""}" title="${esc(p.lastResult)}">${esc(p.lastResult)}</span>
         <button class="btn" data-preview="${esc(p.id)}" title="Show what the next sync would do, without doing it">Preview</button>
         <button class="btn" data-versions="${esc(p.id)}" title="Earlier versions of files this pair replaced">Versions</button>
-        <button class="btn" data-editpair="${esc(p.id)}">Edit</button>
-        <button class="btn danger" data-rmpair="${esc(p.id)}">Remove</button></div>
+        ${p.groupId ? "" : `<button class="btn" data-editpair="${esc(p.id)}">Edit</button>`}
+        <button class="btn danger" data-rmpair="${esc(p.id)}">${p.groupId ? "Leave group" : "Remove"}</button></div>
+      ${goneNote(p)}
+      ${dupNote(p)}
       ${p.checkProblems && p.checkProblems.length ? `<div class="note warn" style="margin-bottom:0">
         <div>The content check found ${p.checkProblems.length} file(s) whose content changed although nobody edited them (disk or transfer damage):</div>
         <div class="mono small" style="margin:6px 0">${p.checkProblems.slice(0, 8).map(x => `${esc(x.rel)} (${x.side === "here" ? "on this computer" : "on the other side"})`).join("<br>")}${p.checkProblems.length > 8 ? "<br>..." : ""}</div>
@@ -644,7 +739,18 @@ function renderPairs() {
         <button class="btn" data-freq="keep" data-fpair="${esc(p.id)}" data-frel="${esc(f)}" title="No more warnings for this file">Keep syncing</button></div>`).join("")}
       ${sugNote(p)}
     </div>`;
-  }).join("") : `<div class="empty">No sync pairs yet. Add an account first, then a pair.</div>`;
+}
+function bindPairs() {
+  document.querySelectorAll("[data-editgroup]").forEach(b => b.onclick = () => groupDialog(S.groups.find(g => g.id === b.dataset.editgroup)));
+  document.querySelectorAll("[data-keepgone]").forEach(b => b.onclick = () => call("pair.keepGone", { id: b.dataset.keepgone }));
+  document.querySelectorAll("[data-keepdup]").forEach(b => b.onclick = () => call("pair.keepDuplicates", { id: b.dataset.keepdup }));
+  document.querySelectorAll("[data-trashdup]").forEach(b => b.onclick = async () => {
+    busy(b, true, "Moving...");
+    try { const r = await call("pair.trashDuplicates", { id: b.dataset.trashdup }); toast(`${r.trashed} cop${r.trashed === 1 ? "y" : "ies"} moved to Drive's trash`); }
+    catch (e) { busy(b, false); toast(e.message, true); }
+  });
+  document.querySelectorAll("[data-gonepair]").forEach(b => b.onclick = () => removePair(S.pairs.find(p => p.id === b.dataset.gonepair)));
+  document.querySelectorAll("[data-gonegroup]").forEach(b => b.onclick = () => removeGroup(S.groups.find(g => g.id === b.dataset.gonegroup)));
   document.querySelectorAll("[data-openpair]").forEach(a => a.onclick = () => call("open", { what: "pair", id: a.dataset.openpair }));
   document.querySelectorAll("[data-openremote]").forEach(a => a.onclick = () => call("open", { what: "remote", id: a.dataset.openremote }));
   document.querySelectorAll("[data-editpair]").forEach(b => b.onclick = () => pairDialog(S.pairs.find(p => p.id === b.dataset.editpair)));
@@ -666,12 +772,76 @@ function renderPairs() {
     call("pair.frequent", { id: b.dataset.fpair, rel: b.dataset.frel, action: b.dataset.freq })
       .then(() => toast(b.dataset.freq === "ignore" ? "Added to .unisonoignore" : "Kept syncing; no more warnings for it")).catch(e => toast(e.message, true)));
   document.querySelectorAll("[data-sugpair]").forEach(b => b.onclick = () => suggestDialog(S.pairs.find(p => p.id === b.dataset.sugpair)));
-  document.querySelectorAll("[data-rmpair]").forEach(b => b.onclick = async () => {
-    const p = S.pairs.find(x => x.id === b.dataset.rmpair);
-    if (!await confirmBox("Remove sync pair", [`Stop syncing ${remoteLabel(p).path} with ${p.localPath}? No files are deleted on either side.`])) return;
-    call("pair.remove", { id: p.id }).catch(e => toast(e.message, true));
-  });
+  document.querySelectorAll("[data-rmpair]").forEach(b => b.onclick = () => removePair(S.pairs.find(x => x.id === b.dataset.rmpair)));
 }
+async function removePair(p) {
+  const text = p.groupId
+    ? `Stop keeping ${p.localPath} in step with the group '${p.group}'? This takes it out of the group on every computer. No files are deleted.`
+    : `Stop syncing ${remoteLabel(p).path} with ${p.localPath}? No files are deleted on either side.`;
+  if (!await confirmBox(p.groupId ? "Leave sync group" : "Remove sync pair", [text])) return;
+  call("pair.remove", { id: p.id }).catch(e => toast(e.message, true));
+}
+
+// ------------------------------------------------------------------- groups
+let groupEditing = null;
+function memberRow(path) {
+  const row = document.createElement("div");
+  row.className = "inline"; row.style.marginBottom = "4px";
+  row.innerHTML = `<input type="text" class="grow" data-member value="${esc(path)}">
+    <button class="btn" data-makehub title="This folder becomes the hub, and the hub one of the folders">Make hub</button>
+    <button class="btn" data-drop title="Take this folder out of the group">&times;</button>`;
+  row.querySelector("[data-drop]").onclick = () => row.remove();
+  row.querySelector("[data-makehub]").onclick = () => {
+    const input = row.querySelector("[data-member]"), hub = $("#groupHub").value.trim();
+    if (!input.value.trim()) return;
+    $("#groupHub").value = input.value.trim();
+    if (hub) input.value = hub; else row.remove();
+  };
+  $("#groupMembers").appendChild(row);
+}
+function groupDialog(g) {
+  groupEditing = g || null;
+  $("#groupTitle").textContent = g ? "Edit sync group" : "Add sync group";
+  $("#groupName").value = g ? g.name : "";
+  $("#groupHub").value = g ? g.hub : "";
+  $("#groupMembers").innerHTML = "";
+  (g ? g.members.map(m => m.path) : [""]).forEach(memberRow);
+  $("#groupRemove").hidden = !g; $("#groupMsg").innerHTML = "";
+  openModal("#dlgGroup"); $("#groupName").focus();
+}
+$("#btnAddGroup").onclick = () => groupDialog();
+$("#groupPickHub").onclick = async () => { const f = await call("pickLocal", { title: "The group's hub folder", current: $("#groupHub").value }); if (f) $("#groupHub").value = f; };
+$("#groupAddMember").onclick = async () => {
+  const f = await call("pickLocal", { title: "A folder to keep in step with the hub" });
+  if (!f) return;
+  const empty = [...document.querySelectorAll("#groupMembers [data-member]")].find(i => !i.value.trim());
+  if (empty) empty.value = f; else memberRow(f);
+};
+async function saveGroup(confirmed) {
+  const btn = $("#groupSave");
+  const group = { name: $("#groupName").value, hub: $("#groupHub").value,
+                  members: [...document.querySelectorAll("#groupMembers [data-member]")].map(i => i.value.trim()).filter(x => x) };
+  $("#groupMsg").innerHTML = ""; busy(btn, true, "Saving...");
+  try {
+    const r = await call("group.save", { group, originalId: groupEditing && groupEditing.id, confirmed });
+    busy(btn, false);
+    if (r.status === "confirm") { if (await confirmBox("Sync group", r.messages)) return saveGroup(true); return; }
+    closeModal("#dlgGroup"); toast("Group saved");
+  } catch (e) { busy(btn, false); $("#groupMsg").innerHTML = `<div class="note err">${esc(e.message)}</div>`; }
+}
+$("#groupSave").onclick = () => saveGroup(false);
+function removeGroup(g) {
+  if (!g) return;
+  $("#groupRemoveText").textContent = `Stop keeping the folders of '${g.name}' in step? No files are deleted; each folder keeps what it has. ` +
+    `The folders become part of their own folders' pairs again: where the other side still has an older copy from before the group, both versions are kept (Conflicts).`;
+  openModal("#dlgGroupRemove");
+  $("#groupRemoveOk").onclick = async () => {
+    const everywhere = document.querySelector("input[name=grpWhere]:checked").value === "all";
+    closeModal("#dlgGroupRemove"); closeModal("#dlgGroup");
+    try { await call("group.remove", { id: g.id, everywhere }); toast("Group removed"); } catch (e) { toast(e.message, true); }
+  };
+}
+$("#groupRemove").onclick = () => removeGroup(groupEditing);
 
 const sugSize = n => n >= 1073741824 ? (n / 1073741824).toFixed(1) + " GB" : n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
 const SUGKIND = { build: "build output", gitignore: "files a .gitignore leaves out", junk: "temporary files", churn: "files created and deleted in bulk" };

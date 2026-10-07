@@ -377,6 +377,95 @@ function Test-OnDemand([hashtable]$pair) {
     finally { Use-Data $b.Data; & $cli ondemand-off 2>&1 | Out-Null }
 }
 
+# ------------------------------------------------------------------ sync groups
+# Two computers, each with two "vaults" (W, M) synced with a shared cloud folder, and the vaults' .obsidian settings in a
+# group whose hub is W's. Each computer has its own home folder (USERPROFILE), so the group file's %USERPROFILE% paths
+# mean the same folders on both, as on real computers.
+# (The block sees the caller's variables, so this function's own names must not hide them.)
+function As([string]$asHome, [scriptblock]$asBlock) {
+    $asSaved = $env:USERPROFILE, $env:LOCALAPPDATA
+    $env:USERPROFILE = $asHome; $env:LOCALAPPDATA = "$asHome\AppData\Local" # not a prefix of the home's folders
+    try { & $asBlock } finally { $env:USERPROFILE, $env:LOCALAPPDATA = $asSaved }
+}
+function GroupComputer([string]$name, [string]$cloud) {
+    $c = @{ Name = $name; Data = (New-TestDir "$work\$name-data"); Home = (New-TestDir "$work\$name-home") }
+    $c.Local = $c.Home
+    $pairs = @("W", "M") | ForEach-Object { New-TestDir "$($c.Home)\$_" | Out-Null; New-TestDir "$cloud\$_" | Out-Null
+        @{ Kind = "Folder"; RemotePath = "$cloud\$_"; LocalPath = "$($c.Home)\$_"; PollSeconds = 30 } }
+    @{ Pairs = $pairs; Options = @{ KeepVersions = 5; KeepVersionsDays = 30; PauseOnMetered = $false } } |
+        ConvertTo-Json -Depth 6 | Set-Content "$($c.Data)\config.json" -Encoding UTF8
+    $c
+}
+# Files written in the last 2 s are left for the next cycle (still being saved): give them that.
+function GSync($c) { Start-Sleep -Milliseconds 2100; As $c.Home { Sync $c } }
+function Groups($c, [string[]]$what) { As $c.Home { Use-Data $c.Data; (& $cli groups @what 2>&1 | ForEach-Object { "$_" }) -join "`n" } }
+function GroupsOf($c) { @((Get-Content "$($c.Data)\config.json" -Raw | ConvertFrom-Json).Groups) | Where-Object { $_ } }
+
+function Test-Groups {
+    Section "groups: several folders kept in step through a hub"
+    $cloud = New-TestDir "$work\grp-cloud"
+    $a = GroupComputer "grp-A" $cloud
+    Put $a "W\.obsidian\hotkeys.json" "hub"; Put $a "W\.obsidian\plugins\p\main.js" "plugin"; Put $a "W\note.md" "a note"
+    Put $a "M\.obsidian\hotkeys.json" "M's own"; Put $a "M\.obsidian\only-m.json" "only in M"; Put $a "M\note.md" "M note"
+    New-TestDir "$($a.Home)\F" | Out-Null # a vault never opened in Obsidian: no .obsidian yet
+    $out = Groups $a @("create", "Settings", "$($a.Home)\W\.obsidian", "$($a.Home)\M\.obsidian", "$($a.Home)\F\.obsidian")
+    Check "groups a group is created, with its file in the hub" { $out -match "2 folder" -and (Has $a "W\.obsidian\.unisono-group.json") }
+    Check "groups ... which names the folders portably" { (Get-Content "$($a.Home)\W\.obsidian\.unisono-group.json" -Raw) -match '%USERPROFILE%\\\\M\\\\.obsidian' }
+    $null = GSync $a; $null = GSync $a
+    Check "groups a member's differing file takes the hub's version" { (Text $a "M\.obsidian\hotkeys.json") -eq "hub" }
+    Check "groups ... and its own is kept among the previous versions" { @(Get-ChildItem "$($a.Data)\versions" -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.DirectoryName -like "*hotkeys.json" -and (Get-Content -LiteralPath $_.FullName -Raw).Trim() -eq "M's own" }).Count -ge 1 }
+    Check "groups a missing member folder is created and filled" { (Text $a "F\.obsidian\plugins\p\main.js") -eq "plugin" }
+    Check "groups a file only one member has reaches the hub and the others" { (Text $a "W\.obsidian\only-m.json") -eq "only in M" -and (Text $a "F\.obsidian\only-m.json") -eq "only in M" }
+    Check "groups every folder holds the same group file" { $h = Text $a "W\.obsidian\.unisono-group.json"; (Text $a "M\.obsidian\.unisono-group.json") -eq $h -and (Text $a "F\.obsidian\.unisono-group.json") -eq $h }
+    Check "groups only the hub goes to the cloud with its vault (the others only with their group file)" {
+        (Test-Path "$cloud\W\.obsidian\hotkeys.json") -and (Test-Path "$cloud\M\note.md") -and
+        (@(Get-ChildItem "$cloud\M\.obsidian" -Recurse -File | ForEach-Object Name) -join ",") -eq ".unisono-group.json" }
+    Put $a "F\.obsidian\hotkeys.json" "changed in F"; $null = GSync $a; $null = GSync $a
+    Check "groups a change in one member reaches the others" { (Text $a "M\.obsidian\hotkeys.json") -eq "changed in F" -and (Text $a "W\.obsidian\hotkeys.json") -eq "changed in F" }
+
+    Section "groups: another computer finds the group in the hub and joins it"
+    $b = GroupComputer "grp-B" $cloud
+    Put $b "M\.obsidian\hotkeys.json" "B's own"
+    $null = GSync $b
+    $out = Groups $b @()
+    Check "groups the other computer offers to join" { $out -match "can join: Settings" -and $out -match "1 of 2 folder" }
+    $null = Groups $b @("join", "$($b.Home)\W\.obsidian")
+    Check "groups ... joins it" { @(GroupsOf $b).Count -eq 1 }
+    $null = GSync $b; $null = GSync $b
+    Check "groups ... and its members take the hub's version" { (Text $b "M\.obsidian\hotkeys.json") -eq "changed in F" }
+    Check "groups ... folders it does not have are left out" { -not (Has $b "F") }
+    Put $b "M\.obsidian\hotkeys.json" "changed on B"; $null = GSync $b; $null = GSync $b
+    $null = GSync $a; $null = GSync $a
+    Check "groups a change on the other computer reaches every member here" { (Text $a "M\.obsidian\hotkeys.json") -eq "changed on B" -and (Text $a "F\.obsidian\hotkeys.json") -eq "changed on B" }
+
+    Section "groups: the hub moves to another folder"
+    $null = Groups $a @("hub", "Settings", "$($a.Home)\M\.obsidian")
+    Check "groups the new hub takes the old one's place among the folders" { $g = @(GroupsOf $a)[0]; $g.Hub -like "*\M\.obsidian" -and @($g.Members | Where-Object { $_ -like "*\W\.obsidian" }).Count -eq 1 }
+    $null = GSync $a; $null = GSync $a
+    $noCopies = { param($c) @(Get-ChildItem "$($c.Home)\*\.obsidian" -Recurse -File | Where-Object Name -match "conflict").Count -eq 0 }
+    Check "groups the new hub goes to the cloud, over the older copy there, without conflict copies" { (Get-Content "$cloud\M\.obsidian\hotkeys.json" -Raw).Trim() -eq "changed on B" -and (& $noCopies $a) }
+    Put $a "W\.obsidian\hotkeys.json" "after the move"; $null = GSync $a; $null = GSync $a
+    Check "groups the old hub, now one of the folders, is still kept in step" { (Text $a "F\.obsidian\hotkeys.json") -eq "after the move" -and (Get-Content "$cloud\M\.obsidian\hotkeys.json" -Raw).Trim() -eq "after the move" }
+    $null = GSync $b; $null = Groups $b @(); $null = GSync $b; $null = GSync $b
+    Check "groups the other computer follows the move" { (@(GroupsOf $b)[0].Hub) -like "*\M\.obsidian" }
+    Check "groups ... and gets the changes, without conflict copies" { (Text $b "M\.obsidian\hotkeys.json") -eq "after the move" -and (Text $b "W\.obsidian\hotkeys.json") -eq "after the move" -and (& $noCopies $b) }
+
+    Section "groups: changes to the group follow it to the other computer"
+    $null = Groups $a @("members", "Settings", "$($a.Home)\W\.obsidian")
+    $null = GSync $a; $null = GSync $b
+    $out = Groups $b @()
+    Check "groups a member taken out on one computer is taken out on the other" { $g = @(GroupsOf $b); $g.Count -eq 1 -and @($g[0].Members).Count -eq 1 }
+    Check "groups ... and the folder it left keeps its files" { (Text $a "F\.obsidian\hotkeys.json") -eq "after the move" }
+    $null = Groups $a @("remove", "Settings", "--everywhere")
+    $null = GSync $a; $null = GSync $b
+    $out = Groups $b @()
+    Check "groups a group removed everywhere is removed on the other computer" { @(GroupsOf $b).Count -eq 0 -and $out -notmatch "can join" }
+    # The folders are part of their vaults' pairs again; where the cloud has an older copy from before, both are kept.
+    $kept = { param($c) @(Get-ChildItem "$($c.Home)\M\.obsidian" -Filter "hotkeys*.json" | Where-Object { (Get-Content -LiteralPath $_.FullName -Raw).Trim() -eq "after the move" }).Count -ge 1 }
+    Check "groups ... and nothing is lost" { (& $kept $a) -and (& $kept $b) }
+
+}
+
 # ------------------------------------------------------------------ UI
 function Test-Ui {
     Section "ui: window renders"
@@ -523,9 +612,11 @@ if ($Suite -contains "folder") {
         Check "folder ... and nothing is ignored until the user chooses" { Test-Path -LiteralPath "$work\sug-other\proj\bin\App.dll" }
         Put $s "proj\bin\App2.dll" "more"
         Check "folder ... and each is told once" { ((Sync $s) -join "`n") -notmatch "suggests ignoring" }
+        Test-Groups
     }
     finally { if (-not $KeepFiles -and $OtherFolder) { Wipe $other } }
 }
+if ($Suite -contains "groups" -and $Suite -notcontains "folder") { Test-Groups }
 if ($Suite -contains "ondemand") {
     $other = "$work\od-other"; New-TestDir $other | Out-Null
     Test-OnDemand @{ Kind = "Folder"; RemotePath = $other }

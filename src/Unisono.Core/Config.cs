@@ -137,6 +137,10 @@ public sealed class SyncPair
     /// </summary>
     public int FullRescanMinutes { get; set; } = 15;
 
+    /// <summary>A pair made from this sync group when the config was loaded (never stored), see <see cref="SyncGroups"/>.</summary>
+    [JsonIgnore]
+    public SyncGroup? Group { get; set; }
+
     /// <summary>Stable id for the state file: readable prefix plus a hash of both paths.</summary>
     [JsonIgnore]
     public string Id
@@ -152,7 +156,7 @@ public sealed class SyncPair
     }
 
     [JsonIgnore]
-    public string Name => Kind switch
+    public string Name => Group != null ? $"{Group.Name}: {LocalFullPath}" : Kind switch
     {
         RemoteKind.Synology => $"NAS:{RemotePath}",
         RemoteKind.Folder => RemoteFullPath,
@@ -183,7 +187,17 @@ public sealed class AppOptions
 
 public sealed class Config
 {
+    /// <summary>The pairs to sync: those stored, followed by those made from the groups (<see cref="SyncPair.Group"/>).</summary>
+    [JsonIgnore]
     public List<SyncPair> Pairs { get; set; } = new();
+
+    /// <summary>What config.json holds: the pairs without the groups' own.</summary>
+    [JsonInclude, JsonPropertyName("Pairs")]
+    internal List<SyncPair> StoredPairs { get => Pairs.Where(p => p.Group == null).ToList(); set => Pairs = value; }
+
+    public List<SyncGroup> Groups { get; set; } = new();
+    /// <summary>Groups found in a hub that the user chose not to join on this computer.</summary>
+    public List<string> DeclinedGroups { get; set; } = new();
     public AppOptions Options { get; set; } = new();
 
     public static string FilePath => Path.Combine(AppPaths.DataDir, "config.json");
@@ -203,13 +217,17 @@ public sealed class Config
             ? JsonSerializer.Deserialize<Config>(File.ReadAllText(FilePath), JsonOptions) ?? new Config()
             : new Config();
         VersionStore.Folder = config.Options.VersionsFolder;
+        foreach (var g in config.Groups) g.Synced = SyncGroups.ContentOf(g);
+        SyncGroups.Expand(config);
         return config;
     }
 
     public void Save()
     {
         AppPaths.EnsureDataDir();
+        SyncGroups.Stamp(this);
         WriteAtomically(FilePath, JsonSerializer.Serialize(this, JsonOptions));
+        SyncGroups.WriteFiles(this);
     }
 
     private static void WriteAtomically(string path, string text)
