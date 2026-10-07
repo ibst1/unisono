@@ -141,6 +141,8 @@ public sealed class DriveStore : IRemoteStore
         await _drive.DownloadAsync(file, localPath, ct);
     }
 
+    public Task<byte[]?> EarlierContentAsync(RemoteNode node, string md5, CancellationToken ct) => _drive.RevisionContentAsync(node.Id, md5, ct);
+
     /// <summary>Creating a file on Drive takes a second or two whatever its size; several at once hide that wait.</summary>
     public int ParallelUploads => 12;
 

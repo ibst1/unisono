@@ -29,13 +29,20 @@ param(
     [string]$NasUser,
     [string]$NasFolder,
     [string]$OtherFolder,
-    [switch]$KeepFiles
+    [switch]$KeepFiles,
+    # Runs UnisonoCli.dll from -Bin through dotnet: for a build that is not published (where policy blocks exes elsewhere).
+    [switch]$ViaDotnet
 )
 
 $ErrorActionPreference = 'Continue'
 # 'powershell -File' passes '-Suite drive,ui' as one string.
 $Suite = @($Suite | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
 $cli = Join-Path $Bin "UnisonoCli.exe"
+if ($ViaDotnet) {
+    $dotnetExe = if (Test-Path "$env:LOCALAPPDATA\dotnet\dotnet.exe") { "$env:LOCALAPPDATA\dotnet\dotnet.exe" } else { "dotnet" }
+    $cliDll = Join-Path $Bin "UnisonoCli.dll"
+    $cli = { & $dotnetExe $cliDll @args }.GetNewClosure()
+}
 $app = Join-Path $Bin "Unisono.exe"
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $work = Join-Path $env:TEMP "unisono-tests\$stamp"
@@ -111,6 +118,30 @@ function Test-Core([hashtable]$pair, [string]$label) {
     # Drive's change feed can take longer than the pauses above: give it a few more rounds before judging.
     for ($i = 0; $i -lt 3 -and @(Get-ChildItem $a.Local -Filter "hello (conflict*" -File).Count -eq 0; $i++) { Start-Sleep 5; $null = Sync $b; $null = Sync $a }
     Check "$label both edits survive as a conflict copy" { @(Get-ChildItem $a.Local -Filter "hello (conflict*" -File).Count -ge 1 }
+
+    Section "${label}: notes changed on both sides are merged"
+    $lines = 1..6 | ForEach-Object { "line $_" }
+    Put $a "note.md" ($lines -join "`n")
+    $null = Both $a $b
+    Put $a "note.md" ((@("line 1 from A") + $lines[1..5]) -join "`n")
+    Put $b "note.md" (($lines[0..4] + @("line 6 from B")) -join "`n")
+    $merged = (@("line 1 from A") + $lines[1..4] + @("line 6 from B")) -join "`n"
+    function NoteIs($c, $want) { (Has $c "note.md") -and ((Text $c "note.md") -replace "`r", "") -eq $want }
+    Start-Sleep 3 # past the moment a file counts as still being saved
+    # Drive keeps earlier versions itself: without the locally kept base, the merge must find it there.
+    if ($pair.Kind -eq "Drive" -and (Test-Path -LiteralPath "$($b.Data)\base")) { [IO.Directory]::Delete("\\?\" + "$($b.Data)\base", $true) }
+    $null = Sync $a; Start-Sleep 3; $outB = Sync $b; Start-Sleep 3; $null = Sync $a
+    for ($i = 0; $i -lt 3 -and -not ((NoteIs $a $merged) -and (NoteIs $b $merged)); $i++) { Start-Sleep 5; $outB += Sync $b; $null = Sync $a } # change feed lag
+    Check "$label edits in different places end up in one file on both computers" { (NoteIs $a $merged) -and (NoteIs $b $merged) }
+    Check "$label ... without a conflict copy" { @(Get-ChildItem $a.Local, $b.Local -Filter "note (conflict*" -File).Count -eq 0 }
+    Check "$label ... and the merge is logged" { ($outB -join "`n") -match "merged \(changed on both sides" }
+    Check "$label ... both earlier versions are kept" { @(Get-ChildItem -LiteralPath ("\\?\" + "$($b.Data)\versions") -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Directory.Name -eq "note.md" }).Count -ge 2 } # the long-path prefix: deeper than 260 characters
+    Put $a "note.md" ($merged -replace "line 3", "line 3 from A")
+    Put $b "note.md" ($merged -replace "line 3", "line 3 from B")
+    Start-Sleep 3
+    $null = Sync $a; Start-Sleep 3; $null = Sync $b; Start-Sleep 3; $null = Sync $a
+    for ($i = 0; $i -lt 3 -and @(Get-ChildItem $a.Local, $b.Local -Filter "note (conflict*" -File).Count -eq 0; $i++) { Start-Sleep 5; $null = Sync $b; $null = Sync $a }
+    Check "$label edits of the same line are kept as a conflict copy" { @(Get-ChildItem $a.Local, $b.Local -Filter "note (conflict*" -File).Count -ge 1 }
 
     Section "${label}: renames and moves"
     Rename-Item (Join-Path $a.Local "sub\note.txt") "renamed.txt"

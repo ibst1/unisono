@@ -26,6 +26,12 @@ public interface IRemoteStore
 
     Task DownloadAsync(RemoteNode node, string localPath, CancellationToken ct);
 
+    /// <summary>
+    /// An earlier version of a file from the remote's own version history, found by its md5 (the base of a merge when
+    /// none is kept locally); null when the backend keeps none or no longer has that one.
+    /// </summary>
+    Task<byte[]?> EarlierContentAsync(RemoteNode node, string md5, CancellationToken ct) => Task.FromResult<byte[]?>(null);
+
     /// <summary>Create a file under <paramref name="parent"/> (null = the pair root) with the local content and modified time.</summary>
     Task<RemoteNode> UploadNewAsync(string localPath, string relPath, RemoteNode? parent, CancellationToken ct);
 

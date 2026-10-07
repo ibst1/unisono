@@ -34,6 +34,14 @@ sealed partial class HostForm : Form
     private readonly System.Windows.Forms.Timer _stateTimer = new() { Interval = 250 };
     private readonly System.Windows.Forms.Timer _activityTimer = new() { Interval = 1000 };
     private bool _webReady;
+    // The page said hello (it is loaded and listens); until then a request to open the Conflicts window waits.
+    private bool _pageLoaded;
+    private bool _pendingConflicts;
+    // The tab the last balloon about a pair or a group leads to ("pairs" or "groups"); and the one to open once the page
+    // has loaded, when it was clicked before that.
+    private string _balloonTab = "pairs";
+    private string? _pendingTab;
+    private const string ConflictBalloonTitle = "Unisono: conflict";
 
     public HostForm(bool startHidden, EventWaitHandle showSignal)
     {
@@ -70,8 +78,8 @@ sealed partial class HostForm : Form
             if (stats.Notices.Count > 0)
                 OnUi(() => _tray.ShowBalloonTip(10000, "Unisono", string.Join("\n", stats.Notices.Take(2)), ToolTipIcon.Info));
             else if (stats.Conflicts > 0)
-                OnUi(() => _tray.ShowBalloonTip(8000, "Unisono: conflict",
-                    $"{stats.Conflicts} file(s) in {ps.Pair.Name} changed on both sides. Both versions were kept (look for 'conflict' in the name).",
+                OnUi(() => _tray.ShowBalloonTip(10000, ConflictBalloonTitle,
+                    $"{stats.Conflicts} file(s) in {ps.Pair.Name} changed on both sides in the same place. Both versions were kept. Click to compare them and keep one or merge them.",
                     ToolTipIcon.Warning));
         };
         _host.HealthProblem += ps => OnUi(() =>
@@ -128,6 +136,7 @@ sealed partial class HostForm : Form
     private void CloseWeb()
     {
         _webReady = false;
+        _pageLoaded = false;
         if (_web == null) return;
         Controls.Remove(_web);
         _web.Dispose();
@@ -178,9 +187,15 @@ sealed partial class HostForm : Form
             id = root.TryGetProperty("id", out var i) ? i.ToString() : null;
             var method = root.GetProperty("method").GetString()!;
             var p = root.TryGetProperty("params", out var pp) ? pp.Clone() : default;
-            object? result = method == "hello"
-                ? new { state = _bridge.State(), log = Snapshot() }
-                : await _bridge.HandleAsync(method, p);
+            object? result;
+            if (method == "hello")
+            {
+                _pageLoaded = true;
+                result = new { state = _bridge.State(), log = Snapshot(), openConflicts = _pendingConflicts, showTab = _pendingTab };
+                _pendingConflicts = false;
+                _pendingTab = null;
+            }
+            else result = await _bridge.HandleAsync(method, p);
             Post(new { id, ok = true, result });
         }
         catch (Exception ex)
@@ -225,6 +240,7 @@ sealed partial class HostForm : Form
         var menu = new ContextMenuStrip();
         menu.Items.Add("Open Unisono", null, (_, _) => ShowFromTray());
         menu.Items.Add("Sync now", null, (_, _) => _host.SyncNow());
+        menu.Items.Add("Conflicts...", null, (_, _) => OpenConflicts());
         _trayPause.Click += (_, _) => { _host.Paused = !_host.Paused; UpdateTray(); QueueState(); };
         menu.Items.Add(_trayPause);
         menu.Items.Add(new ToolStripSeparator());
@@ -236,7 +252,25 @@ sealed partial class HostForm : Form
         _tray.Text = "Unisono";
         _tray.Visible = true;
         _tray.DoubleClick += (_, _) => ShowFromTray();
-        _tray.BalloonTipClicked += (_, _) => ShowFromTray();
+        _tray.BalloonTipClicked += (_, _) =>
+        {
+            if (_tray.BalloonTipTitle == ConflictBalloonTitle) OpenConflicts();
+            else if (_tray.BalloonTipTitle is "Unisono: sync group found" or "Unisono: folder deleted")
+            {
+                ShowFromTray();
+                if (_pageLoaded) Post(new { @event = "showTab", tab = _balloonTab });
+                else _pendingTab = _balloonTab;
+            }
+            else ShowFromTray();
+        };
+    }
+
+    /// <summary>Shows the window with the Conflicts dialog open (once the page has loaded, if it has not yet).</summary>
+    private void OpenConflicts()
+    {
+        ShowFromTray();
+        if (_pageLoaded) Post(new { @event = "openConflicts" });
+        else _pendingConflicts = true;
     }
 
     /// <summary>
@@ -290,6 +324,9 @@ sealed partial class HostForm : Form
         if (_host.Paused && _host.State != HostState.Syncing) (text, color) = ("Paused", Ui.Amber);
         else if (_host.PausedBecause is { } why && _host.State != HostState.Syncing) (text, color) = ("Paused: " + why, Ui.Amber);
         else if (_host.Offline && _host.State is not (HostState.Syncing or HostState.Trouble)) (text, color) = ("Offline, waiting for the network", Ui.Amber);
+        // Conflict copies wait for a decision: amber until they are sorted out (tray menu or window: Conflicts...).
+        var copies = _host.Pairs.Sum(p => p.ConflictCopies);
+        if (copies > 0 && color == Ui.Green) (text, color) = ($"{text}; {copies} conflict cop{(copies == 1 ? "y" : "ies")} to sort out", Ui.Amber);
         var details = new List<string> { "Unisono: " + text };
         var last = _host.Pairs.Where(p => p.LastSync != null).Select(p => p.LastSync!.Value).DefaultIfEmpty().Max();
         if (last != default) details.Add($"Last sync {last:HH:mm}" + (_host.Pairs.Count > 1 ? $", {_host.Pairs.Count} pairs" : ""));

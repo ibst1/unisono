@@ -52,6 +52,7 @@ section { margin-bottom: 28px; }
 .btn.danger:hover { border-color: var(--red); color: var(--red); }
 .btn.link { background: none; border: 0; color: var(--accent); padding: 4px 6px; }
 .btn:disabled { opacity: .5; cursor: default; }
+.btn.warnbtn { border-color: var(--amber); color: var(--amber); }
 .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--panel2); color: var(--muted); border: 1px solid var(--line); }
 .chip.ok { color: var(--green); } .chip.warn { color: var(--amber); } .chip.err { color: var(--red); } .chip.busy { color: var(--blue); }
 .chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
@@ -86,6 +87,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .plan div { padding: 5px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .plan div:last-child { border-bottom: 0; }
 .plan .act { display: inline-block; min-width: 230px; color: var(--muted); }
+.plan div.diff { padding: 6px 0 2px 14px; border: 0; }
+.diff pre { margin: 0; max-height: 40vh; overflow: auto; background: var(--panel2); border-radius: 6px; padding: 6px 8px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.diff .del { color: var(--red); } .diff .add { color: var(--green); } .diff .gap { color: var(--muted); font-style: italic; }
 .inline { display: flex; gap: 8px; align-items: center; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; background: var(--panel); padding: 6px 14px; cursor: pointer; }
@@ -159,7 +163,7 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
       <div class="row" style="margin-bottom:10px; gap:8px">
         <select id="actDay"></select><select id="actPair"></select>
         <select id="actKind"><option value="">Everything</option><option value="up">Uploads</option><option value="down">Downloads</option>
-          <option value="deleted">Deletions</option><option value="moved">Moves</option><option value="conflict">Conflicts</option></select>
+          <option value="deleted">Deletions</option><option value="moved">Moves</option><option value="conflict">Conflicts and merges</option></select>
         <input type="text" id="actSearch" class="grow" placeholder="Filter by path...">
       </div>
       <div class="plan" id="actList" style="max-height:none"></div>
@@ -369,9 +373,12 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 <div class="modal" id="dlgConflicts"><div class="dialog" style="width:min(920px,100%)">
   <h3>Conflicts</h3>
-  <div class="small muted" style="margin-bottom:10px">When a file changed on both sides, Unisono keeps both: the other side's version under the
-    original name and this side's as a copy named "(conflict COMPUTER date time)". Word edits of a Google document that could not go back into the
-    document are kept as "(edited ...)". Compare them and keep one; the other goes to the Recycle Bin, and the next sync carries it over to the other side.</div>
+  <div class="small muted" style="margin-bottom:10px">When a note or text file (.md, .txt) changed on both sides in different places, Unisono merges the two edits by itself.
+    Otherwise it keeps both: the other side's version under the original name and this side's as a copy named "(conflict COMPUTER date time)".
+    Word edits of a Google document that could not go back into the document are kept as "(edited ...)". Compare them and keep one, or merge them:
+    both edits go into the file, and lines changed on both sides are written twice between <span class="mono">&lt;&lt;&lt;&lt;&lt;&lt;&lt;</span> and
+    <span class="mono">&gt;&gt;&gt;&gt;&gt;&gt;&gt;</span> to sort out by hand. What is replaced is kept among the earlier versions, the copy goes to the
+    Recycle Bin, and the next sync carries it over to the other side.</div>
   <div class="plan" id="conflictList"></div>
   <div class="actions"><button class="btn" id="conflictRefresh">Refresh</button><button class="btn" data-close>Close</button></div>
 </div></div>
@@ -420,6 +427,8 @@ window.chrome.webview.addEventListener("message", e => {
   if (m.event === "state") { S = m.data; render(); return; }
   if (m.event === "log") { addLog(m.data); return; }
   if (m.event === "transfers") { renderTransfers(m.data); return; }
+  if (m.event === "openConflicts") { conflictsDialog(); return; }
+  if (m.event === "showTab") { showTab(m.tab || "pairs", true); return; }
   if (m.event === "activity") { if ($("#tab-activity").classList.contains("active") && $("#actDay").value === today()) loadActivity(); return; }
   const p = pending.get(m.id); if (!p) return; pending.delete(m.id);
   m.ok ? p.resolve(m.result) : p.reject(new Error(m.error));
@@ -926,13 +935,28 @@ async function conflictsDialog() {
         ${c.originalExists ? `<button class="btn" data-copen="${esc(c.pairId)}" data-crel="${esc(c.originalRel)}">Open</button>` : ""}</div>
       <div class="row small" style="padding:3px 0 0 14px"><span class="grow muted">${c.kind === "edited" ? "Edited" : "Conflict"} copy from ${esc(c.machine)}, ${esc(c.when)}: ${esc(when(c.modified))}, ${kb(c.size)}</span>
         <button class="btn" data-copen="${esc(c.pairId)}" data-crel="${esc(c.rel)}">Open</button>
+        ${c.isText && c.originalExists ? `<button class="btn" data-cdiff="${esc(c.pairId)}" data-crel="${esc(c.rel)}" title="What differs between the copy and the current version">Differences</button>` : ""}
+        ${c.canMerge ? `<button class="btn" data-cres="merge" data-cpair="${esc(c.pairId)}" data-crel="${esc(c.rel)}" title="Both edits go into the current version; lines changed on both sides are marked">Merge</button>` : ""}
         ${c.kind === "conflict" || !c.originalExists ? `<button class="btn" data-cres="keepCopy" data-cpair="${esc(c.pairId)}" data-crel="${esc(c.rel)}" title="The copy's content replaces the current version (kept among earlier versions)">Keep the copy</button>` : ""}
         <button class="btn" data-cres="keepOriginal" data-cpair="${esc(c.pairId)}" data-crel="${esc(c.rel)}" title="The copy goes to the Recycle Bin">${c.originalExists ? "Keep the current version" : "Delete the copy"}</button></div>
+      <div class="diff" hidden></div>
     </div>`).join("") : `<div class="muted">No conflict copies in the synced folders.</div>`;
   document.querySelectorAll("[data-copen]").forEach(b => b.onclick = () => call("conflicts.open", { id: b.dataset.copen, rel: b.dataset.crel }).catch(e => toast(e.message, true)));
   document.querySelectorAll("[data-cres]").forEach(b => b.onclick = async () => {
-    try { await call("conflicts.resolve", { id: b.dataset.cpair, rel: b.dataset.crel, action: b.dataset.cres }); toast("Done; the next sync carries it over"); conflictsDialog(); }
+    try { const r = await call("conflicts.resolve", { id: b.dataset.cpair, rel: b.dataset.crel, action: b.dataset.cres }); toast((r && r.message ? r.message[0].toUpperCase() + r.message.slice(1) : "Done") + "; the next sync carries it over"); conflictsDialog(); }
     catch (e) { toast(e.message, true); }
+  });
+  // Differences: '-' only in the copy, '+' only in the current version.
+  document.querySelectorAll("[data-cdiff]").forEach(b => b.onclick = async () => {
+    const box = b.closest("#conflictList > div").querySelector(".diff");
+    if (!box.hidden) { box.hidden = true; return; }
+    try {
+      const lines = await call("conflicts.diff", { id: b.dataset.cdiff, rel: b.dataset.crel });
+      const changed = lines.some(l => l.op === "-" || l.op === "+");
+      box.innerHTML = `<div class="small muted" style="padding:0 0 4px"><span class="del">- only in the copy</span> &nbsp; <span class="add">+ only in the current version</span></div><pre>${
+        changed ? lines.map(l => l.op === "~" ? `<span class="gap">… ${esc(l.text)}</span>` : `<span class="${l.op === "-" ? "del" : l.op === "+" ? "add" : ""}">${l.op} ${esc(l.text)}</span>`).join("\n") : "The two have the same text."}</pre>`;
+      box.hidden = false;
+    } catch (e) { toast(e.message, true); }
   });
 }
 $("#btnConflicts").onclick = conflictsDialog;
@@ -1288,6 +1312,9 @@ function render() {
   for (const part of [renderHeader, renderAccounts, renderPairs, renderSettings]) {
     try { part(); } catch (e) { reportError(part.name + ": " + e.message, e.stack); }
   }
+  const copies = S.conflictCopies || 0;
+  $("#btnConflicts").textContent = copies ? `Conflicts (${copies})...` : "Conflicts...";
+  $("#btnConflicts").classList.toggle("warnbtn", copies > 0);
 }
 function reportError(message, stack) {
   try { call("clientError", { message, stack: String(stack || "").split("\n").slice(0, 3).join(" | ") }); } catch {}
@@ -1300,7 +1327,8 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") document.que
   const hello = await call("hello");
   S = hello.state; render();
   hello.log.forEach(addLog);
-  showTab(S.settings.tab || "accounts", false);
+  showTab(hello.showTab || S.settings.tab || "accounts", false);
+  if (hello.openConflicts) conflictsDialog();
 })();
 // Running transfers above the pairs: large files with a progress bar, speed and time left; small ones counted.
 function renderTransfers(list) {
@@ -1325,7 +1353,7 @@ const ACT = {
   "uploaded": ["&#8593;", "uploaded"], "uploaded change": ["&#8593;", "uploaded change"], "downloaded": ["&#8595;", "downloaded"],
   "deleted remotely": ["&#10005;", "deleted on the other side"], "deleted here": ["&#10005;", "deleted here"],
   "moved remotely": ["&#8594;", "moved on the other side"], "moved here": ["&#8594;", "moved here"],
-  "conflict": ["!", "conflict"], "kept aside": ["!", "kept aside"], "exported": ["&#8595;", "exported"], "written back": ["&#8593;", "written back"],
+  "conflict": ["!", "conflict"], "merged": ["&#8644;", "merged"], "kept aside": ["!", "kept aside"], "exported": ["&#8595;", "exported"], "written back": ["&#8593;", "written back"],
   "restored": ["&#8634;", "restored"], "freed up space": ["&#9729;", "online-only"],
 };
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
@@ -1350,15 +1378,15 @@ function drawActivity() {
   const q = $("#actSearch").value.trim().toLowerCase(), pair = $("#actPair").value, kind = $("#actKind").value;
   const shown = activity.filter(a => (!pair || a.pairId === pair) && (!q || a.rel.toLowerCase().includes(q))
     && (!kind || (kind === "up" ? a.action.startsWith("uploaded") || a.action === "written back" : kind === "down" ? a.action === "downloaded" || a.action === "exported"
-      : kind === "deleted" ? a.action.startsWith("deleted") : kind === "moved" ? a.action.startsWith("moved") : kind === "conflict" ? a.action === "conflict" || a.action === "kept aside" : true)));
+      : kind === "deleted" ? a.action.startsWith("deleted") : kind === "moved" ? a.action.startsWith("moved") : kind === "conflict" ? a.action === "conflict" || a.action === "kept aside" || a.action === "merged" : true)));
   const count = f => activity.filter(f).length;
   $("#actSummary").textContent = activity.length
-    ? `${count(a => a.action.startsWith("uploaded"))} up, ${count(a => a.action === "downloaded")} down, ${count(a => a.action.startsWith("deleted"))} deleted, ${count(a => a.action.startsWith("moved"))} moved, ${count(a => a.action === "conflict")} conflicts` +
+    ? `${count(a => a.action.startsWith("uploaded"))} up, ${count(a => a.action === "downloaded")} down, ${count(a => a.action.startsWith("deleted"))} deleted, ${count(a => a.action.startsWith("moved"))} moved, ${count(a => a.action === "conflict")} conflicts` + (count(a => a.action === "merged") ? `, ${count(a => a.action === "merged")} merged` : "") +
       (shown.length !== activity.length ? ` \u00b7 ${shown.length} shown` : "")
     : "";
   const size = n => n < 0 ? "" : n < 1024 ? n + " bytes" : n < 1048576 ? Math.round(n / 1024) + " KB" : (n / 1048576).toFixed(1) + " MB";
   // Only where a file was replaced or removed here is there an earlier version to look at.
-  const withVersions = a => !a.rel.endsWith("/") && (["deleted here", "conflict", "restored"].includes(a.action)
+  const withVersions = a => !a.rel.endsWith("/") && (["deleted here", "conflict", "merged", "restored"].includes(a.action)
     || (a.action === "downloaded" && !(a.detail || "").startsWith("new")));
   $("#actList").innerHTML = shown.length ? shown.slice(0, 1500).map((a, i) => { const [icon, label] = ACT[a.action] || ["&middot;", a.action]; return `<div class="row actrow">
       <span class="muted small" style="width:62px">${esc(a.time)}</span>

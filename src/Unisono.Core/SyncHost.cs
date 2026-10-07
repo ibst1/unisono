@@ -33,6 +33,8 @@ public sealed class PairStatus
     public string? WaitingFor { get; set; }
     public CycleStats? LastStats { get; set; }
     public string? LastError { get; set; }
+    /// <summary>Conflict copies in the pair not sorted out yet, as of the last cycle (the tray stays amber while there are any).</summary>
+    public int ConflictCopies { get; set; }
 }
 
 /// <summary>
@@ -356,6 +358,7 @@ public sealed class SyncHost : IAsyncDisposable
                             var stats = await engine.RunCycleAsync(ct);
                             followUp |= engine.NeedsFollowUp;
                             ps.LastStats = stats;
+                            ps.ConflictCopies = engine.ConflictCopyCount;
                             ps.NeedsPassphrase = false;
                             ps.VaultGone = false;
                             ps.LastSync = DateTime.Now;

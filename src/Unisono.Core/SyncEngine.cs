@@ -16,16 +16,16 @@ public sealed class VaultGoneException : Exception
 
 public sealed class CycleStats
 {
-    public int Downloaded, Uploaded, Exported, Linked, Trashed, Recycled, Conflicts, Errors, Moved, Online;
+    public int Downloaded, Uploaded, Exported, Linked, Trashed, Recycled, Conflicts, Merged, Errors, Moved, Online;
     /// <summary>Things the user should hear about right away (the tray shows them), beyond the log.</summary>
     public List<string> Notices { get; } = new();
     /// <summary>Files found to change very often (see <see cref="SyncEngine.FrequentTransfers"/>), each reported once.</summary>
     public List<string> Frequent { get; } = new();
     /// <summary>The last item error of the cycle ("path: message"), for the health warning.</summary>
     public string? LastErrorText { get; set; }
-    public bool Any => Downloaded + Uploaded + Exported + Linked + Trashed + Recycled + Conflicts + Errors + Moved + Online > 0;
+    public bool Any => Downloaded + Uploaded + Exported + Linked + Trashed + Recycled + Conflicts + Merged + Errors + Moved + Online > 0;
     public override string ToString() =>
-        $"{Downloaded} down, {Uploaded} up, {Moved} moved,{(Online > 0 ? $" {Online} online-only," : "")} {Exported} exported, {Linked} linked, {Trashed} deleted remotely, {Recycled} recycled locally, {Conflicts} conflicts, {Errors} errors";
+        $"{Downloaded} down, {Uploaded} up, {Moved} moved,{(Online > 0 ? $" {Online} online-only," : "")} {Exported} exported, {Linked} linked, {Trashed} deleted remotely, {Recycled} recycled locally, {Conflicts} conflicts,{(Merged > 0 ? $" {Merged} merged," : "")} {Errors} errors";
 }
 
 /// <summary>One thing a dry run found it would do.</summary>
@@ -86,12 +86,16 @@ public sealed partial class SyncEngine
     public bool LocalChanged { get; set; } = true;
     public TimeSpan FullCycleInterval { get; set; } = TimeSpan.FromMinutes(10);
     private DateTime _lastFullCycleUtc = DateTime.MinValue;
+    private DateTime _lastBasePruneUtc = DateTime.MinValue;
     private long _lastRemoteFingerprint;
     private bool _docsChecked;
     private bool _lastHadErrors; // failed items are retried every cycle, not only in the next full pass
     private Dictionary<string, RemoteNode>? _lastRemote;
 
     /// <summary>The synced files' state and the last remote tree, copied for the content check. Call between cycles.</summary>
+    /// <summary>How many conflict copies (and kept-aside Word edits) the pair holds, as of the last cycle.</summary>
+    public int ConflictCopyCount => _state.Entries.Values.Count(e => e.Kind == EntryKind.File && ConflictCopy.IsCopy(e.Path));
+
     public (List<StateEntry> Entries, Dictionary<string, RemoteNode> Remote) Snapshot() =>
         (_state.Entries.Values.Where(e => e.Kind == EntryKind.File).ToList(),
          new Dictionary<string, RemoteNode>(_lastRemote ?? new(), StringComparer.OrdinalIgnoreCase));
@@ -192,6 +196,11 @@ public sealed partial class SyncEngine
             await ApplyOnDemandAsync(remote, local, stats, ct);
             if (!DryRun) TidyBridgeFolders(local);
             await PruneVersionsAsync(ct);
+            if (!DryRun && DateTime.UtcNow - _lastBasePruneUtc > TimeSpan.FromHours(6))
+            {
+                _lastBasePruneUtc = DateTime.UtcNow;
+                MergeBase.Prune(_pair, _state.Entries.Keys);
+            }
         }
         finally
         {
@@ -678,7 +687,32 @@ public sealed partial class SyncEngine
                 }
                 await UploadChangeAsync(current, rel, path, l, remote, stats, ct);
             }
+            else KeepBaseIfMissing(rel, path, s, l);
         });
+    }
+
+    /// <summary>
+    /// A text file in sync on both sides whose last synced content is not kept yet (synced before merging existed, or
+    /// renamed since): kept now, so a later edit on both sides can be merged.
+    /// </summary>
+    private void KeepBaseIfMissing(string rel, string path, StateEntry s, LocalItem l)
+    {
+        if (DryRun || l.Dehydrated || s.Md5 == null || !MergeBase.Wanted(rel, l.Size) || MergeBase.Has(_pair, rel)) return;
+        try
+        {
+            var bytes = ReadShared(path);
+            if (string.Equals(TextMerge.Md5Hex(bytes), s.Md5, StringComparison.OrdinalIgnoreCase)) MergeBase.Save(_pair, rel, bytes);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    private static byte[] ReadShared(string path)
+    {
+        using var fs = PathUtil.OpenShared(path);
+        using var ms = new MemoryStream();
+        fs.CopyTo(ms);
+        return ms.ToArray();
     }
 
     private async Task UploadChangeAsync(RemoteNode node, string rel, string path, LocalItem l, Dictionary<string, RemoteNode> remote, CycleStats stats, CancellationToken ct)
@@ -735,7 +769,10 @@ public sealed partial class SyncEngine
         Journal("downloaded", node.RelPath, node.Size, why);
     }
 
-    /// <summary>Keeps both: the local version is renamed and uploaded as its own file, the remote version takes the original name.</summary>
+    /// <summary>
+    /// A text file with history is first merged (see <see cref="TryMergeAsync"/>). Otherwise both are kept: the local
+    /// version is renamed and uploaded as its own file, the remote version takes the original name.
+    /// </summary>
     private async Task ConflictAsync(RemoteNode node, string rel, string path, Dictionary<string, RemoteNode> remote, CycleStats stats, string why, CancellationToken ct)
     {
         var name = PathUtil.NameOf(rel);
@@ -744,10 +781,14 @@ public sealed partial class SyncEngine
         var conflictName = $"{stem} (conflict {Environment.MachineName} {DateTime.Now:yyyy-MM-dd HHmm}){ext}";
         var conflictRel = PathUtil.Join(PathUtil.ParentOf(rel), conflictName);
         if (OpenElsewhere(path)) { WarnOnce("open:" + rel, $"'{rel}' is open in another program; the conflict is sorted out once it is closed"); return; }
+        var (merged, ancestor) = await TryMergeAsync(node, rel, path, remote, stats, ct);
+        if (merged) return;
         stats.Conflicts++;
         if (Planned("keep both (conflict)", rel, $"{why}; local copy becomes '{conflictName}'")) return;
         var conflictPath = Local(conflictRel);
         File.Move(path, conflictPath, overwrite: false);
+        // With the common ancestor kept, the Conflicts window can still merge the two later.
+        if (ancestor != null) try { MergeBase.SaveAncestor(_pair, conflictRel, ancestor); } catch (IOException) { }
         _log.Warn($"[{_pair.Name}] conflict ({why}): '{rel}' kept as '{conflictName}'");
         Journal("conflict", rel, detail: $"{why}; this computer's version kept as '{conflictName}'");
 
@@ -760,6 +801,83 @@ public sealed partial class SyncEngine
         RecordFile(conflictRel, cnode, conflictPath);
         stats.Uploaded++;
     }
+
+    /// <summary>
+    /// Both sides changed a text file (.md, .txt) since the last sync. When its last synced content is known (kept
+    /// here, see <see cref="MergeBase"/>, or still in the remote's version history), the two edits are merged line by
+    /// line; the merge is used only when they touch different lines. The merged file replaces both versions, which
+    /// are kept among the previous versions first. Done is also true when the file was saved again meanwhile or the
+    /// remote moved on (then the next cycle starts over). When not done, the ancestor (if known) goes back to the caller.
+    /// </summary>
+    private async Task<(bool Done, byte[]? Ancestor)> TryMergeAsync(RemoteNode node, string rel, string path, Dictionary<string, RemoteNode> remote, CycleStats stats, CancellationToken ct)
+    {
+        if (!TextMerge.Eligible(rel) || node.Size > TextMerge.MaxBytes || !_state.Entries.TryGetValue(rel, out var s) || s.Kind != EntryKind.File || s.Md5 == null)
+            return (false, null);
+        var before = new FileInfo(path);
+        if (before.Length > TextMerge.MaxBytes) return (false, null);
+        if (Planned("merge (changed on both sides)", rel, "when the two edits touch different lines; otherwise both are kept")) return (true, null);
+
+        var ancestor = MergeBase.Read(_pair, rel, s.Md5);
+        if (ancestor == null)
+        {
+            try
+            {
+                ancestor = await _store.EarlierContentAsync(node, s.Md5, ct);
+                if (ancestor != null && !string.Equals(TextMerge.Md5Hex(ancestor), s.Md5, StringComparison.OrdinalIgnoreCase)) ancestor = null;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) { _log.Debug($"[{_pair.Name}] {rel}: no earlier version from the remote: {ex.Message}"); }
+        }
+        if (ancestor == null)
+        {
+            _log.Info($"[{_pair.Name}] '{rel}' changed on both sides; its last synced version is unknown, so it cannot be merged");
+            return (false, null);
+        }
+
+        var scratchDir = Path.Combine(AppPaths.DataDir, "merge");
+        Directory.CreateDirectory(scratchDir);
+        var theirsPath = Path.Combine(scratchDir, Guid.NewGuid().ToString("N") + Path.GetExtension(rel));
+        try
+        {
+            await Tracked(SyncActivity.Direction.Down, rel, node.Size, () => _store.DownloadAsync(node, theirsPath, ct));
+            var theirs = File.ReadAllBytes(theirsPath);
+            var ours = ReadShared(path);
+            var outcome = TextMerge.Merge(ancestor, ours, theirs);
+            if (outcome?.Bytes == null)
+            {
+                _log.Info($"[{_pair.Name}] '{rel}' changed on both sides " +
+                          (outcome == null ? "and is not plain text" : $"in the same place ({outcome.Overlaps} place(s))") + "; both versions are kept");
+                return (false, ancestor);
+            }
+            // Saved again meanwhile (someone is typing): leave it all for the next cycle.
+            var now = new FileInfo(path);
+            if (now.Length != before.Length || now.LastWriteTimeUtc != before.LastWriteTimeUtc) { NeedsFollowUp = true; return (true, null); }
+            // About to overwrite remotely: the remote must still be the version that was merged.
+            var current = await _store.RefreshAsync(node, ct);
+            if (current == null || !SameVersion(current, node)) { NeedsFollowUp = true; return (true, null); }
+
+            VersionStore.Save(_pair, rel, path, _options);       // this computer's version
+            VersionStore.Save(_pair, rel, theirsPath, _options); // the other side's
+            var tmp = path + ".unisono-merge";
+            File.WriteAllBytes(tmp, outcome.Bytes);
+            File.Move(tmp, path, overwrite: true);
+            var fresh = await Tracked(SyncActivity.Direction.Up, rel, outcome.Bytes.Length, () => _store.UploadUpdateAsync(path, current, ct));
+            remote[rel] = fresh;
+            Uploaded(path, fresh.Id);
+            RecordFile(rel, fresh, path);
+            stats.Merged++;
+            _log.Info($"[{_pair.Name}] merged (changed on both sides, in different places): {rel}");
+            Journal("merged", rel, outcome.Bytes.Length, "changed here and on the other side in different places; both edits are in the file (the two earlier versions are among the previous versions)");
+            return (true, null);
+        }
+        finally
+        {
+            try { File.Delete(theirsPath); } catch { }
+        }
+    }
+
+    private static bool SameVersion(RemoteNode a, RemoteNode b) =>
+        a.Md5 != null && b.Md5 != null ? string.Equals(a.Md5, b.Md5, StringComparison.OrdinalIgnoreCase)
+        : a.ModifiedUtc == b.ModifiedUtc && a.Size == b.Size;
 
     // ---------------------------------------------------- exports and links
 
@@ -1071,6 +1189,19 @@ public sealed partial class SyncEngine
             Size = node.Size, DriveModifiedUtc = node.ModifiedUtc,
             LocalSize = info.Length, LocalMtimeTicks = info.LastWriteTimeUtc.Ticks,
         };
+        // Both sides agree now: a text file's content is the base of a later merge. Kept only when it is what the
+        // entry describes (a file saved again in this very moment is left to KeepBaseIfMissing).
+        if (!DryRun && !CloudFiles.IsDehydrated(info.Attributes) && MergeBase.Wanted(rel, info.Length))
+        {
+            try
+            {
+                var bytes = ReadShared(path);
+                var md5 = _state.Entries[rel].Md5;
+                if (md5 != null && string.Equals(TextMerge.Md5Hex(bytes), md5, StringComparison.OrdinalIgnoreCase)) MergeBase.Save(_pair, rel, bytes);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 
     private void UpsertFolderEntry(string rel, string id)

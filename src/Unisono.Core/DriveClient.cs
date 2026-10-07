@@ -405,6 +405,28 @@ public sealed class DriveClient
     }
 
     /// <summary>
+    /// The content of an earlier revision of an ordinary (not Google-native) file, found by its md5; null when Drive no
+    /// longer keeps it (by default it keeps revisions for 30 days or 100 of them).
+    /// </summary>
+    public async Task<byte[]?> RevisionContentAsync(string fileId, string md5, CancellationToken ct)
+    {
+        using var list = await _service.HttpClient.GetAsync(
+            $"https://www.googleapis.com/drive/v3/files/{fileId}/revisions?pageSize=1000&fields=revisions(id,md5Checksum)", ct);
+        if (!list.IsSuccessStatusCode) return null;
+        string? id = null;
+        using (var doc = System.Text.Json.JsonDocument.Parse(await list.Content.ReadAsStringAsync(ct)))
+        {
+            if (!doc.RootElement.TryGetProperty("revisions", out var revisions)) return null;
+            foreach (var r in revisions.EnumerateArray()) // oldest first: the last match is the newest such revision
+                if (r.TryGetProperty("md5Checksum", out var m) && string.Equals(m.GetString(), md5, StringComparison.OrdinalIgnoreCase))
+                    id = r.GetProperty("id").GetString();
+        }
+        if (id == null) return null;
+        using var res = await _service.HttpClient.GetAsync($"https://www.googleapis.com/drive/v3/files/{fileId}/revisions/{id}?alt=media", ct);
+        return res.IsSuccessStatusCode ? await res.Content.ReadAsByteArrayAsync(ct) : null;
+    }
+
+    /// <summary>
     /// The current revision of a Google Docs document (Docs API): it changes with every edit at once, while Drive's
     /// modified time trails web edits by a minute or two. Null when the Docs API is not reachable.
     /// </summary>

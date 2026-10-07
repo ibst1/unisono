@@ -179,8 +179,14 @@ sealed class Bridge : IAsyncDisposable
             case "conflicts.resolve":
             {
                 var pair = FindPair(Str(p, "id"));
-                _log.Info($"[{pair.Name}] " + Conflicts.Resolve(pair, Str(p, "rel")!, Str(p, "action")!, Config.Options));
-                return null;
+                var done = Conflicts.Resolve(pair, Str(p, "rel")!, Str(p, "action")!, Config.Options);
+                _log.Info($"[{pair.Name}] " + done);
+                return new { message = done };
+            }
+            case "conflicts.diff":
+            {
+                var pair = FindPair(Str(p, "id"));
+                return await Task.Run(() => Conflicts.Diff(pair, Str(p, "rel")!).Select(d => new { op = d.Op.ToString(), text = d.Text }).ToList());
             }
             case "conflicts.open":
             {
@@ -224,6 +230,7 @@ sealed class Bridge : IAsyncDisposable
                 Config.Save();
                 // Without its history a re-added pair starts by matching content, which is the safe way round.
                 try { File.Delete(SyncState.FilePathFor(pair)); } catch { }
+                MergeBase.Forget(pair);
                 _log.Info($"removed pair {pair.Name}");
                 await _restartHost();
                 return null;
@@ -312,6 +319,7 @@ sealed class Bridge : IAsyncDisposable
             server = c.Server, user = c.User, resolved = c.ResolvedBase, pinned = c.PinnedCertificates.Count,
         }),
         pairs = Config.Pairs.Select(PairDto),
+        conflictCopies = _host.Pairs.Sum(s => s.ConflictCopies),
         host = new { state = _host.State.ToString(), paused = _host.Paused, pausedBecause = _host.PausedBecause, offline = _host.Offline },
         settings = new { autostart = IsAutostart(), verbose = _settings.VerboseLog, tab = _settings.Tab },
         options = new
@@ -371,6 +379,7 @@ sealed class Bridge : IAsyncDisposable
         if (s.Linked > 0) parts.Add($"{s.Linked} linked");
         if (s.Trashed > 0) parts.Add($"{s.Trashed} deleted remotely");
         if (s.Recycled > 0) parts.Add($"{s.Recycled} to Recycle Bin");
+        if (s.Merged > 0) parts.Add($"{s.Merged} merged");
         if (s.Conflicts > 0) parts.Add($"{s.Conflicts} conflict(s)");
         return parts.Count == 0 ? "no changes" : string.Join(", ", parts);
     }
@@ -1108,10 +1117,17 @@ sealed class Bridge : IAsyncDisposable
         _log.Info(on ? "will start with Windows (in the tray)" : "will not start with Windows");
     }
 
-    /// <summary>A copy is named after the file's own modified time ("2026-09-24 064301.txt"); that is the version's time.</summary>
-    private static string VersionLabel(VersionStore.Version v) =>
-        DateTime.TryParseExact(Path.GetFileNameWithoutExtension(v.CopyPath), "yyyy-MM-dd HHmmss", null, System.Globalization.DateTimeStyles.None, out var t)
-            ? t.ToString("yyyy-MM-dd HH:mm:ss") : v.Taken.ToString("yyyy-MM-dd HH:mm");
+    /// <summary>
+    /// A copy is named after the file's own modified time ("2026-09-24 064301.txt"); that is the version's time. Another
+    /// content from the same second has a number after it ("2026-09-24 064301_2.txt").
+    /// </summary>
+    private static string VersionLabel(VersionStore.Version v)
+    {
+        var name = Path.GetFileNameWithoutExtension(v.CopyPath);
+        var n = name.Length > 17 && name[17] == '_' ? name[18..] : null;
+        return DateTime.TryParseExact(name[..Math.Min(17, name.Length)], "yyyy-MM-dd HHmmss", null, System.Globalization.DateTimeStyles.None, out var t)
+            ? t.ToString("yyyy-MM-dd HH:mm:ss") + (n != null ? $" ({n})" : "") : v.Taken.ToString("yyyy-MM-dd HH:mm");
+    }
 
     private static List<string> Lines(string? text) =>
         (text ?? "").Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l.Trim().Length > 0).ToList();

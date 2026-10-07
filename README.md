@@ -48,7 +48,13 @@ pair then leaves that subfolder alone locally and remotely, so every file belong
   copy under `versions\<pair>\<path>\` (default 5 copies, 30 days; Settings). The versions folder is the data
   folder's `versions` by default and can be moved anywhere outside the synced folders, e.g. to another drive
   (Settings > Previous versions folder); kept copies move along.
-  Deletions go to the Recycle Bin or the remote trash, conflicts keep both files.
+  Deletions go to the Recycle Bin or the remote trash, conflicts keep both files (notes and text files edited
+  in different places are merged; see *How it syncs*).
+* **Conflicts**: a file changed on both sides that could not be merged shows in the tray (a balloon that opens the
+  Conflicts window, and an amber icon until every conflict copy is sorted out) and under **Conflicts...** on the
+  Sync pairs tab: compare a copy with the current version line by line, keep one, or merge them. Merging puts both
+  edits into the file; lines changed on both sides are written twice between `<<<<<<<` and `>>>>>>>` to sort out
+  by hand. It is offered when the computer that made the copy knows the two versions' common ancestor.
 * **Ignore rules**: gitignore-style patterns in Settings (all pairs), per pair, and in
   `.unisonoignore` files, which apply to their folder and below and sync to other computers.
   `*.log`, `__pycache__/`, `renv/library/`, `!keep.log`, `/only-at-this-level`. Ignored items
@@ -265,9 +271,15 @@ Rules:
 * Deletes go to the Drive trash and the Recycle Bin, never permanent.
 * A folder is only deleted on the other side when nothing inside it changed since the
   last sync; otherwise it is kept and re-created.
-* When both sides changed a file, both are kept: the local version is renamed
+* When both sides changed a note or text file (`.md`, `.txt`, up to 1 MB), the two edits are merged line by line
+  against the last synced version (a three-way merge, as `git merge-file` does it). That version is kept for each
+  such file under `base\<pair>\` in the data folder, checked by its md5 before use; when it is missing, Drive's own
+  version history is asked for it. The merged file is used only when the edits touch different lines, with at least
+  one unchanged line between them; it replaces both versions, which are kept among the previous versions first.
+  Typical case: an app rewrites its own section of a note on one computer while you write below it on the other.
+* Otherwise, when both sides changed a file, both are kept: the local version is renamed
   `Name (conflict MACHINE yyyy-MM-dd HHmm).ext` and uploaded, Drive's version takes the
-  original name.
+  original name. No conflict markers are ever written into a file on their own.
 * A file that exists on both sides with no history (first sync of a pre-existing folder)
   is adopted if the content is identical, otherwise treated as a conflict.
 * Two machines syncing the same Drive folder need no coordination; Drive is the hub and

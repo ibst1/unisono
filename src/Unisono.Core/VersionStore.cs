@@ -36,7 +36,11 @@ public static class VersionStore
         if (options.KeepVersions <= 0 || !File.Exists(fullPath)) return null;
         var dir = Path.Combine(DirFor(pair), rel.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(dir);
-        var target = Path.Combine(dir, $"{File.GetLastWriteTime(fullPath):yyyy-MM-dd HHmmss}{Path.GetExtension(rel)}");
+        var stamp = $"{File.GetLastWriteTime(fullPath):yyyy-MM-dd HHmmss}";
+        var target = Path.Combine(dir, stamp + Path.GetExtension(rel));
+        // Another content saved in the same second (the two sides of a merge, say) gets a name of its own.
+        for (var n = 2; File.Exists(target) && !SameContent(target, fullPath); n++)
+            target = Path.Combine(dir, $"{stamp}_{n}{Path.GetExtension(rel)}");
         if (!File.Exists(target))
         {
             // Shared read: Office keeps its documents open, and a plain File.Copy would fail on them.
@@ -47,6 +51,12 @@ public static class VersionStore
         }
         Prune(dir, options);
         return target;
+    }
+
+    private static bool SameContent(string a, string b)
+    {
+        if (new FileInfo(a).Length != new FileInfo(b).Length) return false;
+        return PathUtil.Md5Of(a) == PathUtil.Md5Of(b);
     }
 
     /// <summary>One kept copy of a file.</summary>
