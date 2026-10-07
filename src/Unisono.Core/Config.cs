@@ -183,6 +183,14 @@ public sealed class AppOptions
     public List<string> IgnorePatterns { get; set; } = new() { ".DS_Store" };
     /// <summary>"Open in Google Drive" and the like in Explorer's context menu for synced folders.</summary>
     public bool ExplorerMenu { get; set; } = true;
+    /// <summary>
+    /// Office's own AutoSave works only for OneDrive and SharePoint: the tray app saves open Word, Excel and PowerPoint
+    /// documents in synced folders itself once they have had unsaved changes for <see cref="AutoSaveSeconds"/>.
+    /// </summary>
+    public bool AutoSaveOffice { get; set; }
+    public int AutoSaveSeconds { get; set; } = 30;
+    /// <summary>Excel workbooks too (saving from outside may empty Excel's undo list, so it can be left out).</summary>
+    public bool AutoSaveExcel { get; set; } = true;
 }
 
 public sealed class Config

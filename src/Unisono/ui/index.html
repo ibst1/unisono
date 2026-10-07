@@ -247,6 +247,15 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
         <div class="grow"><div>Pause during presentations and full-screen apps</div><div class="small muted">The same moments Windows holds back notifications.</div></div></div>
     </section>
     <section class="card">
+      <div class="setting"><label class="switch"><input type="checkbox" id="optAutoSave"><span></span></label>
+        <div class="grow"><div>AutoSave Office documents</div><div class="small muted">Office's own AutoSave only works on OneDrive and SharePoint. With this on, Unisono saves open
+          Word, Excel and PowerPoint documents in synced folders (.docx, .xlsx, .pptx and the like) once they have had unsaved changes for a while, as Ctrl+S would.
+          Not new documents, read-only ones, old formats (.doc, .xls, .csv) or exports of Google documents. Each save is a new version on Drive.</div></div>
+        <div class="inline"><span class="small muted">after</span><input type="number" id="optAutoSaveSec" min="5" max="3600" style="width:80px"><span class="small muted">seconds</span></div></div>
+      <div class="setting" id="optAutoSaveExcelRow"><label class="switch"><input type="checkbox" id="optAutoSaveExcel"><span></span></label>
+        <div class="grow"><div>Excel workbooks too</div><div class="small muted">Saving from outside Excel may empty its undo list. Turn this off if you miss undo in Excel.</div></div></div>
+    </section>
+    <section class="card">
       <div class="setting" style="align-items:flex-start"><div class="grow"><div>Ignore everywhere</div>
         <div class="small muted">gitignore-style patterns for every pair, one per line. A <span class="mono">.unisonoignore</span> file in any synced
           folder adds patterns for that folder and below (and syncs with it). Ignored items are never touched on either side.</div>
@@ -1406,6 +1415,9 @@ function renderSettings() {
   if (document.activeElement !== $("#optCheckDays")) $("#optCheckDays").value = o.checkContentDays;
   $("#optMetered").checked = o.pauseOnMetered; $("#optPresenting").checked = o.pauseWhilePresenting;
   $("#optExplorer").checked = o.explorerMenu;
+  $("#optAutoSave").checked = o.autoSaveOffice; $("#optAutoSaveExcel").checked = o.autoSaveExcel;
+  $("#optAutoSaveExcelRow").hidden = !o.autoSaveOffice;
+  if (document.activeElement !== $("#optAutoSaveSec")) $("#optAutoSaveSec").value = o.autoSaveSeconds;
   $("#meteredNow").textContent = "Mobile hotspots and networks marked as metered in Windows. The current connection is " + (o.metered ? "metered." : "not metered.");
   if (document.activeElement !== $("#optIgnore") && !$("#optIgnore").dataset.dirty) $("#optIgnore").value = o.ignorePatterns;
 }
@@ -1424,6 +1436,9 @@ $("#optMetered").onchange = e => setOpt({ pauseOnMetered: e.target.checked });
 $("#optCheckDays").onchange = e => setOpt({ checkContentDays: parseInt(e.target.value || "0", 10) });
 $("#optPresenting").onchange = e => setOpt({ pauseWhilePresenting: e.target.checked });
 $("#optExplorer").onchange = e => setOpt({ explorerMenu: e.target.checked });
+$("#optAutoSave").onchange = e => setOpt({ autoSaveOffice: e.target.checked });
+$("#optAutoSaveExcel").onchange = e => setOpt({ autoSaveExcel: e.target.checked });
+$("#optAutoSaveSec").onchange = e => setOpt({ autoSaveSeconds: parseInt(e.target.value || "30", 10) });
 $("#optIgnore").oninput = () => $("#optIgnore").dataset.dirty = "1";
 $("#optIgnoreSave").onclick = async () => { await setOpt({ ignorePatterns: $("#optIgnore").value }); delete $("#optIgnore").dataset.dirty; toast("Ignore patterns saved"); };
 

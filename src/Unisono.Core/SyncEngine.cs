@@ -117,6 +117,10 @@ public sealed partial class SyncEngine
     /// <summary>How many conflict copies (and kept-aside Word edits) the pair holds, as of the last cycle.</summary>
     public int ConflictCopyCount => _state.Entries.Values.Count(e => e.Kind == EntryKind.File && ConflictCopy.IsCopy(e.Path));
 
+    /// <summary>The local files that are exports of Google documents (their edits go back into the document). Call between cycles.</summary>
+    public HashSet<string> ExportedFiles() =>
+        new(_state.Entries.Values.Where(e => e.Kind == EntryKind.Export && e.LocalName != null).Select(e => Local(e.LocalName!)), StringComparer.OrdinalIgnoreCase);
+
     public (List<StateEntry> Entries, Dictionary<string, RemoteNode> Remote) Snapshot() =>
         (_state.Entries.Values.Where(e => e.Kind == EntryKind.File).ToList(),
          new Dictionary<string, RemoteNode>(_lastRemote ?? new(), StringComparer.OrdinalIgnoreCase));

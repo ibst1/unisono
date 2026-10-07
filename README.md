@@ -334,6 +334,24 @@ If a pair's local folder, or a folder pair's other folder, is deleted (the folde
 not just a drive that is not connected), the pair does nothing, its card says so and the tray tells once: *Remove the
 pair*, or *Keep it* for a folder that comes back.
 
+## AutoSave for Office documents
+
+Office's own AutoSave works only for files on OneDrive and SharePoint. *AutoSave Office documents* (Settings, off by
+default) does the same for synced folders: the tray app asks the running Word, Excel and PowerPoint every few seconds
+which open documents have unsaved changes, and saves (as Ctrl+S would) those in a synced folder that have had unsaved
+changes for the chosen time (30 s by default); the sync then carries them over, each save a new version on Drive.
+
+- Only .docx, .xlsx, .pptx and their macro and template kinds. Not documents never saved, read-only ones, old formats
+  (.doc, .xls, .ppt, .csv: saving them can ask questions), exports of Google documents (each save would go back into
+  the document), or anything outside the pairs (download-only pairs neither).
+- Office is reached through its document windows, so an Office that never lost focus is found too; it is never
+  started, and every reference to it is let go at once, so closing it is never held up (`OfficeAutoSave.cs`).
+- Excel is waited for while a cell is being edited, and any app that is busy (a dialog open) is tried again shortly.
+  Excel's own Save command is used for workbooks (Workbook.Save from outside empties Excel's undo list), so only the
+  active workbook is saved; another waits until it is active. *Excel workbooks too* can be turned off.
+- A document changed on another computer while open here becomes a conflict copy more often than without AutoSave,
+  since the open copy has nearly always changed too: both versions are kept.
+
 ## Sync groups
 
 A group keeps several folders on one computer identical, e.g. the `.obsidian` settings (hotkeys, plugins) of several
@@ -410,6 +428,7 @@ that is removed afterwards.
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1                  # drive + ui
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite folder -OtherFolder \\server\share\tests
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite groups     # sync groups only (two simulated computers)
+powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite autosave   # Office AutoSave (opens Word, Excel, PowerPoint minimized)
 powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1 -Suite nas -NasServer myid -NasUser me -NasFolder "/home/tests"
 ```
 ## Building

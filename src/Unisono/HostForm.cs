@@ -21,6 +21,7 @@ sealed partial class HostForm : Form
     private readonly SyncHost _host;
     private readonly AppSettings _settings = AppSettings.Load();
     private readonly Bridge _bridge;
+    private readonly OfficeAutoSave _autoSave;
     // The page lives only while the window is open: hidden in the tray, WebView2's browser processes (some 400 MB)
     // are closed a little while after the window is, and started again when it is shown.
     private WebView2? _web;
@@ -52,6 +53,7 @@ sealed partial class HostForm : Form
         _host = new SyncHost(_log);
         _bridge = new Bridge(this, _log, _host, _settings, StartHostAsync, QueueState);
         _host.AutoPauseReason = () => AutoPause.Reason(_bridge.Config.Options);
+        _autoSave = new OfficeAutoSave(_log, () => _bridge.Config, _host.IsExport);
 
         Text = "Unisono";
         Icon = IconFor(Ui.Grey);
@@ -453,6 +455,7 @@ sealed partial class HostForm : Form
             return;
         }
         _tray.Visible = false;
+        _autoSave.Dispose();
         // Off the UI thread: the host's awaits must not need this (blocked) thread to finish.
         try { Task.Run(async () => { await _host.DisposeAsync(); await _bridge.DisposeAsync(); }).Wait(TimeSpan.FromSeconds(10)); } catch { }
         base.OnFormClosing(e);

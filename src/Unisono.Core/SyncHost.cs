@@ -119,6 +119,12 @@ public sealed class SyncHost : IAsyncDisposable
     public event Action<PairStatus, CycleStats>? CycleCompleted;
     /// <summary>A pair has not synced cleanly for a while (<see cref="PairStatus.Health"/> says why). Once per episode.</summary>
     public event Action<PairStatus>? HealthProblem;
+    /// <summary>Per Drive pair, as of its last cycle: the local files that are exports of Google documents. Each set is replaced, never changed.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, HashSet<string>> _exports = new();
+
+    /// <summary>Whether this local file is an export of a Google document (any thread).</summary>
+    public bool IsExport(string fullPath) => _exports.Values.Any(s => s.Contains(fullPath));
+
     /// <summary>A pair's folder was deleted (<see cref="PairStatus.FolderGone"/>). Once until the folder is back.</summary>
     public event Action<PairStatus>? FolderGone;
 
@@ -373,6 +379,7 @@ public sealed class SyncHost : IAsyncDisposable
                             }
                             var stats = await engine.RunCycleAsync(ct);
                             TrackFolder(ps, engine.FolderGone);
+                            if (ps.Pair.Kind == RemoteKind.Drive) _exports[ps.Pair.Id] = engine.ExportedFiles();
                             followUp |= engine.NeedsFollowUp;
                             ps.LastStats = stats;
                             ps.ConflictCopies = engine.ConflictCopyCount;

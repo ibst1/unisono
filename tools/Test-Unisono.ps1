@@ -17,6 +17,8 @@
     ondemand  files on demand: placeholders, download on open, keep / free up space, edits, deletes, renames, turning it off
               (registers a temporary sync root in Explorer; removed at the end)
     ui      starts the window on a scratch config and checks that every part of the page renders without errors
+    autosave  starts the window with Office AutoSave on, edits documents in Word, Excel and PowerPoint (opened
+              minimized) and checks that those in the synced folder are saved and synced, and others are not
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File tools\Test-Unisono.ps1
@@ -479,6 +481,82 @@ function Test-Groups {
     Check "groups a deleted other folder is reported and nothing is deleted here" { $out -match "does not exist any more" -and (Has $g2 "keep.txt") }
 }
 
+# ------------------------------------------------------------------ Office AutoSave
+# The window app on a scratch config with AutoSave on, and Word, Excel and PowerPoint (minimized) with documents in the
+# pair's folder and one outside it. Office's undo after such a save cannot be checked from here: try that by hand.
+function DocText([string]$path) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($path)
+    try { ($zip.Entries | ForEach-Object { $r = New-Object IO.StreamReader($_.Open()); try { $r.ReadToEnd() } finally { $r.Dispose() } }) -join "" }
+    finally { $zip.Dispose() }
+}
+function Test-AutoSave {
+    Section "autosave: open Office documents in synced folders are saved"
+    $other = New-TestDir "$work\as-other"
+    $c = Computer "as" @{ Kind = "Folder"; RemotePath = $other }
+    $cfg = Get-Content "$($c.Data)\config.json" -Raw | ConvertFrom-Json
+    $cfg.Options | Add-Member AutoSaveOffice $true -Force; $cfg.Options | Add-Member AutoSaveSeconds 5 -Force
+    $cfg | ConvertTo-Json -Depth 6 | Set-Content "$($c.Data)\config.json" -Encoding UTF8
+    $outside = New-TestDir "$work\as-outside"
+    Use-Data $c.Data; $env:UNISONO_AUTOSAVE_ROUND = "1"
+    $p = Start-Process $app -ArgumentList "--tray" -PassThru
+    $env:UNISONO_AUTOSAVE_ROUND = ""
+    $officeBefore = @(Get-Process WINWORD, EXCEL, POWERPNT -ErrorAction SilentlyContinue | ForEach-Object Id)
+    $ours = { @(Get-CimInstance Win32_Process -Filter "Name='WINWORD.EXE' or Name='EXCEL.EXE' or Name='POWERPNT.EXE'" |
+        Where-Object { $officeBefore -notcontains $_.ProcessId -and $_.CommandLine -match '/automation' }) }
+    # Office is driven from a PowerShell of its own, which ends when done: PowerShell's own references keep Office
+    # running until its process ends, and afterwards only Unisono could still be holding on to it.
+    $results = "$work\as-results.json"
+    $script = @'
+param($synced, $outside, $results)
+$r = @{}
+$word = New-Object -ComObject Word.Application; $word.Visible = $true; $word.WindowState = 2
+$d = $word.Documents.Add(); $d.SaveAs2("$synced\note.docx"); $null = $d.Content.InsertAfter("autosaved words")
+$r.startUnsaved = -not $d.Saved
+$o = $word.Documents.Add(); $o.SaveAs2("$outside\outside.docx"); $null = $o.Content.InsertAfter("not in a synced folder")
+$xl = New-Object -ComObject Excel.Application; $xl.Visible = $true; $xl.WindowState = -4140
+$wb = $xl.Workbooks.Add(); $wb.SaveAs("$synced\sheet.xlsx", 51); $wb.Worksheets.Item(1).Range("A1").Value2 = "autosaved cell"
+$pp = New-Object -ComObject PowerPoint.Application
+$pr = $pp.Presentations.Add(-1); $pp.WindowState = 2; $pr.SaveAs("$synced\deck.pptx")
+$slide = $pr.Slides.Add(1, 12); $slide.Shapes.AddTextbox(1, 10, 10, 300, 50).TextFrame.TextRange.Text = "autosaved slide"
+for ($i = 0; $i -lt 40 -and -not ($d.Saved -and $wb.Saved -and $pr.Saved -eq -1); $i++) { Start-Sleep 1 }
+$r.word = [bool]$d.Saved; $r.excel = [bool]$wb.Saved; $r.powerpoint = $pr.Saved -eq -1; $r.outsideLeft = -not $o.Saved
+$r | ConvertTo-Json | Set-Content $results
+# One by one: closing documents while enumerating Office's collection fails half-way.
+$errs = @()
+foreach ($x in @($o, $d)) { try { $x.Close([ref]0) } catch { $errs += "word close: $_" } } # Word's optional arguments go by reference
+try { $word.Quit([ref]0) } catch { $errs += "word quit: $_" }
+try { $wb.Close($false) } catch { $errs += "excel close: $_" }
+try { $xl.DisplayAlerts = $false; $xl.Quit() } catch { $errs += "excel quit: $_" }
+try { $pr.Saved = -1; $pr.Close(); $pp.Quit() } catch { $errs += "powerpoint: $_" }
+$errs | Set-Content "$results.errors"
+'@
+    Set-Content "$work\as-office.ps1" $script
+    try {
+        Start-Process powershell -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$work\as-office.ps1`"", "`"$($c.Local)`"", "`"$outside`"", "`"$results`"" -Wait -WindowStyle Hidden
+        $r = Get-Content $results -Raw | ConvertFrom-Json
+        Check "autosave the document starts out with unsaved changes" { $r.startUnsaved }
+        Check "autosave Word: the document in the synced folder is saved" { $r.word }
+        Check "autosave Excel: the workbook is saved" { $r.excel }
+        Check "autosave PowerPoint: the presentation is saved" { $r.powerpoint }
+        Check "autosave a document outside the synced folders is left alone" { $r.outsideLeft }
+        for ($i = 0; $i -lt 30 -and -not ((Test-Path "$other\note.docx") -and (DocText "$other\note.docx") -match "autosaved words"); $i++) { Start-Sleep 1 }
+        Check "autosave ... and the saved file reaches the other side" { (DocText "$other\note.docx") -match "autosaved words" -and (DocText "$other\sheet.xlsx") -match "autosaved cell" }
+        Check "autosave it is logged" { (Get-Content "$($c.Data)\log\*.log" -Raw) -match "saved automatically" }
+        # Unisono is still running here: Office must close all the same (no reference to it is kept between rounds).
+        for ($i = 0; $i -lt 20 -and @(& $ours).Count -gt 0; $i++) { Start-Sleep 1 }
+        $leftOver = @(& $ours).Count
+        if ($leftOver) { Write-Host "        still running: $((@(& $ours) | ForEach-Object { "$($_.Name) $($_.ProcessId)" }) -join ', ')" -ForegroundColor DarkGray }
+        Check "autosave Office closes although Unisono reached into it" { $leftOver -eq 0 }
+    }
+    finally {
+        if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+        if ($leftOver) { Start-Sleep 8; Write-Host "        after Unisono stopped: $((@(& $ours) | ForEach-Object { "$($_.Name) $($_.ProcessId)" }) -join ', ')" -ForegroundColor DarkGray }
+        # Last resort, only for the Office processes this test started.
+        & $ours | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 # ------------------------------------------------------------------ UI
 function Test-Ui {
     Section "ui: window renders"
@@ -643,6 +721,7 @@ if ($Suite -contains "ondemand") {
     finally { Use-Data $lp.Data; & $cli ondemand-off 2>&1 | Out-Null }
 }
 if ($Suite -contains "ui") { Test-Ui }
+if ($Suite -contains "autosave") { Test-AutoSave }
 
 if (-not $KeepFiles) { Wipe $work }
 Write-Host ""

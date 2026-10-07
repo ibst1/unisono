@@ -312,6 +312,16 @@ sealed class Bridge : IAsyncDisposable
                 if (p.TryGetProperty("pauseWhilePresenting", out var pp)) { o.PauseWhilePresenting = pp.GetBoolean(); changed = true; }
                 if (Str(p, "ignorePatterns") is { } ig) { o.IgnorePatterns = Lines(ig); changed = true; }
                 if (p.TryGetProperty("explorerMenu", out var em)) { o.ExplorerMenu = em.GetBoolean(); changed = true; }
+                // AutoSave is read by OfficeAutoSave each round: saved, but no need to restart syncing.
+                var autoSave = false;
+                if (p.TryGetProperty("autoSaveOffice", out var aso)) { o.AutoSaveOffice = aso.GetBoolean(); autoSave = true; }
+                if (p.TryGetProperty("autoSaveExcel", out var ase)) { o.AutoSaveExcel = ase.GetBoolean(); autoSave = true; }
+                if (p.TryGetProperty("autoSaveSeconds", out var ass) && ass.TryGetInt32(out var assi)) { o.AutoSaveSeconds = Math.Clamp(assi, 5, 3600); autoSave = true; }
+                if (autoSave && !changed)
+                {
+                    Config.Save();
+                    _log.Info(o.AutoSaveOffice ? $"Office documents in synced folders are saved {o.AutoSaveSeconds} s after a change{(o.AutoSaveExcel ? "" : " (Word and PowerPoint only)")}" : "Office documents are no longer saved automatically");
+                }
                 if (changed)
                 {
                     Config.Save();
@@ -385,6 +395,7 @@ sealed class Bridge : IAsyncDisposable
             ignorePatterns = string.Join("\n", Config.Options.IgnorePatterns), metered = AutoPause.IsMetered(),
             versionsDir = VersionStore.Root, versionsFolder = Config.Options.VersionsFolder ?? "", versionsDefault = string.IsNullOrWhiteSpace(Config.Options.VersionsFolder),
             explorerMenu = Config.Options.ExplorerMenu,
+            autoSaveOffice = Config.Options.AutoSaveOffice, autoSaveSeconds = Config.Options.AutoSaveSeconds, autoSaveExcel = Config.Options.AutoSaveExcel,
         },
     };
 
