@@ -40,6 +40,7 @@ h2 + .sub { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
 section { margin-bottom: 28px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 16px; margin-bottom: 10px; }
 .groupcard { margin-bottom: 6px; }
+.warntext { color: var(--amber); }
 .members { margin-left: 22px; padding-left: 10px; border-left: 2px solid var(--line); margin-bottom: 14px; }
 .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .grow { flex: 1; min-width: 0; }
@@ -274,7 +275,11 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
         <button class="btn" data-open="data">Open folder</button></div>
       <div class="setting"><div class="grow"><div>Log files</div><div class="small muted">One file per day.</div></div>
         <button class="btn" data-open="log">Open folder</button></div>
-      <div class="setting"><div class="grow"><div>Version</div><div class="small muted mono" id="version"></div></div></div>
+      <div class="setting"><div class="grow"><div>Version</div><div class="small muted mono" id="version"></div>
+        <div class="small muted" id="machines"></div></div></div>
+      <div class="setting"><label class="switch"><input type="checkbox" id="optAutoUpdate"><span></span></label>
+        <div class="grow"><div>Install new versions by themselves</div><div class="small muted">When a new Unisono.exe arrives (synced from another computer, or a build), Unisono restarts
+          into it a couple of minutes later, once its window is closed and nothing is being transferred. Off: the tray menu offers the restart.</div></div></div>
     </section>
   </div>
 
@@ -550,6 +555,9 @@ function renderHeader() {
   else if (S.host.pausedBecause && S.host.state !== "Syncing") [cls, text] = ["warn", "Paused: " + S.host.pausedBecause];
   else if (S.host.offline && S.host.state !== "Syncing" && S.host.state !== "Trouble") [cls, text] = ["warn", "Offline"];
   if (!S.pairs.length) [cls, text] = ["", "No sync pairs yet"];
+  // Another computer seen lately with another version: say so, it is what 'both run the same' depends on.
+  const behind = (S.machines || []).filter(m => !m.here && m.recent && m.version !== S.version);
+  if (behind.length && cls !== "err") [cls, text] = ["warn", `${text}; ${behind.map(m => `${m.machine} runs ${m.version.split("+")[0]}`).join(", ")}`];
   const chip = $("#statusChip"); chip.className = "chip " + cls; chip.textContent = text;
   $("#brandDot").style.background = { ok: "var(--green)", busy: "var(--blue)", warn: "var(--amber)", err: "var(--red)" }[cls] || "var(--muted)";
   $("#btnPause").textContent = S.host.paused ? "Resume" : "Pause";
@@ -1493,6 +1501,10 @@ function renderSettings() {
   $("#verDirNote").textContent = S.options.versionsDefault ? "(default, in the settings folder)" : "";
   $("#verDirReset").hidden = S.options.versionsDefault;
   $("#version").textContent = "Unisono " + S.version;
+  const others = (S.machines || []).filter(m => !m.here);
+  $("#machines").innerHTML = others.length ? "Other computers: " + others.map(m =>
+    `<span class="${m.version !== S.version && m.recent ? "warntext" : ""}">${esc(m.machine)} ${esc(m.version.split("+")[0])}</span> <span class="muted">(seen ${esc(m.seen)})</span>`).join(", ") : "";
+  $("#optAutoUpdate").checked = S.options.autoUpdate;
   $("#brandVersion").textContent = S.version.split("+")[0]; $("#brandVersion").title = "Unisono " + S.version;
   const o = S.options;
   if (document.activeElement !== $("#optKeep")) $("#optKeep").value = o.keepVersions;
@@ -1522,6 +1534,7 @@ $("#optCheckDays").onchange = e => setOpt({ checkContentDays: parseInt(e.target.
 $("#optPresenting").onchange = e => setOpt({ pauseWhilePresenting: e.target.checked });
 $("#optExplorer").onchange = e => setOpt({ explorerMenu: e.target.checked });
 $("#optAutoSave").onchange = e => setOpt({ autoSaveOffice: e.target.checked });
+$("#optAutoUpdate").onchange = e => setOpt({ autoUpdate: e.target.checked });
 $("#optAutoSaveExcel").onchange = e => setOpt({ autoSaveExcel: e.target.checked });
 $("#optAutoSaveSec").onchange = e => setOpt({ autoSaveSeconds: parseInt(e.target.value || "30", 10) });
 $("#optIgnore").oninput = () => $("#optIgnore").dataset.dirty = "1";

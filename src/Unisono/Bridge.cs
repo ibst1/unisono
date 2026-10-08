@@ -410,6 +410,13 @@ sealed class Bridge : IAsyncDisposable
                 if (p.TryGetProperty("autoSaveOffice", out var aso)) { o.AutoSaveOffice = aso.GetBoolean(); autoSave = true; }
                 if (p.TryGetProperty("autoSaveExcel", out var ase)) { o.AutoSaveExcel = ase.GetBoolean(); autoSave = true; }
                 if (p.TryGetProperty("autoSaveSeconds", out var ass) && ass.TryGetInt32(out var assi)) { o.AutoSaveSeconds = Math.Clamp(assi, 5, 3600); autoSave = true; }
+                if (p.TryGetProperty("autoUpdate", out var au))
+                {
+                    // Read by the update check each time: saved, no restart of syncing needed.
+                    o.AutoUpdate = au.GetBoolean();
+                    if (!changed) Config.Save();
+                    _log.Info(o.AutoUpdate ? "new versions are installed by themselves" : "new versions wait for a restart from the tray menu");
+                }
                 if (autoSave && !changed)
                 {
                     Config.Save();
@@ -449,6 +456,13 @@ sealed class Bridge : IAsyncDisposable
     public object State() => new
     {
         version = Ui.Version,
+        // Each computer's version, where the install folder is synced between them; this one first.
+        machines = HostForm.MachineVersions().Select(m => new
+        {
+            machine = m.Machine, version = m.Version, here = m.Machine == Environment.MachineName,
+            seen = m.Seen.ToLocalTime().ToString(m.Seen.ToLocalTime().Date == DateTime.Today ? "HH:mm" : "d MMM HH:mm"),
+            recent = DateTime.UtcNow - m.Seen < TimeSpan.FromDays(2),
+        }),
         machine = Environment.MachineName,
         dataDir = AppPaths.DataDir,
         oauthClient = OAuthInfo(),
@@ -499,6 +513,7 @@ sealed class Bridge : IAsyncDisposable
             versionsDir = VersionStore.Root, versionsFolder = Config.Options.VersionsFolder ?? "", versionsDefault = string.IsNullOrWhiteSpace(Config.Options.VersionsFolder),
             explorerMenu = Config.Options.ExplorerMenu,
             autoSaveOffice = Config.Options.AutoSaveOffice, autoSaveSeconds = Config.Options.AutoSaveSeconds, autoSaveExcel = Config.Options.AutoSaveExcel,
+            autoUpdate = Config.Options.AutoUpdate,
         },
     };
 

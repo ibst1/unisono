@@ -2,8 +2,9 @@ namespace Unisono.App;
 
 static class Program
 {
-    /// <summary>Unisono.exe [--tray] [--after pid]: the tray app. --tray starts with the window hidden (used by autostart);
-    /// --after waits for that process (the version this one replaces) to exit first.</summary>
+    /// <summary>Unisono.exe [--tray] [--after pid] [--updated old-version]: the tray app. --tray starts with the window hidden
+    /// (used by autostart); --after waits for that process (the version this one replaces) to exit first; --updated says
+    /// in a balloon that this version replaced that one.</summary>
     [STAThread]
     static int Main(string[] args)
     {
@@ -35,7 +36,7 @@ static class Program
         }
         AppPaths.EnsureDataDir();
         ApplicationConfiguration.Initialize();
-        Application.Run(new HostForm(startHidden: args.Contains("--tray", StringComparer.OrdinalIgnoreCase), show));
+        Application.Run(new HostForm(startHidden: args.Contains("--tray", StringComparer.OrdinalIgnoreCase), show, args));
         return 0;
     }
 }

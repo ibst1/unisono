@@ -17,3 +17,5 @@ client_secret*.json
 /*.pdb
 /*.xml
 /runtimes/
+# Which version each computer runs (written by the tray app next to the exe, synced with the install folder).
+/machines/

@@ -99,6 +99,14 @@ browser opens with the pair's Google account selected. Turn the menu off under S
 
 Each computer has its own pairs, settings, sign-ins and sync state: set up the pairs on each
 computer. Two computers syncing the same remote folder need no coordination.
+
+**Updates.** A new `Unisono.exe` where the running one was started from (from `build.ps1`, or synced from another
+computer when the install folder is part of a pair) is noticed within a minute. Unisono restarts into it by itself
+two minutes later, once its window is closed and nothing is being transferred, and says so in a balloon (Settings:
+*Install new versions by themselves*; off, the tray menu offers the restart). Each computer also notes its version in
+`machines\<computer>.json` next to the exe: where that folder is synced, Settings lists the other computers'
+versions, and the header warns while one seen in the last two days runs another.
+
 ### Several accounts
 
 Pairs name their Google account by e-mail address (config `Account`; empty means the first

@@ -46,9 +46,12 @@ sealed partial class HostForm : Form
     private string? _pendingTab;
     private const string ConflictBalloonTitle = "Unisono: conflict";
 
-    public HostForm(bool startHidden, EventWaitHandle showSignal)
+    private readonly string[] _args;
+
+    public HostForm(bool startHidden, EventWaitHandle showSignal, string[]? args = null)
     {
         _startHidden = startHidden;
+        _args = args ?? Array.Empty<string>();
         _log.Verbose = _settings.VerboseLog;
         _host = new SyncHost(_log);
         _bridge = new Bridge(this, _log, _host, _settings, StartHostAsync, QueueState);
@@ -128,6 +131,8 @@ sealed partial class HostForm : Form
         await StartHostAsync();
         _ = _bridge.RefreshGoogleInfoAsync();
         _ = _bridge.RefreshBoxInfoAsync();
+        TellIfUpdated(_args);
+        WriteMachineVersion();
         if (!_startHidden) await OpenWebAsync();
         await ScanGroupsAsync();
         _groupTimer.Start();

@@ -194,6 +194,8 @@ public sealed class AppOptions
     public int AutoSaveSeconds { get; set; } = 30;
     /// <summary>Excel workbooks too (saving from outside may empty Excel's undo list, so it can be left out).</summary>
     public bool AutoSaveExcel { get; set; } = true;
+    /// <summary>A new Unisono.exe in place (from a build, or synced from another computer) is started by itself, when idle.</summary>
+    public bool AutoUpdate { get; set; } = true;
 }
 
 public sealed class Config
