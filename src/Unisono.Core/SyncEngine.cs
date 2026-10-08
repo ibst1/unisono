@@ -491,6 +491,7 @@ public sealed partial class SyncEngine
                 if (!LocalTreeHasChanges(rel, local))
                 {
                     if (!Down || _holdDown) continue; // upload-only: a remote deletion is not applied here (nor undone); or held back
+                    if (await StillThereAsync(s.DriveId, rel, folder: true, remote, ct)) continue;
                     await Try(rel, stats, () =>
                     {
                         if (!Planned("move folder to the Recycle Bin (deleted remotely)", rel))
@@ -513,6 +514,33 @@ public sealed partial class SyncEngine
             if (!Up) continue; // download-only: local-only folders stay local
             await CreateRemoteFolderAsync(rel, remote, stats, ct);
         }
+    }
+
+    /// <summary>
+    /// Before something is recycled here because the remote tree no longer has it: is the item itself still there? The
+    /// remote's listing and change feed can trail a move by minutes (Drive was seen listing a renamed folder under
+    /// neither name for a while), and the file would be recycled here only to be downloaded again. Asked by id, so only
+    /// where ids survive moves (Drive, Box); a store whose ids are paths has nothing to ask. It counts as still there
+    /// only in a folder this pair knows (under any name: a renamed folder keeps its id), so an item moved out of the
+    /// pair's folder is recycled here as before. Still there, or no answer: left for a later cycle.
+    /// </summary>
+    private async Task<bool> StillThereAsync(string id, string rel, bool folder, Dictionary<string, RemoteNode> remote, CancellationToken ct)
+    {
+        if (DryRun || !_store.HasStableIds || string.IsNullOrEmpty(id)) return false;
+        try
+        {
+            var fresh = await _store.RefreshAsync(new RemoteNode { Id = id, Name = PathUtil.NameOf(rel), RelPath = rel, MimeType = folder ? DriveClient.FolderMime : "" }, ct);
+            if (fresh == null) return false;
+            // The pair's folders, and its root (the parent of everything at the top).
+            var known = remote.Values.Where(n => n.IsFolder).Select(n => n.Id).Concat(remote.Values.Select(n => n.ParentId)).ToHashSet();
+            if (!known.Contains(fresh.ParentId)) return false; // moved out of the pair's folder: gone as far as this pair goes
+            _log.Info($"[{_pair.Name}] '{rel}' is missing from the other side's listing but still there (the listing lags behind a move): left for a later cycle");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _log.Debug($"[{_pair.Name}] {rel}: could not ask the other side whether it is still there ({ex.Message}); left for a later cycle");
+        }
+        return true;
     }
 
     private void CreateLocalFolder(string rel, RemoteNode node, Dictionary<string, LocalItem> local)
@@ -607,6 +635,7 @@ public sealed partial class SyncEngine
                 if (LocalUnchanged(item, s))
                 {
                     if (!Down || _holdDown) continue; // upload-only: the remote deletion is neither applied nor undone; or held back
+                    if (await StillThereAsync(s.DriveId, rel, folder: false, remote, ct)) continue;
                     await Try(rel, stats, () =>
                     {
                         if (!Planned("move to the Recycle Bin (deleted remotely)", rel))

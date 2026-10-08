@@ -95,6 +95,18 @@ function Sync($c, [switch]$DryRun) {
 }
 # A second look on the other computer: Drive's change feed can take more than a few seconds to report a change.
 function Both($a, $b) { Sync $a | Out-Null; Start-Sleep 3; $first = Sync $b; Start-Sleep 5; @($first) + @(Sync $b) }
+# Syncs the given computers every 5 s until $done holds or $seconds have passed, and returns what those syncs logged.
+# Drive's change feed can lag a minute or more, and Google answers now and then with a passing 500: a check judges the
+# outcome once things had time to settle, so a red result means it never happened, not that it was late. A check that
+# something happens "at once" passes a short time instead.
+function Settle([scriptblock]$done, [object[]]$sync, [int]$seconds = 300) {
+    $out = @(); $t = [Diagnostics.Stopwatch]::StartNew()
+    while (-not $(try { & $done } catch { $false }) -and $t.Elapsed.TotalSeconds -lt $seconds) {
+        Start-Sleep 5
+        foreach ($c in $sync) { $out += Sync $c }
+    }
+    $out
+}
 function Has($c, $rel) { Test-Path -LiteralPath (Join-Path $c.Local $rel) }
 function Text($c, $rel) { (Get-Content -LiteralPath (Join-Path $c.Local $rel) -Raw).Trim() }
 function Put($c, $rel, $text) { $f = Join-Path $c.Local $rel; New-Item -ItemType Directory -Force (Split-Path $f) | Out-Null; Set-Content -LiteralPath $f $text }
@@ -108,11 +120,13 @@ function Test-Core([hashtable]$pair, [string]$label) {
     Put $a "hello.txt" "hello"
     Put $a "sub\note.txt" "in a folder"
     $null = Both $a $b
+    $null = Settle { (Text $b "hello.txt") -eq "hello" -and (Text $b "sub\note.txt") -eq "in a folder" } @($b)
     Check "$label new file reaches the other computer" { (Text $b "hello.txt") -eq "hello" }
     Check "$label new folder with file reaches the other computer" { (Text $b "sub\note.txt") -eq "in a folder" }
 
     Put $b "hello.txt" "hello from B"
     $null = Both $b $a
+    $null = Settle { (Text $a "hello.txt") -eq "hello from B" } @($a)
     Check "$label change travels back" { (Text $a "hello.txt") -eq "hello from B" }
     Check "$label the replaced file was kept as a version" { @(Get-ChildItem "$($a.Data)\versions" -Recurse -File -ErrorAction SilentlyContinue).Count -ge 1 }
 
@@ -120,13 +134,15 @@ function Test-Core([hashtable]$pair, [string]$label) {
     Put $a "hello.txt" "edit on A"; Put $b "hello.txt" "edit on B"
     $null = Sync $a; Start-Sleep 3; $null = Sync $b; Start-Sleep 3; $null = Sync $a
     # Drive's change feed can take longer than the pauses above: give it a few more rounds before judging.
-    for ($i = 0; $i -lt 3 -and @(Get-ChildItem $a.Local -Filter "hello (conflict*" -File).Count -eq 0; $i++) { Start-Sleep 5; $null = Sync $b; $null = Sync $a }
+    $null = Settle { @(Get-ChildItem $a.Local -Filter "hello (conflict*" -File).Count -ge 1 } @($b, $a)
     Check "$label both edits survive as a conflict copy" { @(Get-ChildItem $a.Local -Filter "hello (conflict*" -File).Count -ge 1 }
 
     Section "${label}: notes changed on both sides are merged"
     $lines = 1..6 | ForEach-Object { "line $_" }
     Put $a "note.md" ($lines -join "`n")
     $null = Both $a $b
+    # Both must know the note first: an edit on B before it arrived would be a new file there, not an edit.
+    $null = Settle { ((Text $b "note.md") -replace "`r", "") -eq ($lines -join "`n") } @($b)
     Put $a "note.md" ((@("line 1 from A") + $lines[1..5]) -join "`n")
     Put $b "note.md" (($lines[0..4] + @("line 6 from B")) -join "`n")
     $merged = (@("line 1 from A") + $lines[1..4] + @("line 6 from B")) -join "`n"
@@ -135,7 +151,7 @@ function Test-Core([hashtable]$pair, [string]$label) {
     # Drive keeps earlier versions itself: without the locally kept base, the merge must find it there.
     if ($pair.Kind -eq "Drive" -and (Test-Path -LiteralPath "$($b.Data)\base")) { [IO.Directory]::Delete("\\?\" + "$($b.Data)\base", $true) }
     $null = Sync $a; Start-Sleep 3; $outB = Sync $b; Start-Sleep 3; $null = Sync $a
-    for ($i = 0; $i -lt 3 -and -not ((NoteIs $a $merged) -and (NoteIs $b $merged)); $i++) { Start-Sleep 5; $outB += Sync $b; $null = Sync $a } # change feed lag
+    $outB += Settle { (NoteIs $a $merged) -and (NoteIs $b $merged) } @($b, $a)
     Check "$label edits in different places end up in one file on both computers" { (NoteIs $a $merged) -and (NoteIs $b $merged) }
     Check "$label ... without a conflict copy" { @(Get-ChildItem $a.Local, $b.Local -Filter "note (conflict*" -File).Count -eq 0 }
     Check "$label ... and the merge is logged" { ($outB -join "`n") -match "merged \(changed on both sides" }
@@ -144,31 +160,32 @@ function Test-Core([hashtable]$pair, [string]$label) {
     Put $b "note.md" ($merged -replace "line 3", "line 3 from B")
     Start-Sleep 3
     $null = Sync $a; Start-Sleep 3; $null = Sync $b; Start-Sleep 3; $null = Sync $a
-    for ($i = 0; $i -lt 3 -and @(Get-ChildItem $a.Local, $b.Local -Filter "note (conflict*" -File).Count -eq 0; $i++) { Start-Sleep 5; $null = Sync $b; $null = Sync $a }
+    $null = Settle { @(Get-ChildItem $a.Local, $b.Local -Filter "note (conflict*" -File).Count -ge 1 } @($b, $a)
     Check "$label edits of the same line are kept as a conflict copy" { @(Get-ChildItem $a.Local, $b.Local -Filter "note (conflict*" -File).Count -ge 1 }
 
     Section "${label}: renames and moves"
     Rename-Item (Join-Path $a.Local "sub\note.txt") "renamed.txt"
     $outA = Sync $a; Start-Sleep 3; $outB = Sync $b
-    for ($i = 0; $i -lt 3 -and -not (Has $b "sub\renamed.txt"); $i++) { Start-Sleep 5; $outB += Sync $b } # change feed lag
+    $outB += Settle { (Has $b "sub\renamed.txt") -and -not (Has $b "sub\note.txt") } @($b)
     Check "$label file rename is a remote move" { ($outA -join "`n") -match "moved remotely" }
     Check "$label ... and a local move on the other computer" { (($outB -join "`n") -match "moved locally") -and (Has $b "sub\renamed.txt") -and -not (Has $b "sub\note.txt") }
     Rename-Item (Join-Path $a.Local "sub") "folder2"
     $outA = Sync $a; Start-Sleep 3; $outB = Sync $b
-    for ($i = 0; $i -lt 3 -and -not (Has $b "folder2\renamed.txt"); $i++) { Start-Sleep 5; $outB += Sync $b } # change feed lag
+    $outB += Settle { (Has $b "folder2\renamed.txt") -and -not (Has $b "sub") } @($b)
     Check "$label folder rename is one remote move" { ($outA -join "`n") -match "moved folder remotely" }
     Check "$label ... and a local folder move on the other computer" { (Has $b "folder2\renamed.txt") -and -not (Has $b "sub") -and -not (($outB -join "`n") -match "downloaded.*renamed\.txt") } # a late download from an earlier step is fine
 
     Section "${label}: deletion"
     [IO.File]::Delete((Join-Path $a.Local "folder2\renamed.txt"))
     $null = Both $a $b
-    for ($i = 0; $i -lt 3 -and (Has $b "folder2\renamed.txt"); $i++) { Start-Sleep 5; $null = Sync $b } # change feed lag
+    $null = Settle { -not (Has $b "folder2\renamed.txt") } @($b)
     Check "$label deletion reaches the other computer" { -not (Has $b "folder2\renamed.txt") }
 
     Section "${label}: ignore rules"
     Put $a ".unisonoignore" "*.log`ncache/"
     Put $a "debug.log" "ignored"; Put $a "cache\tmp.bin" "ignored"; Put $a "kept.txt" "kept"
     $null = Both $a $b
+    $null = Settle { (Has $b "kept.txt") -and (Has $b ".unisonoignore") } @($b)
     Check "$label ignored files stay local" { -not (Has $b "debug.log") -and -not (Has $b "cache") }
     Check "$label other files and the ignore file itself sync" { (Has $b "kept.txt") -and (Has $b ".unisonoignore") }
 
@@ -178,7 +195,7 @@ function Test-Core([hashtable]$pair, [string]$label) {
     Check "$label dry run plans the upload" { ($dry -join "`n") -match "would upload: dry.txt" }
     Check "$label dry run changes nothing" { -not (Has $b "dry.txt") }
     $null = Both $a $b
-    for ($i = 0; $i -lt 3 -and -not (Has $b "dry.txt"); $i++) { Start-Sleep 5; $null = Sync $b } # change feed lag
+    $null = Settle { Has $b "dry.txt" } @($b)
     Check "$label a real run afterwards does it" { Has $b "dry.txt" }
 
     Section "${label}: one-way (download only)"
@@ -240,21 +257,25 @@ function Test-WriteBack([string]$remote) {
     Start-Sleep 5; $null = Sync $w1; $null = Sync $w2
     if ($out -match "wrote back into the Google document") {
         Write-Host "        (the Docs API is enabled: the edit went back into the document)" -ForegroundColor DarkGray
+        $null = Settle { (Docx-Text (Join-Path $w2.Local "WB doc.docx")) -match "written back from wb-1" } @($w2)
         Check "drive ... another computer's export has the new text" { (Docx-Text (Join-Path $w2.Local "WB doc.docx")) -match "written back from wb-1" }
         $idle = Sync $w1
         Check "drive ... without exporting it again over the edited file" { -not (($idle -join "`n") -match "exported|wrote back") }
         # A change made elsewhere must arrive within a cycle, not when Drive's change feed gets round to it (minutes).
         New-Docx (Join-Path $w2.Local "WB doc.docx") "changed on wb-2"; (Get-Item -LiteralPath (Join-Path $w2.Local "WB doc.docx")).LastWriteTime = (Get-Date).AddMinutes(-1)
         $null = Sync $w2; Start-Sleep 3; $null = Sync $w1
+        $null = Settle { (Docx-Text $doc) -match "changed on wb-2" } @($w1) 30 # "at once": a passing Google error may cost a cycle, not minutes
         Check "drive a document changed elsewhere is exported again at once" { (Docx-Text $doc) -match "changed on wb-2" }
         # An edit in Google Docs itself: Drive's modified time trails it by a minute or two, the Docs revision does not.
         Use-Data (Join-Path $work "init-data"); & $cli drive-docedit $remote "WB doc" "typed in Google Docs" | Out-Null
         Start-Sleep 2; $null = Sync $w1
+        $null = Settle { (Docx-Text $doc) -match "typed in Google Docs" } @($w1) 30
         Check "drive an edit in Google Docs reaches the export in the next cycle" { (Docx-Text $doc) -match "typed in Google Docs" }
     }
     else {
         Write-Host "        (the Docs API is not enabled: tabs cannot be checked, so edits are kept as their own file)" -ForegroundColor DarkGray
         Check "drive an edit that cannot safely go back is kept as its own file" { $out -match "not written back into the Google document" -and @(Get-ChildItem -LiteralPath $w1.Local -Filter "WB doc (edited*.docx").Count -eq 1 }
+        $null = Settle { @(Get-ChildItem -LiteralPath $w2.Local -Filter "WB doc (edited*.docx").Count -eq 1 } @($w2)
         Check "drive ... which reaches the other computer as an ordinary file" { $f = @(Get-ChildItem -LiteralPath $w2.Local -Filter "WB doc (edited*.docx"); $f.Count -eq 1 -and (Docx-Text $f[0].FullName) -match "written back from wb-1" }
         Check "drive ... and the Google document is unchanged" { -not ((Docx-Text (Join-Path $w2.Local "WB doc.docx")) -match "written back from wb-1") -and -not ((Docx-Text $doc) -match "written back from wb-1") }
     }
