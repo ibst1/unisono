@@ -5,6 +5,9 @@ using File = Google.Apis.Drive.v3.Data.File;
 
 namespace Unisono;
 
+/// <summary>Deletions held back (see SyncEngine.Held): synced files gone from this computer (<paramref name="Here"/>) or from the other side.</summary>
+public sealed record HeldDeletions(bool Here, List<string> Rels, int Synced);
+
 /// <summary>A file on the remote twice by the same name and with the same content: <paramref name="KeptId"/> is synced, <paramref name="CopyId"/> is left out.</summary>
 public sealed record DuplicateFile(string Rel, string KeptId, string CopyId, string Md5, long Size);
 

@@ -712,6 +712,22 @@ if ($Suite -contains "folder") {
         $out1 = (Sync $w) -join "`n"; $out2 = (Sync $w) -join "`n"
         Check "folder a name ending with a dot is left out with a warning, not an error each cycle" { $out1 -match "ends with a dot" -and $out1 -notmatch "[1-9]\d* errors" -and $out2 -notmatch "[1-9]\d* errors" -and (Test-Path -LiteralPath "$wo\fine.txt") }
         [IO.File]::Delete("\\?\$($w.Local)\junk.")
+        Section "folder: a mass deletion is held back"
+        $mo = New-TestDir "$work\mass-other"
+        $m = Computer "folder-M" @{ Kind = "Folder"; RemotePath = $mo }
+        1..10 | ForEach-Object { Put $m "f$_.txt" "file $_" }; Start-Sleep 2; $null = Sync $m
+        Remove-Item -LiteralPath "$($m.Local)\f1.txt"; Start-Sleep 2; $null = Sync $m
+        Check "folder deleting one file of many still reaches the other side" { -not (Test-Path -LiteralPath "$mo\f1.txt") -and (Test-Path -LiteralPath "$mo\f2.txt") }
+        # The folder deleted and made again, empty: what this guards against.
+        Remove-Item -LiteralPath $m.Local -Recurse -Force; New-TestDir $m.Local | Out-Null
+        $out = (Sync $m) -join "`n"; $null = Sync $m
+        Check "folder a folder made again empty does not empty the other side" { $out -match "9 of 9 synced files are gone from this computer" -and @(Get-ChildItem $mo -File).Count -eq 9 }
+        Use-Data $m.Data; $out = (& $cli sync --allow-deletes 2>&1 | ForEach-Object { "$_" }) -join "`n"
+        Check "folder ... until the deletion is confirmed" { $out -match "as confirmed" -and @(Get-ChildItem $mo -File).Count -eq 0 }
+        1..6 | ForEach-Object { Put $m "g$_.txt" "file $_" }; Start-Sleep 2; $null = Sync $m
+        Get-ChildItem $mo -File | Remove-Item
+        $null = Sync $m
+        Check "folder the other side emptied does not empty this computer" { @(Get-ChildItem $m.Local -File).Count -eq 6 }
         Section "folder: ignore suggestions"
         $s = Computer "folder-S" @{ Kind = "Folder"; RemotePath = (New-TestDir "$work\sug-other") }
         Put $s "proj\App.csproj" "<Project />"; Put $s "proj\bin\App.dll" "binary"; Put $s "proj\obj\cache.json" "{}"; Put $s "run.log" "log"

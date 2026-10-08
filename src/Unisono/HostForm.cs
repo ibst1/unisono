@@ -92,6 +92,14 @@ sealed partial class HostForm : Form
             _tray.ShowBalloonTip(20000, $"Unisono: {ps.Pair.Name} is encrypted",
                 "Everything is in the Cryptomator vault. Unencrypted copies can still be in the trash on the other side (Google Drive, the NAS's recycle bin) until it is emptied.",
                 ToolTipIcon.Info));
+        _host.DeletionsHeld += ps => OnUi(() =>
+        {
+            _balloonTab = ps.Pair.Group != null ? "groups" : "pairs";
+            _tray.ShowBalloonTip(20000, "Unisono: deletions held back",
+                $"{ps.Held?.Rels.Count} of {ps.Held?.Synced} files in {ps.Pair.Name} are gone {(ps.Held?.Here == true ? "from this computer" : "from the other side")} at once. " +
+                $"They are not deleted {(ps.Held?.Here == true ? "on the other side" : "here")} until you choose: click to decide.",
+                ToolTipIcon.Warning);
+        });
         _host.FolderGone += ps => OnUi(() =>
         {
             _balloonTab = ps.Pair.Group != null ? "groups" : "pairs";
@@ -289,7 +297,7 @@ sealed partial class HostForm : Form
         _tray.BalloonTipClicked += (_, _) =>
         {
             if (_tray.BalloonTipTitle == ConflictBalloonTitle) OpenConflicts();
-            else if (_tray.BalloonTipTitle is "Unisono: sync group found" or "Unisono: folder deleted")
+            else if (_tray.BalloonTipTitle is "Unisono: sync group found" or "Unisono: folder deleted" or "Unisono: deletions held back")
             {
                 ShowFromTray();
                 if (_pageLoaded) Post(new { @event = "showTab", tab = _balloonTab });

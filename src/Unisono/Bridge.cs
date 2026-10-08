@@ -295,6 +295,20 @@ sealed class Bridge : IAsyncDisposable
                 _pushState();
                 return null;
             }
+            case "pair.allowDeletes":
+            {
+                var pair = FindPair(Str(p, "id"));
+                _log.Info($"[{pair.Name}] the held deletions were confirmed");
+                _host.AllowDeletions(pair.Id);
+                _pushState();
+                return null;
+            }
+            case "pair.restoreHeld":
+            {
+                _host.RestoreHeld(FindPair(Str(p, "id")).Id);
+                _pushState();
+                return null;
+            }
             case "pair.keepGone":
             {
                 if (_host.Pairs.FirstOrDefault(s => s.Pair.Id == Str(p, "id")) is { } st) st.FolderGoneKept = true;
@@ -513,6 +527,7 @@ sealed class Bridge : IAsyncDisposable
             checkProblems = st?.LastCheck?.Problems.Select(x => new { rel = x.Rel, side = x.Side, detail = x.Detail }).ToList(),
             groupId = p.Group?.Id, group = p.Group?.Name,
             duplicates = st is { DuplicatesKept: false } ? st.Duplicates.Select(x => x.Rel).ToList() : new List<string>(),
+            held = st?.Held is { } h ? new { here = h.Here, count = h.Rels.Count, synced = h.Synced, sample = h.Rels.Take(3) } : null,
             folderGone = st is { FolderGoneKept: false } ? st.FolderGone : null,
             hubGone = st?.FolderGone != null && p.Group != null && st.FolderGone.Equals(p.RemoteFullPath, StringComparison.OrdinalIgnoreCase),
         };

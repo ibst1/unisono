@@ -355,6 +355,12 @@ If a pair's local folder, or a folder pair's other folder, is deleted (the folde
 not just a drive that is not connected), the pair does nothing, its card says so and the tray tells once: *Remove the
 pair*, or *Keep it* for a folder that comes back.
 
+**Mass deletions are held back.** When at least half of a pair's synced files (and at least 5) are gone from one side
+at once, which is what a folder deleted and made again empty, a swapped drive or a folder emptied by someone else looks
+like, they are not deleted on the other side. Everything else keeps syncing; the card and the tray ask: *Delete them
+there too* (or *here too*), or *Bring them back here* (*Put them back there*), which copies them over again from where
+they still are. From the command line: `UnisonoCli sync --allow-deletes` carries such a deletion out.
+
 ## AutoSave for Office documents
 
 Office's own AutoSave works only for files on OneDrive and SharePoint. *AutoSave Office documents* (Settings, off by

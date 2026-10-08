@@ -728,6 +728,15 @@ function goneNote(p) {
   return `<div class="note warn inline" style="margin-bottom:0"><span class="grow">${esc(what)}</span>${act}
     <button class="btn" data-keepgone="${esc(p.id)}" title="For a folder that comes back, e.g. after a rename back">Keep it</button></div>`;
 }
+function heldNote(p) {
+  const h = p.held; if (!h) return "";
+  const there = remoteLabel(p).what;
+  const what = `${h.count} of ${h.synced} synced files are gone from ${h.here ? "this computer" : esc(there)} at once (${h.sample.map(esc).join(", ")}${h.count > 3 ? ", ..." : ""}).
+    That many at once looks like an accident (a folder deleted and made again, a drive swapped, a folder emptied), so they were not deleted ${h.here ? "on " + esc(there) : "here"}.`;
+  return `<div class="note warn inline" style="margin-bottom:0"><span class="grow">${what}</span>
+    <button class="btn" data-restoreheld="${esc(p.id)}" title="Copy them back from where they still are">${h.here ? "Bring them back here" : "Put them back there"}</button>
+    <button class="btn danger" data-allowdel="${esc(p.id)}" title="${h.here ? "Deleted files go to the trash there" : "Deleted files go to the Recycle Bin here"}">${h.here ? "Delete them there too" : "Delete them here too"}</button></div>`;
+}
 function dupNote(p) {
   const d = p.duplicates || []; if (!d.length) return "";
   return `<div class="note inline" style="margin-bottom:0"><span class="grow">${d.length} file(s) are on Google Drive twice by the same name and with the same content; only one of each is synced
@@ -791,6 +800,7 @@ function pairCard(p) {
         ${p.groupId ? "" : `<button class="btn" data-editpair="${esc(p.id)}">Edit</button>`}
         <button class="btn danger" data-rmpair="${esc(p.id)}">${p.groupId ? "Leave group" : "Remove"}</button></div>
       ${goneNote(p)}
+      ${heldNote(p)}
       ${dupNote(p)}
       ${p.checkProblems && p.checkProblems.length ? `<div class="note warn" style="margin-bottom:0">
         <div>The content check found ${p.checkProblems.length} file(s) whose content changed although nobody edited them (disk or transfer damage):</div>
@@ -815,6 +825,12 @@ function bindPairs() {
   document.querySelectorAll("[data-editgroup]").forEach(b => b.onclick = () => groupDialog(S.groups.find(g => g.id === b.dataset.editgroup)));
   document.querySelectorAll("[data-keepgone]").forEach(b => b.onclick = () => call("pair.keepGone", { id: b.dataset.keepgone }));
   document.querySelectorAll("[data-keepdup]").forEach(b => b.onclick = () => call("pair.keepDuplicates", { id: b.dataset.keepdup }));
+  document.querySelectorAll("[data-restoreheld]").forEach(b => b.onclick = () => call("pair.restoreHeld", { id: b.dataset.restoreheld }).then(() => toast("They are copied back in the next sync")));
+  document.querySelectorAll("[data-allowdel]").forEach(b => b.onclick = async () => {
+    const p = S.pairs.find(x => x.id === b.dataset.allowdel);
+    if (!await confirmBox("Delete them too", [`Delete these ${p.held.count} files ${p.held.here ? "on " + remoteLabel(p).what + " too (into its trash)" : "on this computer too (into the Recycle Bin)"}?`])) return;
+    call("pair.allowDeletes", { id: p.id }).catch(e => toast(e.message, true));
+  });
   document.querySelectorAll("[data-trashdup]").forEach(b => b.onclick = async () => {
     busy(b, true, "Moving...");
     try { const r = await call("pair.trashDuplicates", { id: b.dataset.trashdup }); toast(`${r.trashed} cop${r.trashed === 1 ? "y" : "ies"} moved to Drive's trash`); }

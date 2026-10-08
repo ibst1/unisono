@@ -24,7 +24,9 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 var ct = cts.Token;
 var log = new Log { Verbose = args.Contains("-v") };
 var dryRun = args.Contains("--dry-run");
-args = args.Where(a => a is not ("-v" or "--dry-run")).ToArray();
+// Carries out a mass deletion that a cycle would otherwise hold back (see SyncEngine.Held).
+var allowDeletes = args.Contains("--allow-deletes");
+args = args.Where(a => a is not ("-v" or "--dry-run" or "--allow-deletes")).ToArray();
 var stores = new StoreFactory(log, interactive: true);
 
 try
@@ -505,7 +507,7 @@ try
                             var converter = new VaultConverter(p, await stores.CreatePlainAsync(p, ct), await stores.CreateVaultAsync(p, ct), log, VaultConverter.PendingDecrypt(p));
                             for (var turn = 0; turn < 5 && !await converter.RunAsync(null, s => { }, ct); turn++) { }
                         }
-                        var engine = new SyncEngine(await stores.CreateAsync(p, ct), p, log, config.Pairs, config.Options) { DryRun = dryRun };
+                        var engine = new SyncEngine(await stores.CreateAsync(p, ct), p, log, config.Pairs, config.Options) { DryRun = dryRun, AllowDeletionsOnce = allowDeletes };
                         var s = await engine.RunCycleAsync(ct);
                         // Files still being written were left alone: a one-off sync waits for them rather than skipping them.
                         for (var round = 0; round < 5 && engine.NeedsFollowUp && !dryRun; round++)
@@ -623,7 +625,7 @@ static void Usage()
     Console.WriteLine("  UnisonoCli init <otherDir> <localDir> --folder [--create]   (two ordinary folders, e.g. a network share)");
     Console.WriteLine("  UnisonoCli init ... --on-demand      files on demand: online-only placeholders, downloaded when opened or kept");
     Console.WriteLine("  UnisonoCli ondemand-off              end files on demand for all pairs (keeps what is local, unregisters)");
-    Console.WriteLine("  UnisonoCli sync [-v] [--dry-run]   |   UnisonoCli run [-v]   |   UnisonoCli config   |   UnisonoCli version");
+    Console.WriteLine("  UnisonoCli sync [-v] [--dry-run] [--allow-deletes]   |   UnisonoCli run [-v]   |   UnisonoCli config   |   UnisonoCli version");
     Console.WriteLine("  UnisonoCli ls [drive/path]   |   UnisonoCli pull <drive/path> <localDir>   |   UnisonoCli changes <token>");
     Console.WriteLine("  UnisonoCli box app <client id>       store your Box app (the secret is asked for)   |   box login   |   box accounts");
     Console.WriteLine("  UnisonoCli box ls [path] [login]     |   box logout <login>   |   init <box/path> <localDir> --box [login] [--create]");

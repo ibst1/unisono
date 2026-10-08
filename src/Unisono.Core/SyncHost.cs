@@ -43,6 +43,8 @@ public sealed class PairStatus
     public IReadOnlyList<DuplicateFile> Duplicates { get; set; } = Array.Empty<DuplicateFile>();
     /// <summary>The user chose to keep the duplicates: not offered again in this session.</summary>
     public bool DuplicatesKept { get; set; }
+    /// <summary>A mass deletion held back, waiting for the user's choice (see SyncEngine.Held).</summary>
+    public HeldDeletions? Held { get; set; }
 }
 
 /// <summary>
@@ -100,6 +102,30 @@ public sealed class SyncHost : IAsyncDisposable
     }
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource<int>> _trashDuplicates = new();
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _allowDeletions = new();
+
+    /// <summary>The user confirmed the pair's held deletions: its next cycle carries them out.</summary>
+    public void AllowDeletions(string pairId)
+    {
+        _allowDeletions[pairId] = true;
+        if (Pairs.FirstOrDefault(p => p.Pair.Id == pairId) is { } ps) ps.Held = null;
+        _forceOnce = true;
+        Nudge();
+    }
+
+    /// <summary>The user wants the held files back where they are gone: their history is forgotten, so the next cycle copies them over again.</summary>
+    public void RestoreHeld(string pairId)
+    {
+        if (Pairs.FirstOrDefault(p => p.Pair.Id == pairId) is not { Held: { } held } ps) return;
+        ps.Held = null;
+        _log.Info($"[{ps.Pair.Name}] {held.Rels.Count} file(s) gone {(held.Here ? "here" : "on the other side")} are copied back {(held.Here ? "here" : "there")}");
+        ForgetHistory(pairId, held.Rels);
+        _forceOnce = true;
+    }
+
+    /// <summary>A pair holds back a mass deletion (<see cref="PairStatus.Held"/>). Once per episode.</summary>
+    public event Action<PairStatus>? DeletionsHeld;
 
     /// <summary>Moves the pair's duplicate copies to the remote's trash after its next cycle; returns how many went.</summary>
     public Task<int> TrashDuplicatesAsync(string pairId)
@@ -386,6 +412,7 @@ public sealed class SyncHost : IAsyncDisposable
                             // With other pairs to serve, a long job (thousands of uploads) is done in turns of a few minutes.
                             engine.TimeBudget = pairs.Count > 1 ? TurnLength : null;
                             engine.LocalChanged = Interlocked.Exchange(ref rt.Changed, 0) == 1;
+                            if (_allowDeletions.TryRemove(ps.Pair.Id, out _)) { engine.AllowDeletionsOnce = true; engine.LocalChanged = true; }
                             if (_suggestAgain.TryRemove(ps.Pair.Id, out _)) { engine.SuggestAgain(); engine.LocalChanged = true; }
                             if (_forget.TryRemove(ps.Pair.Id, out var forget))
                             {
@@ -400,6 +427,8 @@ public sealed class SyncHost : IAsyncDisposable
                                 catch (Exception tex) { trash.SetException(tex); }
                             }
                             ps.Duplicates = engine.Duplicates;
+                            if (engine.Held is { } held && ps.Held?.Rels.Count != held.Rels.Count) { ps.Held = held; try { DeletionsHeld?.Invoke(ps); } catch { } }
+                            else if (engine.Held == null) ps.Held = null;
                             if (ps.Pair.Kind == RemoteKind.Drive) _exports[ps.Pair.Id] = engine.ExportedFiles();
                             followUp |= engine.NeedsFollowUp;
                             ps.LastStats = stats;

@@ -71,6 +71,39 @@ public sealed partial class SyncEngine
     /// <summary>Something was left for a moment (a file still being written); the host runs another cycle soon.</summary>
     public bool NeedsFollowUp { get; private set; }
 
+    /// <summary>
+    /// Deletions held back as of the last full cycle: so many synced files are gone from one side at once (at least
+    /// half of them, and at least <see cref="MassDeletionMin"/>) that it looks like an accident, e.g. a pair's folder
+    /// deleted and made again empty, a drive swapped, the remote folder emptied by someone else. They are not deleted on
+    /// the other side until the user says so (<see cref="AllowDeletionsOnce"/>), or brought back by forgetting their
+    /// history (<see cref="Forget"/>). Everything else syncs as usual meanwhile. Null when nothing is held.
+    /// </summary>
+    public HeldDeletions? Held { get; private set; }
+
+    /// <summary>Set by the host when the user confirmed the held deletions: the next full cycle carries them out.</summary>
+    public bool AllowDeletionsOnce { get; set; }
+
+    public const int MassDeletionMin = 5;
+    private bool _holdUp, _holdDown; // don't delete remotely what is gone here / locally what is gone there
+
+    private void CheckMassDeletion(Dictionary<string, RemoteNode> remote, Dictionary<string, LocalItem> local)
+    {
+        var synced = _state.Entries.Values.Where(e => e.Kind == EntryKind.File).ToList();
+        var goneHere = synced.Where(e => !local.ContainsKey(e.Path) && remote.ContainsKey(e.Path)).Select(e => e.Path).ToList();
+        var goneThere = synced.Where(e => !remote.ContainsKey(e.Path) && local.ContainsKey(e.Path)).Select(e => e.Path).ToList();
+        bool Mass(int n) => n >= MassDeletionMin && n * 2 >= synced.Count;
+        var allow = AllowDeletionsOnce;
+        if (!DryRun) AllowDeletionsOnce = false; // once
+        _holdUp = Up && Mass(goneHere.Count) && !allow;
+        _holdDown = Down && Mass(goneThere.Count) && !allow;
+        Held = _holdUp ? new HeldDeletions(true, goneHere, synced.Count) : _holdDown ? new HeldDeletions(false, goneThere, synced.Count) : null;
+        if (Held != null)
+            WarnOnce($"mass:{Held.Here}:{Held.Rels.Count}", $"{Held.Rels.Count} of {synced.Count} synced files are gone {(Held.Here ? "from this computer" : "from the other side")} at once: " +
+                     $"they are not deleted {(Held.Here ? "on the other side" : "here")} until you choose in the window (delete them there too, or bring them back)");
+        else if (allow && (Mass(goneHere.Count) || Mass(goneThere.Count)))
+            _log.Info($"[{_pair.Name}] deleting {Math.Max(goneHere.Count, goneThere.Count)} files {(goneHere.Count >= goneThere.Count ? "on the other side" : "here")}, as confirmed");
+    }
+
     /// <summary>As of the last full cycle: synced files that are on the remote twice with the same content (the copy is left out).</summary>
     public IReadOnlyList<DuplicateFile> Duplicates { get; private set; } = Array.Empty<DuplicateFile>();
 
@@ -236,6 +269,7 @@ public sealed partial class SyncEngine
         var remote = Holdable(Visible(Without(remoteAll, IsInVersions), n => n.IsFolder, ignore));
         Duplicates = _store.Duplicates.Where(d => remote.ContainsKey(d.Rel)).ToList();
         var local = Visible(Without(localAll, IsInVersions), i => i.IsDir, ignore);
+        CheckMassDeletion(remote, local);
         Advise(local, stats);
         try
         {
@@ -404,8 +438,8 @@ public sealed partial class SyncEngine
             if (s is { Kind: EntryKind.Folder } && !RemoteTreeHasChanges(rel, remote))
             {
                 // Deleted locally, unchanged remotely since we last saw it: propagate (unless this pair only downloads,
-                // in which case the local deletion is simply left as it is).
-                if (!Up) continue;
+                // in which case the local deletion is simply left as it is, or a mass deletion is held back).
+                if (!Up || _holdUp) continue;
                 if (Directory.Exists(Local(rel))) { NeedsFollowUp = true; continue; } // back already (renamed away and back)
                 await Try(rel, stats, async () =>
                 {
@@ -456,7 +490,7 @@ public sealed partial class SyncEngine
             {
                 if (!LocalTreeHasChanges(rel, local))
                 {
-                    if (!Down) continue; // upload-only: a remote deletion is not applied here (nor undone)
+                    if (!Down || _holdDown) continue; // upload-only: a remote deletion is not applied here (nor undone); or held back
                     await Try(rel, stats, () =>
                     {
                         if (!Planned("move folder to the Recycle Bin (deleted remotely)", rel))
@@ -572,7 +606,7 @@ public sealed partial class SyncEngine
             {
                 if (LocalUnchanged(item, s))
                 {
-                    if (!Down) continue; // upload-only: the remote deletion is neither applied nor undone
+                    if (!Down || _holdDown) continue; // upload-only: the remote deletion is neither applied nor undone; or held back
                     await Try(rel, stats, () =>
                     {
                         if (!Planned("move to the Recycle Bin (deleted remotely)", rel))
@@ -676,7 +710,7 @@ public sealed partial class SyncEngine
                     if (Down) await DownloadAsync(node, path, stats, s == null ? "new remotely" : "changed remotely after local delete", ct);
                     return;
                 }
-                if (!Up) return; // download-only: a local deletion is left as it is until the remote file changes
+                if (!Up || _holdUp) return; // download-only: a local deletion is left as it is until the remote file changes; or held back
                 // Deleted locally and, as far as the cached tree knows, untouched remotely. The cache can lag,
                 // so confirm with fresh metadata before deleting anything on the other side.
                 var fresh = await _store.RefreshAsync(node, ct);
