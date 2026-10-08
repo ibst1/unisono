@@ -42,6 +42,7 @@ sealed partial class HostForm
             if (DateTime.UtcNow - _lastCheckedExe > TimeSpan.FromMinutes(1)) { _lastCheckedExe = DateTime.UtcNow; CheckForUpdate(); }
             MaybeRestartByItself();
             WriteMachineVersion();
+            _ = CheckGitHubAsync();
         };
         _updateTimer.Start();
     }
@@ -111,6 +112,39 @@ sealed partial class HostForm
         if (i < 0 || i + 1 >= args.Length || args[i + 1] == Ui.Version) return;
         _log.Info($"updated from {args[i + 1]} to {Ui.Version}");
         _tray.ShowBalloonTip(8000, "Unisono updated", $"Unisono runs {Ui.Version.Split('+')[0]} now (was {args[i + 1].Split('+')[0]}).", ToolTipIcon.Info);
+    }
+
+    // ------------------------------------------------------------- releases on GitHub
+
+    private bool _checkingGitHub;
+
+    /// <summary>
+    /// Once a day: a newer release on GitHub than this version (and than a new exe already waiting here) is shown in
+    /// Settings with a link to its page, and told once in a balloon. Nothing is downloaded.
+    /// </summary>
+    private async Task CheckGitHubAsync()
+    {
+        if (_checkingGitHub || !_bridge.Config.Options.CheckGitHub || DateTime.UtcNow - _settings.LastGitHubCheck < TimeSpan.FromDays(1)) return;
+        _checkingGitHub = true;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var latest = await UpdateCheck.LatestAsync(cts.Token);
+            _settings.LastGitHubCheck = DateTime.UtcNow;
+            _settings.Save();
+            var newer = latest != null && UpdateCheck.IsNewer(latest.Version, _updateVersion ?? Ui.Version) ? latest : null;
+            _bridge.NewerRelease = newer;
+            QueueState();
+            if (newer == null) { _log.Debug($"GitHub: no newer release than {Ui.Version}{(latest == null ? " (none published, or not reachable)" : $" (latest {latest.Version})")}"); return; }
+            _log.Info($"GitHub: Unisono {newer.Version} has been released ({newer.Url}); running {Ui.Version}");
+            if (_settings.ToldGitHubVersion == newer.Version) return;
+            _settings.ToldGitHubVersion = newer.Version;
+            _settings.Save();
+            _balloonTab = "settings";
+            _tray.ShowBalloonTip(15000, "Unisono: new version on GitHub", $"Unisono {newer.Version} has been released. Click to see it (Settings has the link).", ToolTipIcon.Info);
+        }
+        catch (Exception ex) { _log.Debug("GitHub update check: " + ex.Message); } // offline and the like: tomorrow
+        finally { _checkingGitHub = false; }
     }
 
     // ------------------------------------------------------------- versions per computer

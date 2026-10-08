@@ -196,6 +196,8 @@ public sealed class AppOptions
     public bool AutoSaveExcel { get; set; } = true;
     /// <summary>A new Unisono.exe in place (from a build, or synced from another computer) is started by itself, when idle.</summary>
     public bool AutoUpdate { get; set; } = true;
+    /// <summary>Once a day, ask GitHub whether a newer Unisono has been released (see <see cref="UpdateCheck"/>); it is only told, never downloaded.</summary>
+    public bool CheckGitHub { get; set; } = true;
 }
 
 public sealed class Config

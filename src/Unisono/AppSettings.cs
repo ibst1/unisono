@@ -12,6 +12,9 @@ sealed class AppSettings
     public bool Maximized { get; set; }
     public string Tab { get; set; } = "accounts";
     public bool VerboseLog { get; set; }
+    /// <summary>When GitHub was last asked for a newer release (once a day), and the newest one the user was told about.</summary>
+    public DateTime LastGitHubCheck { get; set; }
+    public string? ToldGitHubVersion { get; set; }
 
     private static string FilePath => Path.Combine(AppPaths.DataDir, "ui.json");
 

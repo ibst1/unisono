@@ -107,6 +107,12 @@ two minutes later, once its window is closed and nothing is being transferred, a
 `machines\<computer>.json` next to the exe: where that folder is synced, Settings lists the other computers'
 versions, and the header warns while one seen in the last two days runs another.
 
+Once a day Unisono also asks GitHub (anonymously) for its latest release; a newer one than the running version is told
+in a balloon and shown in Settings with a link to its page (Settings: *Look for new versions on GitHub*). Nothing is
+downloaded or installed by itself. `build.ps1 -Release` publishes a build as such a release (tag `v<version>`, a zip
+of `dist\`), from a clean tree that is pushed, with the `gh` CLI signed in. `UnisonoCli update-check [owner/repo]`
+asks GitHub at once.
+
 ### Several accounts
 
 Pairs name their Google account by e-mail address (config `Account`; empty means the first

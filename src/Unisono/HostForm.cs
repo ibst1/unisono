@@ -302,7 +302,7 @@ sealed partial class HostForm : Form
         _tray.BalloonTipClicked += (_, _) =>
         {
             if (_tray.BalloonTipTitle == ConflictBalloonTitle) OpenConflicts();
-            else if (_tray.BalloonTipTitle is "Unisono: sync group found" or "Unisono: folder deleted" or "Unisono: deletions held back")
+            else if (_tray.BalloonTipTitle is "Unisono: sync group found" or "Unisono: folder deleted" or "Unisono: deletions held back" or "Unisono: new version on GitHub")
             {
                 ShowFromTray();
                 if (_pageLoaded) Post(new { @event = "showTab", tab = _balloonTab });

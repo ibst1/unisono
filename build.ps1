@@ -6,7 +6,9 @@
 param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
-    [switch]$SelfContained
+    [switch]$SelfContained,
+    # Also publish this build as a GitHub release (needs a clean, pushed tree and the gh CLI signed in).
+    [switch]$Release
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,4 +69,20 @@ if ($env:UNISONO_COPY_TO) {
         catch { Write-Host "note: could not copy $f to $($env:UNISONO_COPY_TO) ($_)" }
     }
     Write-Host "Copied them to $($env:UNISONO_COPY_TO) as well"
+}
+
+# -Release: the build as a GitHub release (tag v<version>, a zip of dist\), which running copies find in their daily
+# check (Settings: 'Look for new versions on GitHub'). Only from a clean, pushed tree, so the tag names what was built.
+if ($Release) {
+    if ($dirty) { throw "-Release needs a clean tree: commit first" }
+    $ErrorActionPreference = "Continue"
+    $ahead = (& git -C $root rev-list --count "@{u}..HEAD" 2>$null)
+    $ErrorActionPreference = "Stop"
+    if ($ahead -ne "0") { throw "-Release needs HEAD pushed to GitHub first (it is $ahead commit(s) ahead, or has no upstream)" }
+    $zip = Join-Path $dist "Unisono-$version-win-x64.zip"
+    Remove-Item $zip -ErrorAction SilentlyContinue
+    Compress-Archive -Path (Join-Path $dist "Unisono.exe"), (Join-Path $dist "UnisonoCli.exe"), (Join-Path $dist "WebView2Loader.dll") -DestinationPath $zip
+    & gh release create "v$version" $zip --repo ibst1/unisono --target (& git -C $root rev-parse HEAD) --title "Unisono $version" --generate-notes
+    if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
+    Write-Host "Released v$version on GitHub"
 }

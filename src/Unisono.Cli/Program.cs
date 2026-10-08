@@ -61,6 +61,17 @@ try
             return 0;
         }
 
+        case "update-check":
+        {
+            // The window's daily question to GitHub, now; another repository can be asked to try it out.
+            var repo = args.Length > 1 ? args[1] : UpdateCheck.Repo;
+            var latest = await UpdateCheck.LatestAsync(ct, repo);
+            if (latest == null) { Console.WriteLine($"{repo}: no release published (or the repository is private)"); return 0; }
+            Console.WriteLine($"{repo}: latest release {latest.Version} ({latest.Name}) {latest.Url}");
+            Console.WriteLine(UpdateCheck.IsNewer(latest.Version, version) ? $"newer than this Unisono ({version})" : $"not newer than this Unisono ({version})");
+            return 0;
+        }
+
         case "box":
         {
             var sub = args.Length > 1 ? args[1].ToLowerInvariant() : "";

@@ -53,6 +53,9 @@ sealed class Bridge : IAsyncDisposable
 
     public Config Config { get; private set; } = Config.Load();
 
+    /// <summary>A newer release on GitHub, as of the last daily check (set by the window); null when none.</summary>
+    public UpdateCheck.Release? NewerRelease { get; set; }
+
     /// <summary>Re-reads config.json (and the shared pair list): another computer may have changed the list.</summary>
     public void Reload() => Config = Config.Load();
 
@@ -410,6 +413,12 @@ sealed class Bridge : IAsyncDisposable
                 if (p.TryGetProperty("autoSaveOffice", out var aso)) { o.AutoSaveOffice = aso.GetBoolean(); autoSave = true; }
                 if (p.TryGetProperty("autoSaveExcel", out var ase)) { o.AutoSaveExcel = ase.GetBoolean(); autoSave = true; }
                 if (p.TryGetProperty("autoSaveSeconds", out var ass) && ass.TryGetInt32(out var assi)) { o.AutoSaveSeconds = Math.Clamp(assi, 5, 3600); autoSave = true; }
+                if (p.TryGetProperty("checkGitHub", out var cg))
+                {
+                    o.CheckGitHub = cg.GetBoolean();
+                    if (!o.CheckGitHub) NewerRelease = null;
+                    if (!changed) Config.Save();
+                }
                 if (p.TryGetProperty("autoUpdate", out var au))
                 {
                     // Read by the update check each time: saved, no restart of syncing needed.
@@ -456,6 +465,7 @@ sealed class Bridge : IAsyncDisposable
     public object State() => new
     {
         version = Ui.Version,
+        newerRelease = NewerRelease == null ? null : new { version = NewerRelease.Version, url = NewerRelease.Url, name = NewerRelease.Name },
         // Each computer's version, where the install folder is synced between them; this one first.
         machines = HostForm.MachineVersions().Select(m => new
         {
@@ -513,7 +523,7 @@ sealed class Bridge : IAsyncDisposable
             versionsDir = VersionStore.Root, versionsFolder = Config.Options.VersionsFolder ?? "", versionsDefault = string.IsNullOrWhiteSpace(Config.Options.VersionsFolder),
             explorerMenu = Config.Options.ExplorerMenu,
             autoSaveOffice = Config.Options.AutoSaveOffice, autoSaveSeconds = Config.Options.AutoSaveSeconds, autoSaveExcel = Config.Options.AutoSaveExcel,
-            autoUpdate = Config.Options.AutoUpdate,
+            autoUpdate = Config.Options.AutoUpdate, checkGitHub = Config.Options.CheckGitHub,
         },
     };
 
