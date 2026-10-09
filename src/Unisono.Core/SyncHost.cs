@@ -29,6 +29,8 @@ public sealed class PairStatus
     public bool VaultGone { get; set; }
     /// <summary>A cycle of this pair runs right now.</summary>
     public bool Running { get; set; }
+    /// <summary>Found offline since its last cycle that went through (the log says so once per spell).</summary>
+    public bool OfflineSpell { get; set; }
     /// <summary>While this pair waits for its turn: the pair that is syncing now.</summary>
     public string? WaitingFor { get; set; }
     public CycleStats? LastStats { get; set; }
@@ -196,7 +198,9 @@ public sealed class SyncHost : IAsyncDisposable
     /// <summary>A pair that cannot sync for want of a network: quietly waiting, told once in the log, no health warning.</summary>
     private void MarkOffline(PairStatus ps, string why)
     {
-        if (ps.Status != OfflineStatus) _log.Info($"[{ps.Pair.Name}] offline ({why}); syncing resumes when the network is back");
+        // Told once per spell: a pair shown as waiting again at the start of a round is not news when still offline.
+        if (!ps.OfflineSpell) _log.Info($"[{ps.Pair.Name}] offline ({why}); syncing resumes when the network is back");
+        ps.OfflineSpell = true;
         ps.LastError = null;
         TrackHealth(ps, null);
         Update(ps, OfflineStatus);
@@ -370,6 +374,11 @@ public sealed class SyncHost : IAsyncDisposable
                 else if (pairs.Count > 0 && (!_paused || _forceOnce))
                 {
                     _forceOnce = false;
+                    // The network is back (after sleep, say): pairs that wait for their turn in this round are no longer
+                    // shown as offline (which kept the header saying "Offline" for minutes); one still offline is marked
+                    // again when its turn comes.
+                    if (!Connectivity.NoNetwork())
+                        foreach (var ps in pairs.Where(p => p.Status == OfflineStatus)) Update(ps, "waiting");
                     // A routine check keeps showing "up to date"; "syncing" comes with the first transfer (below) and
                     // stays while work is left over for the next round.
                     // After a (re)start every pair gets a full pass: shown as checking, not as syncing, until something moves.
@@ -436,6 +445,7 @@ public sealed class SyncHost : IAsyncDisposable
                             ps.NeedsPassphrase = false;
                             ps.VaultGone = false;
                             ps.LastSync = DateTime.Now;
+                            ps.OfflineSpell = false;
                             SaveLastRuns();
                             ps.LastError = stats.Errors > 0 ? $"{stats.Errors} item(s) failed, see log" : null;
                             Update(ps, stats.Errors > 0 ? "errors" : engine.FolderGone != null ? "folder deleted" : "in sync");
