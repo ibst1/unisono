@@ -18,7 +18,8 @@ $target = Join-Path $env:USERPROFILE "Program\Unisono"
 
 # Prefer a user-local SDK if the machine-wide dotnet has none.
 $localDotnet = Join-Path $env:LOCALAPPDATA "dotnet\dotnet.exe"
-$dotnet = if (Test-Path $localDotnet) { $localDotnet } else { "dotnet" }
+$homeDotnet = Join-Path $env:USERPROFILE ".dotnet\dotnet.exe"
+$dotnet = if (Test-Path $localDotnet) { $localDotnet } elseif (Test-Path $homeDotnet) { $homeDotnet } else { "dotnet" }
 
 # Every build gets its own version: 0.2.<commit count>, plus the short hash (and "dirty" when the
 # tree has uncommitted changes) and the build time.
