@@ -13,7 +13,8 @@ namespace Unisono.App;
 /// Office is reached through its document windows (OBJID_NATIVEOM): an Office app registers itself for GetActiveObject
 /// only after it first loses focus, which someone writing in it may never do. Office is never started, and no reference
 /// to it is kept between rounds, so closing it is never held up. A busy app (Excel while a cell is being edited, a
-/// dialog open) refuses the call; the document is simply tried again in the next round.
+/// dialog open) refuses the call; the document is simply tried again in the next round. A Word document with comments
+/// is saved without Word's privacy question about them (<see cref="SaveWord"/>).
 /// </summary>
 sealed class OfficeAutoSave : IDisposable
 {
@@ -133,10 +134,59 @@ sealed class OfficeAutoSave : IDisposable
             finally { Release(bars); }
             if (!(bool)doc.Saved) return; // Excel did not save (busy, a question shown): next round
         }
+        else if (kind == Kind.Word) { if (!SaveWord(app, doc, full)) return; }
         else doc.Save();
         _dirtySince.Remove(full);
         var line = $"saved automatically ({kind} had unsaved changes for {(now - since).TotalSeconds:N0} s): {full}";
         if (_toldOnce.Add(full)) _log.Info(line); else _log.Debug(line);
+    }
+
+    /// <summary>
+    /// Saves a Word document without Word's privacy question "The document being saved contains comments. Continue with
+    /// save?" (the option "Warn before printing, saving or sending a file that contains tracked changes or comments"). It
+    /// is asked on a save from outside too - every round while someone writes in a document with comments - and blocks
+    /// the call until answered. The option is switched off for this save only and back on after, so Ctrl+S still asks.
+    /// Where it cannot be switched off (a policy), a document with comments or tracked changes is not saved: false.
+    /// </summary>
+    private bool SaveWord(dynamic app, dynamic doc, string full)
+    {
+        object? options = null;
+        var restore = false;
+        try
+        {
+            options = app.Options;
+            var o = (dynamic)options;
+            if ((bool)o.WarnBeforeSavingPrintingSendingMarkup)
+            {
+                try { o.WarnBeforeSavingPrintingSendingMarkup = false; } catch (COMException) { }
+                restore = !(bool)o.WarnBeforeSavingPrintingSendingMarkup;
+                if (!restore && HasMarkup(doc))
+                {
+                    if (_toldOnce.Add("markup|" + full))
+                        _log.Info($"not saved automatically: Word asks before saving a document with comments or tracked changes, and that question cannot be switched off here: {full}");
+                    return false;
+                }
+            }
+            doc.Save();
+            return true;
+        }
+        finally
+        {
+            if (restore) try { ((dynamic)options!).WarnBeforeSavingPrintingSendingMarkup = true; } catch (COMException) { }
+            Release(options);
+        }
+    }
+
+    private static bool HasMarkup(dynamic doc)
+    {
+        object? comments = null, revisions = null;
+        try
+        {
+            comments = doc.Comments;
+            revisions = doc.Revisions;
+            return (int)((dynamic)comments).Count > 0 || (int)((dynamic)revisions).Count > 0;
+        }
+        finally { Release(comments); Release(revisions); }
     }
 
     // ------------------------------------------------------------ finding Office
