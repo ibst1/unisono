@@ -20,6 +20,8 @@ public sealed partial class SyncEngine
     private bool _registered;
     /// <summary>Paths already downloaded or described in this cycle; the pin pass leaves them alone.</summary>
     private readonly HashSet<string> _doneThisCycle = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Full paths made placeholders in this cycle (uploads); the scan still shows them as ordinary files.</summary>
+    private readonly HashSet<string> _adoptedThisCycle = new(StringComparer.OrdinalIgnoreCase);
 
     private void EnsureSyncRoot()
     {
@@ -66,6 +68,7 @@ public sealed partial class SyncEngine
     private void Adopt(string path, string identity, bool pin)
     {
         if (!OnDemand || DryRun) return;
+        _adoptedThisCycle.Add(Path.GetFullPath(path));
         try
         {
             if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0) CloudFiles.Convert(path, identity);
@@ -110,6 +113,8 @@ public sealed partial class SyncEngine
         {
             ct.ThrowIfCancellationRequested();
             if (_doneThisCycle.Contains(l.RelPath)) continue;
+            // Converting again what an upload already made a placeholder fails (0x8007017C, cloud operation invalid).
+            if (_adoptedThisCycle.Contains(Path.GetFullPath(l.FullPath))) continue;
             if (!derived.TryGetValue(l.RelPath, out var s) && !_state.Entries.TryGetValue(l.RelPath, out s)) continue; // not synced (yet)
             var path = l.FullPath;
             if (!File.Exists(path) && !Directory.Exists(path)) continue;   // gone during the cycle

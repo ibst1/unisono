@@ -239,6 +239,7 @@ public sealed partial class SyncEngine
         EnsureSyncRoot();
         SweepParked();
         _doneThisCycle.Clear();
+        _adoptedThisCycle.Clear();
         var workLeft = NeedsFollowUp;
         NeedsFollowUp = false;
         _deadline = TimeBudget is { } budget ? DateTime.UtcNow + budget : DateTime.MaxValue;
