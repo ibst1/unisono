@@ -1,8 +1,10 @@
 # Builds Unisono as a single-file exe (framework-dependent: needs the .NET 8 Desktop Runtime, or a newer one;
 # -SelfContained bundles the runtime instead, for computers without it) and copies it to
 # %USERPROFILE%\Program\Unisono (a location unsigned exes may run from on
-# locked-down machines) and to dist\ next to this script. When the environment variable UNISONO_COPY_TO names a folder
-# (e.g. one a cloud drive shares with other computers), the finished files are copied there as well.
+# locked-down machines) and to dist\ next to this script. The finished files are also copied to the folder a running
+# Unisono was started from, to this folder when an Unisono.exe sits here, and to the folder the environment variable
+# UNISONO_COPY_TO names (e.g. one a cloud drive shares with other computers): a running Unisono notices the new exe and
+# restarts into it by itself.
 param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
@@ -62,14 +64,36 @@ foreach ($app in @(@{ Proj = "src\Unisono\Unisono.csproj"; Exe = "Unisono" }, @{
     if ($app.Exe -eq "Unisono") { Copy-Item (Join-Path $target "WebView2Loader.dll") $dist -Force }
 }
 Write-Host "Published Unisono.exe and UnisonoCli.exe to $target and $dist"
-if ($env:UNISONO_COPY_TO) {
-    New-Item -ItemType Directory -Force $env:UNISONO_COPY_TO | Out-Null
+# Where else Unisono runs or is installed from: a build that never reaches the running copy is never started.
+$installs = @()
+if ($env:UNISONO_COPY_TO) { New-Item -ItemType Directory -Force $env:UNISONO_COPY_TO | Out-Null; $installs += $env:UNISONO_COPY_TO }
+$installs += Get-Process Unisono, UnisonoCli -ErrorAction SilentlyContinue | Where-Object Path | ForEach-Object { Split-Path -Parent $_.Path }
+if (Test-Path (Join-Path $root "Unisono.exe")) { $installs += $root }
+$skip = @($target, $dist) | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') }
+$installs = $installs | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') } | Sort-Object -Unique | Where-Object { $skip -notcontains $_ }
+foreach ($dir in $installs) {
     foreach ($f in "Unisono.exe", "UnisonoCli.exe", "WebView2Loader.dll") {
-        # A computer may run Unisono from there: a locked file is left for the next build rather than failing this one.
-        try { Copy-Item (Join-Path $dist $f) $env:UNISONO_COPY_TO -Force -ErrorAction Stop }
-        catch { Write-Host "note: could not copy $f to $($env:UNISONO_COPY_TO) ($_)" }
+        $dest = Join-Path $dir $f
+        $prev = $null
+        try {
+            # A running exe is locked but may be renamed: park it as .prev (as above), then copy the new one in.
+            if (Test-Path $dest) {
+                $base = [IO.Path]::GetFileNameWithoutExtension($f); $ext = [IO.Path]::GetExtension($f)
+                $prev = Join-Path $dir "$base.prev$ext"
+                Remove-Item $prev -Force -ErrorAction SilentlyContinue
+                if (Test-Path $prev) { $prev = Join-Path $dir ("{0}.prev-{1:yyyyMMddHHmmss}{2}" -f $base, (Get-Date), $ext) }
+                Move-Item $dest $prev -Force -ErrorAction Stop
+            }
+            Copy-Item (Join-Path $dist $f) $dest -Force -ErrorAction Stop
+        }
+        # Locked and not movable: left for the next build rather than failing this one.
+        catch {
+            Write-Host "note: could not copy $f to $dir ($_)"
+            # Never leave the folder without the file: the parked old one goes back.
+            if ($prev -and -not (Test-Path $dest) -and (Test-Path $prev)) { Move-Item $prev $dest -ErrorAction SilentlyContinue }
+        }
     }
-    Write-Host "Copied them to $($env:UNISONO_COPY_TO) as well"
+    Write-Host "Copied them to $dir as well"
 }
 
 # -Release: the build as a GitHub release (tag v<version>, a zip of dist\), which running copies find in their daily
