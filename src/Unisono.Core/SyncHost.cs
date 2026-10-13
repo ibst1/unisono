@@ -63,6 +63,78 @@ public sealed class SyncHost : IAsyncDisposable
     private Task? _loop;
     private IDisposable? _lock;
     private volatile bool _paused;
+    // When a manual pause lifts itself (UTC ticks); long.MaxValue = until resumed by hand; 0 = not paused.
+    private long _pausedUntilTicks;
+    private DateTime _pausedAt;
+    private DateTime _lastPauseReminder;
+
+    /// <summary>The choices offered for a manual pause (as in OneDrive); null = until resumed by hand.</summary>
+    public static readonly IReadOnlyList<TimeSpan?> PauseChoices = new TimeSpan?[]
+    {
+        TimeSpan.FromMinutes(30), TimeSpan.FromHours(1), TimeSpan.FromHours(2), TimeSpan.FromHours(4), null,
+    };
+
+    /// <summary>"30 minutes", "1 hour", "until I resume".</summary>
+    public static string DescribePause(TimeSpan? d) => d is not { } t ? "until I resume"
+        : t.TotalMinutes < 60 ? $"{t.TotalMinutes:0} minutes" : t.TotalHours == 1 ? "1 hour" : $"{t.TotalHours:0} hours";
+
+    /// <summary>
+    /// A pause until resumed by hand is reminded of this often (tray notice and log), and when Windows wakes up:
+    /// a pause that is forgotten must not quietly stop syncing for the rest of the day.
+    /// </summary>
+    public static readonly TimeSpan PauseReminderEvery = TimeSpan.FromHours(2);
+
+    /// <summary>Raised (thread pool) to remind that syncing has been paused until further notice; the argument is when it was paused.</summary>
+    public event Action<DateTime>? PauseReminder;
+
+    /// <summary>When a timed pause lifts itself (local time); null when not paused or paused until resumed by hand.</summary>
+    public DateTime? PausedUntil
+    {
+        get
+        {
+            var ticks = Interlocked.Read(ref _pausedUntilTicks);
+            return _paused && ticks > 0 && ticks != long.MaxValue ? new DateTime(ticks, DateTimeKind.Utc).ToLocalTime() : null;
+        }
+    }
+
+    /// <summary>Paused until resumed by hand (no end time).</summary>
+    public bool PausedIndefinitely => _paused && Interlocked.Read(ref _pausedUntilTicks) == long.MaxValue;
+
+    /// <summary>Pauses syncing for the given time, or until <see cref="Resume"/> when null.</summary>
+    public void Pause(TimeSpan? duration)
+    {
+        var now = DateTime.UtcNow;
+        Interlocked.Exchange(ref _pausedUntilTicks, duration is { } d ? (now + d).Ticks : long.MaxValue);
+        _pausedAt = now;
+        _lastPauseReminder = now;
+        _paused = true;
+        _log.Info(duration is { } dd
+            ? $"paused for {DescribePause(dd)}, until {(now + dd).ToLocalTime():HH:mm}; syncing resumes by itself then"
+            : "paused until resumed by hand");
+        if (State != HostState.Syncing) SetState(HostState.Paused);
+        Nudge();
+    }
+
+    /// <summary>Resumes syncing after a manual pause.</summary>
+    public void Resume() => EndPause("by hand");
+
+    private void EndPause(string why)
+    {
+        if (!_paused) return;
+        _paused = false;
+        Interlocked.Exchange(ref _pausedUntilTicks, 0);
+        _log.Info($"resumed ({why})");
+        if (State != HostState.Syncing) SetState(HostState.Idle);
+        try { StateChanged?.Invoke(); } catch { }
+        Nudge();
+    }
+
+    private void RemindOfPause(string why)
+    {
+        _lastPauseReminder = DateTime.UtcNow;
+        _log.Info($"still paused ({why}): paused by hand at {_pausedAt.ToLocalTime():HH:mm}, nothing is synced until resumed");
+        try { PauseReminder?.Invoke(_pausedAt.ToLocalTime()); } catch { }
+    }
     private volatile bool _forceOnce;
     private volatile Config? _pendingConfig;
 
@@ -218,16 +290,11 @@ public sealed class SyncHost : IAsyncDisposable
         _interactive = interactive;
     }
 
+    /// <summary>Paused by hand. Setting it pauses until resumed by hand (see <see cref="Pause"/> for a timed pause).</summary>
     public bool Paused
     {
         get => _paused;
-        set
-        {
-            _paused = value;
-            _log.Info(value ? "paused" : "resumed");
-            if (State != HostState.Syncing) SetState(value ? HostState.Paused : HostState.Idle);
-            Nudge();
-        }
+        set { if (value) Pause(null); else Resume(); }
     }
 
     /// <summary>Run a cycle as soon as possible, even while paused.</summary>
@@ -296,9 +363,16 @@ public sealed class SyncHost : IAsyncDisposable
         var runtimes = new List<Runtime>();
         // Missed events (sleep, no network, another computer) need no replay: every cycle compares everything. What
         // matters is running one soon: at start (below), when the network is back and when Windows wakes up.
-        System.Net.NetworkInformation.NetworkAvailabilityChangedEventHandler onNet = (_, e) => { if (e.IsAvailable) { _log.Debug("network available: syncing"); Nudge(); } };
+        System.Net.NetworkInformation.NetworkAvailabilityChangedEventHandler onNet = (_, e) => { if (e.IsAvailable) { _log.Debug(_paused ? "network available (paused: not syncing)" : "network available: syncing"); Nudge(); } };
         System.Net.NetworkInformation.NetworkAddressChangedEventHandler onAddr = (_, _) => Nudge(); // VPN, another network
-        Microsoft.Win32.PowerModeChangedEventHandler onPower = (_, e) => { if (e.Mode == Microsoft.Win32.PowerModes.Resume) { _log.Info("woke up: syncing"); Nudge(); } };
+        Microsoft.Win32.PowerModeChangedEventHandler onPower = (_, e) =>
+        {
+            if (e.Mode != Microsoft.Win32.PowerModes.Resume) return;
+            if (!_paused) _log.Info("woke up: syncing");
+            else if (PausedIndefinitely) RemindOfPause("woke up");
+            else _log.Info($"woke up (paused until {PausedUntil:HH:mm}: not syncing until then)");
+            Nudge(); // a timed pause that ran out during sleep lifts itself in the loop
+        };
         System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged += onNet;
         System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += onAddr;
         try { Microsoft.Win32.SystemEvents.PowerModeChanged += onPower; } catch { /* no session events (service) */ }
@@ -359,6 +433,15 @@ public sealed class SyncHost : IAsyncDisposable
                 }
                 var pairs = runtimes.Select(r => r.Status).ToList();
                 TimeSpan wait;
+                // A timed pause that has run out lifts itself; one until resumed by hand is reminded of now and then.
+                if (_paused)
+                {
+                    var pauseEnd = Interlocked.Read(ref _pausedUntilTicks);
+                    if (pauseEnd > 0 && pauseEnd != long.MaxValue && DateTime.UtcNow.Ticks >= pauseEnd)
+                        EndPause("the pause ran out");
+                    else if (pauseEnd == long.MaxValue && DateTime.UtcNow - _lastPauseReminder >= PauseReminderEvery)
+                        RemindOfPause($"{(DateTime.UtcNow - _pausedAt).TotalHours:0.#} h");
+                }
                 var autoPause = _paused || _forceOnce ? null : SafeAutoPause();
                 if (autoPause != PausedBecause)
                 {
@@ -500,7 +583,10 @@ public sealed class SyncHost : IAsyncDisposable
                 else
                 {
                     SetState(_paused ? HostState.Paused : HostState.Idle);
-                    wait = Timeout.InfiniteTimeSpan;
+                    // Paused: look again when the pause runs out, or when the next reminder is due; never wait for good.
+                    wait = !_paused ? Timeout.InfiniteTimeSpan
+                        : PausedUntil is { } resumeAt ? TimeSpan.FromMilliseconds(Math.Max(1000, (resumeAt.ToUniversalTime() - DateTime.UtcNow).TotalMilliseconds))
+                        : TimeSpan.FromMilliseconds(Math.Max(1000, (_lastPauseReminder + PauseReminderEvery - DateTime.UtcNow).TotalMilliseconds));
                 }
 
                 if (followUp && wait > TimeSpan.FromSeconds(3)) wait = TimeSpan.FromSeconds(3);

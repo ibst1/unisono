@@ -380,7 +380,13 @@ sealed class Bridge : IAsyncDisposable
 
             // ---------------------------------------------- sync, settings
             case "sync.now": _host.SyncNow(); return null;
-            case "sync.pause": _host.Paused = p.GetProperty("paused").GetBoolean(); _pushState(); return null;
+            case "sync.pause":
+                // { paused: true, minutes: 30 } pauses for that long; no or 0 minutes: until resumed by hand.
+                if (!p.GetProperty("paused").GetBoolean()) _host.Resume();
+                else _host.Pause(p.TryGetProperty("minutes", out var pmin) && pmin.TryGetInt32(out var mins) && mins > 0
+                    ? TimeSpan.FromMinutes(mins) : null);
+                _pushState();
+                return null;
             case "settings.set":
             {
                 if (p.TryGetProperty("autostart", out var a)) SetAutostart(a.GetBoolean());
@@ -513,7 +519,8 @@ sealed class Bridge : IAsyncDisposable
             replaces = o.Replaces.Select(r => $"{r.LocalFullPath} \u21c6 {r.Name}"),
         }),
         conflictCopies = _host.Pairs.Sum(s => s.ConflictCopies),
-        host = new { state = _host.State.ToString(), paused = _host.Paused, pausedBecause = _host.PausedBecause, offline = _host.Offline },
+        host = new { state = _host.State.ToString(), paused = _host.Paused, pausedUntil = _host.PausedUntil?.ToString("HH:mm"),
+            pauseChoices = SyncHost.PauseChoices.Select(d => new { minutes = d is { } t ? (int)t.TotalMinutes : 0, label = SyncHost.DescribePause(d) }), pausedBecause = _host.PausedBecause, offline = _host.Offline },
         settings = new { autostart = IsAutostart(), verbose = _settings.VerboseLog, tab = _settings.Tab },
         options = new
         {

@@ -29,6 +29,7 @@ sealed partial class HostForm : Form
     private readonly System.Windows.Forms.Timer _webIdleTimer = new() { Interval = 30_000 };
     private readonly NotifyIcon _tray = new();
     private readonly ToolStripMenuItem _trayPause = new("Pause");
+    private readonly List<ToolStripMenuItem> _trayPauseChoices = new();
     private readonly Dictionary<(Color, string), Icon> _icons = new();
     private readonly System.Windows.Forms.Timer _trayTimer = new() { Interval = 300 };
     private readonly List<object> _history = new();
@@ -73,6 +74,9 @@ sealed partial class HostForm : Form
             OnUi(() => Post(new { @event = "log", data = entry }));
         };
         _host.StateChanged += () => OnUi(() => { UpdateTray(); QueueState(); });
+        _host.PauseReminder += since => OnUi(() =>
+            _tray.ShowBalloonTip(20000, "Unisono: syncing is paused",
+                $"Paused by hand since {since:HH:mm}. Nothing is synced until you resume (tray menu or window).", ToolTipIcon.Warning));
         // Transfers start and end in bursts: redraw the tray icon at most a few times a second.
         _trayTimer.Tick += (_, _) => { _trayTimer.Stop(); UpdateTray(); PostTransfers(); };
         // New activity: the page reloads its list when it shows today (at most once a second).
@@ -288,7 +292,13 @@ sealed partial class HostForm : Form
         menu.Items.Add("Open Unisono", null, (_, _) => ShowFromTray());
         menu.Items.Add("Sync now", null, (_, _) => _host.SyncNow());
         menu.Items.Add("Conflicts...", null, (_, _) => OpenConflicts());
-        _trayPause.Click += (_, _) => { _host.Paused = !_host.Paused; UpdateTray(); QueueState(); };
+        _trayPause.Click += (_, _) => { if (_host.Paused) { _host.Resume(); UpdateTray(); QueueState(); } };
+        foreach (var choice in SyncHost.PauseChoices)
+        {
+            var d = choice;
+            _trayPauseChoices.Add(new ToolStripMenuItem("Pause " + SyncHost.DescribePause(d), null,
+                (_, _) => { _host.Pause(d); UpdateTray(); QueueState(); }));
+        }
         menu.Items.Add(_trayPause);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("Unisono " + Ui.Version) { Enabled = false });
@@ -368,7 +378,8 @@ sealed partial class HostForm : Form
             HostState.Checking => ("Checking all pairs...", Ui.Green),
             _ => ("Not syncing", Ui.Grey),
         };
-        if (_host.Paused && _host.State != HostState.Syncing) (text, color) = ("Paused", Ui.Amber);
+        if (_host.Paused && _host.State != HostState.Syncing)
+            (text, color) = (_host.PausedUntil is { } until ? $"Paused until {until:HH:mm}" : "Paused until you resume", Ui.Amber);
         else if (_host.PausedBecause is { } why && _host.State != HostState.Syncing) (text, color) = ("Paused: " + why, Ui.Amber);
         else if (_host.Offline && _host.State is not (HostState.Syncing or HostState.Trouble)) (text, color) = ("Offline, waiting for the network", Ui.Amber);
         // Conflict copies wait for a decision: amber until they are sorted out (tray menu or window: Conflicts...).
@@ -383,6 +394,9 @@ sealed partial class HostForm : Form
             details.Add($"{Shorten(bad.Pair.Name, 24)}: {bad.LastError}");
         SetTray(details, color, "U");
         _trayPause.Text = _host.Paused ? "Resume" : "Pause";
+        // Not paused: "Pause" opens the choices; paused: "Resume" is a plain command.
+        if (_host.Paused) _trayPause.DropDownItems.Clear();
+        else if (_trayPause.DropDownItems.Count == 0) _trayPause.DropDownItems.AddRange(_trayPauseChoices.ToArray());
     }
 
     /// <summary>Tooltips hold 127 characters: whole lines as long as they fit, the last one cut.</summary>

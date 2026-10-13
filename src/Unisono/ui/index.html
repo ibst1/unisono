@@ -146,7 +146,8 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   <div class="status"><span id="statusChip" class="chip">starting</span></div>
   <div class="spacer"></div>
   <button class="btn" id="btnSync">Sync now</button>
-  <button class="btn" id="btnPause">Pause</button>
+  <button class="btn" id="btnPause">Resume</button>
+  <select class="btn" id="selPause" title="Pause syncing" style="width:auto"><option value="">Pause&hellip;</option></select>
 </header>
 <nav id="tabs">
   <button data-tab="accounts">Accounts</button>
@@ -230,8 +231,9 @@ textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
     <section class="card">
       <div class="setting"><label class="switch"><input type="checkbox" id="setAutostart"><span></span></label>
         <div class="grow"><div>Start with Windows</div><div class="small muted">Starts hidden in the tray when you sign in to Windows.</div></div></div>
-      <div class="setting"><label class="switch"><input type="checkbox" id="setPaused"><span></span></label>
-        <div class="grow"><div>Pause syncing</div><div class="small muted">Nothing is transferred until you resume. "Sync now" still runs one round.</div></div></div>
+      <div class="setting"><select id="setPauseFor" style="width:auto"></select>
+        <div class="grow"><div>Pause syncing</div><div class="small muted">Nothing is transferred while paused; a timed pause resumes by itself.
+          A pause until you resume is reminded of every 2 hours and when Windows wakes up. "Sync now" still runs one round.</div></div></div>
       <div class="setting"><label class="switch"><input type="checkbox" id="optExplorer"><span></span></label>
         <div class="grow"><div>Explorer menu</div><div class="small muted">Right-click in a synced folder: "Open in Google Drive", "Open in Synology Drive", and for
           Office files in Drive folders "Open in Google Docs / Sheets / Slides". In Windows 11 under "Show more options".</div></div></div>
@@ -554,7 +556,7 @@ const STATE = {
 };
 function renderHeader() {
   let [cls, text] = STATE[S.host.state] || ["", S.host.state];
-  if (S.host.paused && S.host.state !== "Syncing") [cls, text] = ["warn", "Paused"];
+  if (S.host.paused && S.host.state !== "Syncing") [cls, text] = ["warn", S.host.pausedUntil ? "Paused until " + S.host.pausedUntil : "Paused until you resume"];
   else if (S.host.pausedBecause && S.host.state !== "Syncing") [cls, text] = ["warn", "Paused: " + S.host.pausedBecause];
   else if (S.host.offline && S.host.state !== "Syncing" && S.host.state !== "Trouble") [cls, text] = ["warn", "Offline"];
   if (!S.pairs.length) [cls, text] = ["", "No sync pairs yet"];
@@ -563,10 +565,23 @@ function renderHeader() {
   if (behind.length && cls !== "err") [cls, text] = ["warn", `${text}; ${behind.map(m => `${m.machine} runs ${m.version.split("+")[0]}`).join(", ")}`];
   const chip = $("#statusChip"); chip.className = "chip " + cls; chip.textContent = text;
   $("#brandDot").style.background = { ok: "var(--green)", busy: "var(--blue)", warn: "var(--amber)", err: "var(--red)" }[cls] || "var(--muted)";
-  $("#btnPause").textContent = S.host.paused ? "Resume" : "Pause";
+  // Paused: a Resume button; not paused: a list of how long to pause (as in OneDrive).
+  $("#btnPause").hidden = !S.host.paused;
+  $("#selPause").hidden = S.host.paused;
+  fillPauseChoices($("#selPause"), "Pause\u2026");
+}
+function fillPauseChoices(sel, first) {
+  const choices = S.host.pauseChoices || [];
+  if (sel.options.length === choices.length + 1) return;
+  sel.innerHTML = `<option value="">${esc(first)}</option>` +
+    choices.map(c => `<option value="${c.minutes}">Pause ${esc(c.label)}</option>`).join("");
 }
 $("#btnSync").onclick = () => { call("sync.now"); toast("Syncing all pairs now"); };
-$("#btnPause").onclick = () => call("sync.pause", { paused: !S.host.paused });
+$("#btnPause").onclick = () => call("sync.pause", { paused: false });
+$("#selPause").onchange = e => {
+  const v = e.target.value; e.target.value = "";
+  if (v !== "") call("sync.pause", { paused: true, minutes: parseInt(v, 10) });
+};
 
 // ----------------------------------------------------------------- accounts
 function renderAccounts() {
@@ -1498,7 +1513,13 @@ $("#browseOk").onclick = () => {
 function renderSettings() {
   $("#setAutostart").checked = S.settings.autostart;
   $("#setVerbose").checked = S.settings.verbose;
-  $("#setPaused").checked = S.host.paused;
+  const sp = $("#setPauseFor");
+  if (document.activeElement !== sp) {
+    const status = !S.host.paused ? "Not paused" : S.host.pausedUntil ? "Paused until " + S.host.pausedUntil : "Paused until you resume";
+    sp.innerHTML = `<option value="">${esc(status)}</option>` + (S.host.paused ? `<option value="resume">Resume now</option>` : "") +
+      (S.host.pauseChoices || []).map(c => `<option value="${c.minutes}">Pause ${esc(c.label)}</option>`).join("");
+    sp.value = "";
+  }
   $("#dataDir").textContent = S.dataDir;
   $("#verDir").textContent = S.options.versionsDir;
   $("#verDirNote").textContent = S.options.versionsDefault ? "(default, in the settings folder)" : "";
@@ -1527,7 +1548,11 @@ function renderSettings() {
 }
 $("#setAutostart").onchange = e => call("settings.set", { autostart: e.target.checked }).catch(x => toast(x.message, true));
 $("#setVerbose").onchange = e => call("settings.set", { verbose: e.target.checked });
-$("#setPaused").onchange = e => call("sync.pause", { paused: e.target.checked });
+$("#setPauseFor").onchange = e => {
+  const v = e.target.value; e.target.blur();
+  if (v === "resume") call("sync.pause", { paused: false });
+  else if (v !== "") call("sync.pause", { paused: true, minutes: parseInt(v, 10) });
+};
 const setOpt = o => call("settings.set", o).then(s => { if (s) { S = s; render(); } }).catch(x => toast(x.message, true));
 $("#optKeep").onchange = e => setOpt({ keepVersions: parseInt(e.target.value || "0", 10) });
 $("#verDirPick").onclick = async () => {
